@@ -115,7 +115,7 @@ async def retry_job(job_id:UUID,db:AsyncSession=Depends(get_db),user:User=Depend
 
 @router.get('/review-queue')
 async def review_queue(project_id:UUID|None=None,pagination:PaginationParams=Depends(),db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
-    query=select(AutomationItem).join(AutomationJob).where(AutomationJob.tenant_id==user.tenant_id,AutomationItem.status=='needs_review')
+    query=select(AutomationItem).join(AutomationJob).where(AutomationJob.tenant_id==user.tenant_id,AutomationItem.status=='needs_review').order_by(AutomationItem.updated_at.desc())
     if project_id:
         await scoped_project(db,project_id,user.tenant_id);query=query.where(AutomationJob.project_id==project_id)
     return await page_result(db,query,AutomationItem,pagination)

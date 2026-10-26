@@ -78,6 +78,29 @@ def test_review_scope_rejects_unknown_classes_but_detector_prompts_allow_aliases
     assert detector.status_code==201,detector.text
 
 
+@pytest.mark.asyncio
+async def test_review_queue_orders_latest_results_first_with_stable_pagination(client,auth_headers,ready,test_db):
+    from uuid import UUID
+    from models.automation import AutomationItem
+    job=client.post('/api/automation/jobs',headers=auth_headers,json=ready).json()
+    original=await test_db.scalar(select(AutomationItem).where(AutomationItem.job_id==UUID(job['id'])))
+    original.status='needs_review';original.created_at=datetime(2026,1,3);original.updated_at=datetime(2026,1,4)
+    newest=[]
+    for number in [1,2]:
+        item=AutomationItem(id=UUID(f'aaaaaaaa-0000-4000-8000-{number:012d}'),job_id=original.job_id,asset_id=original.asset_id,content_hash=original.content_hash,
+            status='needs_review',created_at=datetime(2026,1,1),updated_at=datetime(2026,1,5))
+        test_db.add(item);newest.append(str(item.id))
+    await test_db.commit()
+    def page(number):
+        response=client.get('/api/automation/review-queue',headers=auth_headers,params={'page':number,'page_size':1})
+        assert response.status_code==200,response.text
+        return response.json()
+    assert [page(i)['items'][0]['id'] for i in [1,2,3]]==newest+[str(original.id)]
+    assert page(1)['total']==3
+    original.updated_at=datetime(2026,1,6);await test_db.commit()
+    assert page(1)['items'][0]['id']==str(original.id)
+
+
 def test_structured_review_must_cover_every_box_and_allow_uncertainty():
     from services.automation_review import validate_review
     valid=dict(boxes=[dict(index=0,verdict='uncertain',reason='遮挡')],completeness='uncertain',negative='uncertain',reason='需人工')
