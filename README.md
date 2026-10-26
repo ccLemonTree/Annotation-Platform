@@ -1,6 +1,6 @@
 # 数据管理平台
 
-2026-10-26：开发与运行已迁移到115服务器，访问 http://192.168.1.115:3000 。主目录`/ai/chen/code/workspace/数据管理平台`，后续修改、调试、测试及构建均在服务器执行；Windows副本仅作回退。详见[115服务器开发与运行](docs/development/115服务器开发与运行.md)。
+2026-10-26：平台运行在115服务器，访问 http://192.168.1.115:3000 ，目录`/ai/chen/code/workspace/数据管理平台`。本地进行开发、隔离测试和构建，通过后再更新115并验收。详见[115服务器开发与运行](docs/development/115服务器开发与运行.md)。
 
 2026-10-19新增DINOv3 ViT-S/16 · LTDETR监督检测微调：使用 `dinov3/vits16-ltdetr-coco` 完整权重和 `lightly/train:latest`，支持平台YOLO/COCO冻结标注、任务日志/产物下载、权重效果预览与模型验证。原始图片需先完成框标注；镜像/完整权重需在训练服务器准备。真实GPU训练与效果待验收，见[模型训练说明](docs/development/模型训练.md#dinov3-vit-s16--ltdetr-检测微调2026-10-19)。
 
@@ -75,6 +75,6 @@ P0/P1及P2人工检测、版本／审核、图片包和冻结流程已实施；0
 
 ## GitHub与代码同步
 
-仓库：https://github.com/ccLemonTree/Annotation-Platform ，主分支`main`。以115服务器工作目录为准，在服务器提交和同步；Windows仅保留旧代码副本。数据、模型、`.env`、SSH配置及测试产物不入库。
+仓库：https://github.com/ccLemonTree/Annotation-Platform ，主分支`main`。本地开发、测试和构建通过后提交推送；115通过`git pull --ff-only`更新并做运行验收。数据、模型、`.env`、SSH配置及测试产物不入库。
 
 手动初始化脚本通过`ANNOTATION_ADMIN_PASSWORD`和`ANNOTATION_TEST_USER_PASSWORD`读取初始密码；手动登录测试使用`ANNOTATION_PASSWORD`，爬取示例使用`SMARTEYE_ACCESS_TOKEN`。请在私有环境中设置，不要写入代码或日志。既有账号密码不因此改变。

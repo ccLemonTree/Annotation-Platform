@@ -52,6 +52,36 @@ def test_missing_distribution_api(client,auth_headers):
     assert response.status_code==200,response.text
 
 
+@pytest.mark.asyncio
+async def test_deployment_logs_are_scoped_read_only_and_redacted(client,auth_headers,local_flow,test_db,test_user,monkeypatch):
+    from services import training_runs
+    from models.model_deployment import DeploymentTarget
+    service,row,calls,failures,live=local_flow
+    row.logs=[{'at':'2026-10-26T00:00:00Z','message':'transfer phase password=private'}]
+    target_row=DeploymentTarget(id=uuid4(),tenant_id=test_user.tenant_id,name='saved target',kind='model',target_key='saved',target=row.target)
+    test_db.add(target_row);await test_db.commit()
+    original=row.status;remote=[]
+    def bridge(name,payload):
+        remote.append((name,payload))
+        return dict(content='ready Authorization: Bearer private',truncated=False,instances=[{'name':'triton','uid':'id'}],selected_instance='triton')
+    monkeypatch.setattr(training_runs,'bridge',bridge)
+    response=client.get(f'/api/model-deployments/{row.id}/logs',headers=auth_headers)
+    assert response.status_code==200 and 'transfer phase' in response.json()['content']
+    assert 'private' not in response.text and not remote
+    response=client.get(f'/api/model-deployments/{row.id}/logs?source=service&instance=triton',headers=auth_headers)
+    assert response.status_code==200 and 'private' not in response.text
+    assert remote[0][1]['executor']=='deployment_logs' and remote[0][1]['payload']['instance']=='triton'
+    assert client.get(f'/api/model-deployments/targets/{target_row.id}/logs?source=service',headers=auth_headers).status_code==200
+    assert client.get(f'/api/model-deployments/{row.id}/logs?source=arbitrary',headers=auth_headers).status_code==422
+    await test_db.refresh(row);assert row.status==original
+    from models import Tenant
+    test_db.add(Tenant(id=2,tenant_name='other'));await test_db.flush()
+    row.tenant_id=2;await test_db.commit()
+    assert client.get(f'/api/model-deployments/{row.id}/logs',headers=auth_headers).status_code==404
+    test_user.role='annotator';await test_db.commit()
+    assert client.get(f'/api/model-deployments/targets/{target_row.id}/logs?source=service',headers=auth_headers).status_code==403
+
+
 @pytest.mark.parametrize('change',[
     {'repository':'/etc/models'},{'repository':'/'},{'model_name':'../model'},
     {'model_name':'model; reboot'},{'artifact_path':'../model.engine'},

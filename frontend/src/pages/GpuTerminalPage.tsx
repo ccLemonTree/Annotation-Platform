@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import './GpuTerminalPage.css';
 import { API_BASE_URL } from '../api/client';
 import { getGpuServers } from '../api/gpuResources';
+import { getDeploymentServers } from '../api/modelDeployments';
 import type { GpuServer } from '../api/gpuResources';
 import { connectionError, forbidden } from '../components/gpu/connectionError';
 
@@ -15,8 +16,10 @@ const stateLabels = { disconnected: '未连接', connecting: '正在连接', con
 
 export default function GpuTerminalPage() {
   const [params] = useSearchParams();
+  const sshMode=params.has('ssh_server')||params.get('source')==='deployment';
+  const requestedSsh=params.get('ssh_server');
   const [admin, setAdmin] = useState(() => { try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; } catch { return false; } });
-  const [servers, setServers] = useState<GpuServer[]>([]), [serverId, setServerId] = useState(params.get('server_id') || 'default');
+  const [servers, setServers] = useState<GpuServer[]>([]), [serverId, setServerId] = useState(sshMode?(requestedSsh?'ssh:'+requestedSsh:''):params.get('server_id') || 'default');
   const [loading, setLoading] = useState(true), [reload, setReload] = useState(0), [listError, setListError] = useState('');
   const [state, setState] = useState<ConnectionState>('disconnected'), [error, setError] = useState('');
   const surface = useRef<HTMLDivElement>(null), terminal = useRef<Terminal | null>(null), fit = useRef<FitAddon | null>(null);
@@ -26,22 +29,25 @@ export default function GpuTerminalPage() {
   useEffect(() => {
     if (!admin) return;
     const controller = new AbortController();
-    getGpuServers(controller.signal).then(list => {
+    const request=sshMode?getDeploymentServers(controller.signal).then(list=>list.map(row=>({id:'ssh:'+row.name,name:row.name,host:row.host,port:row.port,username:row.user,enabled:true,has_password:false,revision:0,source:'ssh_manager' as const}))):getGpuServers(controller.signal);
+    request.then(list => {
       if (controller.signal.aborted) return;
-      setServers(list); setServerId(id => list.some(server => server.id === id) ? id : list[0]?.id || 'default');
+      setServers(list);
+      if(sshMode&&requestedSsh&&!list.some(server=>server.id==='ssh:'+requestedSsh))setListError('指定SSH服务器不存在或已移除，请重新选择');
+      setServerId(id => sshMode&&requestedSsh?'ssh:'+requestedSsh:list.some(server => server.id === id) ? id : list[0]?.id || 'default');
     }).catch(cause => {
       if (controller.signal.aborted) return;
       if (forbidden(cause)) setAdmin(false); else setListError(connectionError(cause, '服务器列表读取失败'));
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [admin, reload]);
+  }, [admin, reload,sshMode,requestedSsh]);
   useEffect(() => {
     if (!admin || !surface.current) return;
     const term = new Terminal({ cursorBlink: true, disableStdin: true, scrollback: 3000, fontSize: 14,
       fontFamily: 'Consolas, "SFMono-Regular", monospace', theme: { background: '#111827', foreground: '#e5e7eb', cursor: '#93c5fd' } });
     const addon = new FitAddon(); term.loadAddon(addon); term.open(surface.current); addon.fit();
     term.textarea?.setAttribute('aria-label', 'SSH终端输入');
-    term.writeln('选择GPU服务器，点击“连接终端”开始。');
+    term.writeln('选择服务器，点击“连接终端”开始。');
     terminal.current = term; fit.current = addon;
     // A server's escape sequences must not read or write the local clipboard.
     const clipboardBlock = term.parser.registerOscHandler(52, () => true);
@@ -86,7 +92,7 @@ export default function GpuTerminalPage() {
     const ws = new WebSocket(url); ws.binaryType = 'arraybuffer'; socket.current = ws;
     ws.onopen = () => {
       if (socket.current !== ws) return;
-      ws.send(JSON.stringify({ type: 'auth', token, server_id: selected.id, cols: terminal.current?.cols || 80, rows: terminal.current?.rows || 24 }));
+      ws.send(JSON.stringify({ type: 'auth', token, ...(sshMode?{ssh_server:selected.name}:{server_id:selected.id}), cols: terminal.current?.cols || 80, rows: terminal.current?.rows || 24 }));
     };
     ws.onmessage = event => {
       if (socket.current !== ws || !terminal.current) return;
@@ -120,19 +126,19 @@ export default function GpuTerminalPage() {
     if (terminal.current) terminal.current.options.disableStdin = true;
     setState('closing'); socket.current?.close(1000, 'user_disconnect');
   };
-  if (!admin) return <Result status="403" title="无权限" subTitle="仅管理员可使用GPU服务器SSH终端。" />;
+  if (!admin) return <Result status="403" title="无权限" subTitle="仅管理员可使用服务器SSH终端。" />;
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
     <Alert type="info" showIcon title="完整SSH交互终端" description="命令以所选服务器的SSH账号权限执行，支持top、vim、Tab补全和Ctrl+C。刷新或离开页面会断开当前shell；长任务请使用tmux或nohup。" />
     <Card title="服务器与会话" extra={<Tag color={state === 'connected' ? 'success' : state === 'error' ? 'error' : busy ? 'processing' : 'default'}>{stateLabels[state]}</Tag>}>
       <Space wrap>
-        <Select aria-label="SSH调试服务器" value={selected?.id} loading={loading} disabled={busy} style={{ width: 280, maxWidth: '100%' }} placeholder="选择已保存的GPU服务器"
+        <Select aria-label="SSH调试服务器" value={selected?.id} loading={loading} disabled={busy} style={{ width: 280, maxWidth: '100%' }} placeholder={sshMode?'选择下发配置中的SSH服务器':'选择已保存的GPU服务器'}
           options={servers.map(server => ({ value: server.id, label: server.name, disabled: !server.enabled || server.source === 'password' && !server.has_password }))}
           onChange={id => { setServerId(id); setError(''); terminal.current?.reset(); }} />
         <Button type="primary" loading={state === 'connecting'} disabled={loading || busy || !selected || !selected.enabled || selected.source === 'password' && !selected.has_password} onClick={connect}>连接终端</Button>
         <Button disabled={!busy || state === 'closing'} onClick={disconnect}>断开连接</Button>
         <Button disabled={state !== 'connected'} onClick={() => { socket.current?.send(new Uint8Array([3])); terminal.current?.focus(); }}>发送 Ctrl+C</Button>
         <Button onClick={() => { terminal.current?.clear(); terminal.current?.focus(); }}>清屏</Button>
-        {selected&&<Link to={`/gpu-resources?server_id=${encodeURIComponent(selected.id)}`}>查看此服务器GPU</Link>}
+        {selected&&(sshMode?<Link to="/model-deployments">返回模型下发</Link>:<Link to={`/gpu-resources?server_id=${encodeURIComponent(selected.id)}`}>查看此服务器GPU</Link>)}
       </Space>
       {selected && <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, overflowWrap: 'anywhere' }}>{selected.source === 'password' ? `${selected.username}@${selected.host}:${selected.port}` : `${selected.name} · 使用已有ssh-manager配置`} · 一页一个会话，空闲20分钟断开</Typography.Paragraph>}
       {listError && <Alert style={{ marginTop: 12 }} type="error" title={listError} action={<Button onClick={() => { setLoading(true); setListError(''); setReload(value => value + 1); }}>重试</Button>} />}

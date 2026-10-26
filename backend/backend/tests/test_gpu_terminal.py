@@ -41,6 +41,34 @@ def auth(auth_headers,**values):
     return dict(type='auth',token=auth_headers['Authorization'].split(' ',1)[1],server_id='default',cols=100,rows=30,**values)
 
 
+def test_named_deployment_server_terminal_and_config_revocation(client,auth_headers,fake_bridge,monkeypatch):
+    from services import gpu_terminal,model_deployments
+    calls=0
+    async def servers():
+        nonlocal calls
+        calls+=1
+        return [dict(name='部署控制机',host='10.0.0.1' if calls<3 else '10.0.0.2',port=22,user='root')]
+    monkeypatch.setattr(model_deployments,'servers',servers)
+    monkeypatch.setattr(gpu_terminal,'AUTH_INTERVAL',0.01)
+    with client.websocket_connect('/api/gpu-terminal/ws',headers={'origin':'http://testserver'}) as ws:
+        ws.send_json(auth(auth_headers,ssh_server='部署控制机'))
+        ready=ws.receive_json();assert ready['type']=='ready' and ready['server_name']=='部署控制机'
+        assert ws.receive_json()['code']==409
+    assert fake_bridge[0].closed.wait(2)
+
+
+def test_named_terminal_rejects_unknown_or_conflicting_selection(client,auth_headers,fake_bridge,monkeypatch):
+    from services import model_deployments
+    async def servers():return []
+    monkeypatch.setattr(model_deployments,'servers',servers)
+    with client.websocket_connect('/api/gpu-terminal/ws',headers={'origin':'http://testserver'}) as ws:
+        ws.send_json(auth(auth_headers,ssh_server='missing'));assert ws.receive_json()['code']==404
+    value=auth(auth_headers,ssh_server='missing');value['server_id']=str(uuid4())
+    with client.websocket_connect('/api/gpu-terminal/ws',headers={'origin':'http://testserver'}) as ws:
+        ws.send_json(value);assert ws.receive_json()['code']==400
+    assert not fake_bridge
+
+
 @pytest.mark.parametrize('origin',['https://evil.invalid','http://[broken'])
 def test_terminal_requires_valid_origin(client,origin):
     with pytest.raises(WebSocketDisconnect):

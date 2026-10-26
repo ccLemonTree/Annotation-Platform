@@ -3,6 +3,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import hashlib
 import logging
 from pathlib import Path
 import subprocess
@@ -12,7 +13,7 @@ from urllib.parse import urlsplit
 from uuid import UUID,uuid4
 
 from fastapi import HTTPException,WebSocket,WebSocketDisconnect
-from pydantic import BaseModel,ConfigDict,Field,ValidationError,field_validator
+from pydantic import BaseModel,ConfigDict,Field,ValidationError,field_validator,model_validator
 from api.deps import get_current_user,get_current_superuser
 from config.settings import settings
 from services import gpu_servers
@@ -30,6 +31,7 @@ class TerminalAuth(BaseModel):
     type:Literal['auth']
     token:str=Field(min_length=1,max_length=4096)
     server_id:str=Field(default='default',max_length=36)
+    ssh_server:str|None=Field(default=None,min_length=1,max_length=100,pattern=r'^[^\x00-\x1f\x7f]+$')
     cols:int=Field(ge=2,le=400)
     rows:int=Field(ge=2,le=200)
 
@@ -38,6 +40,11 @@ class TerminalAuth(BaseModel):
     def server(cls,value):
         if value!='default':UUID(value)
         return value
+
+    @model_validator(mode='after')
+    def one_server(self):
+        if self.ssh_server and self.server_id!='default':raise ValueError('请选择一种服务器来源')
+        return self
 
 
 def allowed_origin(ws):
@@ -54,7 +61,14 @@ async def load_access(db,auth,include_connection=False):
         await get_current_superuser(user)
         result=dict(user_id=user.id,tenant_id=user.tenant_id,server_id=auth.server_id,revision=0,
             name=settings.GPU_SERVER_NAME,server=settings.GPU_SERVER_NAME,connection=None)
-        if auth.server_id!='default':
+        if auth.ssh_server:
+            from services.model_deployments import servers
+            server=next((row for row in await servers() if row['name']==auth.ssh_server),None)
+            if not server:raise HTTPException(404,'SSH服务器不存在或已移除')
+            signature={key:server.get(key) for key in ('name','host','user','port')}
+            result.update(name=server['name'],server=server['name'],server_id='ssh:'+server['name'],
+                revision=hashlib.sha256(json.dumps(signature,sort_keys=True).encode()).hexdigest())
+        elif auth.server_id!='default':
             row=await gpu_servers.scoped_server(db,UUID(auth.server_id),user.tenant_id)
             if not row.enabled:raise HTTPException(409,'GPU服务器连接已停用')
             if not row.password_encrypted:raise HTTPException(409,'GPU服务器未保存密码')

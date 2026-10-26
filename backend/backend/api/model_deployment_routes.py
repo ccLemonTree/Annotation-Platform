@@ -1,4 +1,6 @@
 from uuid import UUID
+from typing import Literal
+from types import SimpleNamespace
 from fastapi import APIRouter,Depends,Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,6 +53,18 @@ async def targets(db:AsyncSession=Depends(get_db_session),user:User=Depends(get_
     return dict(items=[await center.target_summary(db,row) for row in rows])
 
 
+@router.get('/targets/{id}/logs')
+async def target_logs(id:UUID,source:Literal['updates','service']='updates',instance:str|None=Query(None,min_length=1,max_length=253),
+    db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    from services.deployment_logs import snapshot
+    target=await center.scoped(db,DeploymentTarget,id,user.tenant_id)
+    row=await db.scalar(select(ModelDeployment).where(ModelDeployment.target_id==id,ModelDeployment.tenant_id==user.tenant_id)
+        .order_by(ModelDeployment.created_at.desc(),ModelDeployment.id.desc()).limit(1)) if source=='updates' else None
+    if row is None:
+        row=SimpleNamespace(id=target.id,target=target.target,kind='model',status='target',logs=[],inspection={})
+    return await snapshot(db,row,source,instance)
+
+
 @router.post('/targets',status_code=201)
 async def add_target(request:TargetCreate,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
     return await center.target_summary(db,await center.create_target(db,user,request))
@@ -101,6 +115,13 @@ async def create(request:DeploymentCreate,db:AsyncSession=Depends(get_db_session
 @router.get('/{id}')
 async def detail(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
     return service.summary(await service.scoped(db,id,user.tenant_id))
+
+
+@router.get('/{id}/logs')
+async def record_logs(id:UUID,source:Literal['updates','service']='updates',instance:str|None=Query(None,min_length=1,max_length=253),
+    db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    from services.deployment_logs import snapshot
+    return await snapshot(db,await service.scoped(db,id,user.tenant_id),source,instance)
 
 
 @router.post('/{id}/refresh')

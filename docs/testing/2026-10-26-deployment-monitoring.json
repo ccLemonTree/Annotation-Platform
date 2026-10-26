@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-26",
+  "feature": "模型下发SSH调试与实时更新/服务日志",
+  "development": "local development, isolated tests and build; then update server115",
+  "backend": {
+    "passed": 170,
+    "skipped": 2,
+    "command": "python -m pytest tests/test_gpu_terminal.py tests/test_deployment_logs_executor.py tests/test_model_deployment.py tests/test_training_runs.py tests/test_distribution_center.py tests/test_image_updates.py tests/test_image_preload.py -q --disable-warnings --tb=short",
+    "red_evidence": ["2 named-terminal failures before support", "5 missing log-executor cases", "missing log API 405", "4 credential-redaction failures", "missing file-truncation indicator"],
+    "scope": ["admin and tenant boundaries", "named SSH selection and configuration revocation", "read-only paths and commands", "owned Pod/container selection", "bounded metadata and log output", "quoted credentials and token redaction", "symlink rejection", "existing deployment and image-preload behavior"]
+  },
+  "browser": {
+    "passed": 7,
+    "script": "scripts/verify_deployment_monitoring_ui.cjs",
+    "legacy_regression": "scripts/verify_distribution_center_ui.cjs passed",
+    "coverage": ["control/file server SSH links", "update refresh", "pause and manual retry preserve old content", "service source and instance switching", "truncation label", "close cancels polling", "390px layout", "record-specific endpoint", "named SSH requires click to connect"],
+    "business_writes": 0,
+    "ssh": "mocked WebSocket; no production commands",
+    "screenshots": ["output/playwright/deployment-monitoring-desktop.png", "output/playwright/deployment-monitoring-mobile.png"]
+  },
+  "frontend": {"build": "passed", "targeted_lint": "passed", "existing_warning": "bundle chunks over 500kB"},
+  "new_dependencies": false,
+  "database_migration": false,
+  "limits": ["service logs are bounded snapshots, not an unbounded stream", "runtime verification is recorded separately at server .runtime/deployment-monitoring-acceptance.json", "no real model transfer, activation, image preload or inference restart performed"]
+}

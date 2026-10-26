@@ -55,3 +55,12 @@ export const createDeploymentBatch=async(input:{kind:string;release_id?:string;i
   (await apiClient.post('/api/model-deployments/batches',input)).data;
 export const deploymentBatchAction=async(id:string,operation:string):Promise<{results:{id:string;status?:string;error?:string}[]}> =>
   (await apiClient.post(`/api/model-deployments/batches/${id}/${operation}`,undefined,{timeout:1400000})).data;
+
+export interface DeploymentLogSnapshot {
+  content:string;truncated:boolean;server:string;source:'updates'|'service';status:string;collected_at:string;
+  instances:{name:string;uid:string}[];selected_instance:string|null;
+}
+export const getDeploymentLogs=async(id:string,target:boolean,source:'updates'|'service',instance:string|undefined,signal:AbortSignal):Promise<DeploymentLogSnapshot> =>
+  (await apiClient.get(`/api/model-deployments/${target?'targets/':''}${id}/logs`,{
+    params:{source,instance:instance||undefined},signal,timeout:45000,skipErrorToast:true,
+  })).data;

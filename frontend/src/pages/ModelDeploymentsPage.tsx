@@ -1,7 +1,8 @@
 import { useEffect,useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link,useSearchParams } from 'react-router-dom';
 import { Alert,Button,Card,Collapse,Drawer,Form,Input,Modal,Select,Space,Table,Tabs,Tag,Typography } from 'antd';
 import ModelDeployment,{DeploymentFields} from '../components/ModelDeployment';
+import DeploymentLogs,{DeploymentSshLinks} from '../components/DeploymentLogs';
 import {deploymentBusy,deploymentError,deploymentNames} from '../utils/modelDeployment';
 import { archiveModel,createDeploymentBatch,deploymentBatchAction,getDeployment,getDeployments,getDeploymentServers,getDistributionSources,getModelReleases,getServerTargets,inspectServerTarget,retryModelArchive,saveServerTarget,getDeploymentBatch } from '../api/modelDeployments';
 import type { DeploymentInput,DeploymentServer,ModelDeployment as Record,ModelRelease,ServerTarget } from '../api/modelDeployments';
@@ -27,6 +28,7 @@ export default function ModelDeploymentsPage(){
   const [selected,setSelected]=useState<Record>(),[batch,setBatch]=useState<string>(),[batchPreview,setBatchPreview]=useState<Record[]>([]),[confirm,setConfirm]=useState<'activate'|'rollback'>();
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(''),[reload,setReload]=useState(0);
   const [editing,setEditing]=useState<string>(),[targetOpen,setTargetOpen]=useState<string[]>([]);
+  const [logTarget,setLogTarget]=useState<ServerTarget>();
   const refresh=()=>setReload(value=>value+1);
   useEffect(()=>{if(!admin)return;const controller=new AbortController();getDeploymentServers(controller.signal).then(setServers).catch(cause=>{if(!controller.signal.aborted)setError(deploymentError(cause));});return()=>controller.abort();},[admin]);
   useEffect(()=>{if(!admin)return;const controller=new AbortController();
@@ -78,6 +80,7 @@ export default function ModelDeploymentsPage(){
   if(!admin)return <Alert type="warning" title="模型下发及镜像更新仅管理员可用"/>;
   return <Space orientation="vertical" size="middle" style={{width:'100%',minWidth:0,overflowWrap:'anywhere'}} styles={{item:{minWidth:0,maxWidth:'100%'}}}>
     <Alert type="info" showIcon title="先准备并校验，再手动生效" description="模型统一保存在平台后端；每个服务器目标记录自己的模型版本和运行镜像。同一服务器可保存多个模型槽位或服务。"/>
+    <Link to="/gpu-terminal?source=deployment" target="_blank" rel="noopener noreferrer">SSH调试服务器</Link>
     {error&&<Alert closable onClose={()=>setError('')} type="error" showIcon title={error}/>} {notice&&<Alert type="success" title={notice}/>}
     <Tabs activeKey={tab} onChange={setTab} items={[
       {key:'releases',label:'模型版本库',children:<Space orientation="vertical" style={{width:'100%'}}>
@@ -111,7 +114,7 @@ export default function ModelDeploymentsPage(){
           {title:'环境 / 服务',render:(_,row)=><><Tag>{row.target.environment}</Tag><div>{row.kind==='model'?row.target.model_name:row.target.workload||row.target.containers.join('、')}</div>{row.kind==='model'&&<Typography.Text type="secondary">{row.target.repository}</Typography.Text>}</>},
           {title:'当前版本记录',render:(_,row)=><><strong>{row.current.version||row.current.image||[...new Set(row.current.instances?.map(value=>value.image))].join('、')||'版本未知'}</strong><div>{versionStates[row.current.state]||row.current.state}</div><div>{localTime(row.current.checked_at)}</div>{row.current.instances?.map(instance=><div key={instance.uid}><Typography.Text type="secondary">{instance.name} · {instance.image_id}</Typography.Text></div>)}</>},
           {title:'最近操作',render:(_,row)=>row.latest?<Button onClick={()=>setSelected(row.latest)}>{deploymentNames[row.latest.status]||row.latest.status}</Button>:'暂无'},
-          {title:'操作',render:(_,row)=><Space wrap><Button disabled={!!busy} onClick={()=>void perform('inspect',async()=>{await inspectServerTarget(row.id);setNotice('已读取目标状态；文件版本核对不代表全部推理实例已重新加载。');})}>读取当前版本</Button><Button disabled={!!busy} onClick={()=>{setEditing(row.id);setTargetOpen(['target']);targetForm.setFieldsValue({...row.target,name:row.name,kind:row.kind,runtime_options:JSON.stringify(row.target.runtime_config||{})});}}>编辑目标</Button></Space>},
+          {title:'操作',render:(_,row)=><Space wrap><Button onClick={()=>setLogTarget(row)}>实时日志</Button><DeploymentSshLinks control={row.target.control_server} file={row.target.file_server}/><Button disabled={!!busy} onClick={()=>void perform('inspect',async()=>{await inspectServerTarget(row.id);setNotice('已读取目标状态；文件版本核对不代表全部推理实例已重新加载。');})}>读取当前版本</Button><Button disabled={!!busy} onClick={()=>{setEditing(row.id);setTargetOpen(['target']);targetForm.setFieldsValue({...row.target,name:row.name,kind:row.kind,runtime_options:JSON.stringify(row.target.runtime_config||{})});}}>编辑目标</Button></Space>},
         ]}/>
         <Space wrap><Typography.Text>已选 {targetIds.length} 个目标</Typography.Text><Button type="primary" disabled={!!busy||!targetIds.length||kind==='model'&&!release||kind==='image'&&!image.trim()} loading={busy==='batch'} onClick={()=>void createBatch()}>创建批量任务</Button></Space>
       </Space>},
@@ -128,7 +131,10 @@ export default function ModelDeploymentsPage(){
         ]}/>{pager(recordPage,recordMore,setRecordPage)}
       </Space>},
     ]}/>
-    <Drawer open={!!selected} title="下发 / 镜像更新详情" size={1000} onClose={()=>setSelected(undefined)} destroyOnHidden>{selected&&<ModelDeployment key={selected.id} record={selected} onChange={row=>{setSelected(row);refresh();}}/>}</Drawer>
+    <Drawer open={!!selected} title="下发 / 镜像更新详情" size={1000} styles={{wrapper:{maxWidth:'100vw'}}} onClose={()=>setSelected(undefined)} destroyOnHidden>{selected&&<ModelDeployment key={selected.id} record={selected} onChange={row=>{setSelected(row);refresh();}}/>}</Drawer>
+    <Drawer open={!!logTarget} title={logTarget?`${logTarget.name} · 实时日志`:'实时日志'} size={1000} styles={{wrapper:{maxWidth:'100vw'}}} onClose={()=>setLogTarget(undefined)} destroyOnHidden>
+      {logTarget&&<Space orientation="vertical" style={{width:'100%'}}><DeploymentSshLinks control={logTarget.target.control_server} file={logTarget.target.file_server}/><DeploymentLogs key={logTarget.id} id={logTarget.id} target/></Space>}
+    </Drawer>
     {confirm&&<Modal open title={confirm==='activate'?'确认本批次生效？':'确认本批次恢复旧版本？'} okText={confirm==='activate'?'确认生效':'确认恢复'} cancelText="返回" okButtonProps={{danger:confirm==='rollback'}} confirmLoading={busy==='bulk'} onCancel={()=>{if(!busy)setConfirm(undefined);}} onOk={()=>void bulk(confirm)}>
       <Typography.Paragraph>本批次共有 {batchPreview.length} 个目标，分别执行并记录结果。仅符合操作条件的记录会执行；已完成的记录跳过。期间可能影响服务。</Typography.Paragraph>
       <ul>{batchPreview.map(row=><li key={row.id}>{row.target.control_server} · {row.source.name||row.source.image||row.target.model_name} {row.source.version} · {deploymentNames[row.status]||row.status}</li>)}</ul>

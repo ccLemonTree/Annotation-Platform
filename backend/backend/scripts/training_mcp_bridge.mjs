@@ -10,7 +10,8 @@ const [entry, server] = process.argv.slice(2);
 let client, transport, timer;
 try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
-  const timeoutMs = Math.max(330, Math.min(14400, Number.isInteger(input.timeout_seconds) ? input.timeout_seconds : 330)) * 1000;
+  const monitoring = input.executor === 'deployment_logs';
+  const timeoutMs = monitoring ? 40000 : Math.max(330, Math.min(14400, Number.isInteger(input.timeout_seconds) ? input.timeout_seconds : 330)) * 1000;
   const require = createRequire(resolve(entry));
   const { Client } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/index.js')).href);
   const { StdioClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
@@ -47,11 +48,11 @@ try {
       if (data.success === false || /"error"\s*:/.test(body) || !(data.success === true || receipt.test(body))) throw Error('File transfer failed');
       process.stdout.write(JSON.stringify({ success: true }));
     } else {
-      const executor = input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
+      const executor = monitoring ? 'deployment_logs_executor.py' : input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
       const code = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/' + executor)).toString('base64');
       const payload = Buffer.from(JSON.stringify(input.payload)).toString('base64');
       const command = `python3 -c "import base64;PLATFORM_SOURCE=base64.b64decode('${code}');exec(PLATFORM_SOURCE)" '${payload}'`;
-      result = await client.callTool({ name: 'ssh_execute', arguments: { server, command, timeout: 300000 } }, undefined, { timeout: 310000 });
+      result = await client.callTool({ name: 'ssh_execute', arguments: { server, command, timeout: monitoring ? 20000 : 300000 } }, undefined, { timeout: monitoring ? 25000 : 310000 });
       const data = JSON.parse(result.content?.filter(c => c.type === 'text').map(c => c.text).join(''));
       if (result.isError || typeof data.stdout !== 'string') throw Error('Remote execution failed');
       const response = JSON.parse(data.stdout.trim());

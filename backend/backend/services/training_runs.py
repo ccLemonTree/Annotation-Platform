@@ -62,7 +62,7 @@ def bridge(server,input):
     entry=Path(settings.GPU_SSH_MANAGER_ENTRY)
     if not settings.GPU_SSH_MANAGER_ENTRY or not entry.is_file():raise HTTPException(503,'未配置ssh-manager MCP入口')
     args=[settings.GPU_SSH_NODE_BINARY,str(ROOT/'scripts/training_mcp_bridge.mjs'),str(entry),server]
-    timeout=330
+    timeout=40 if input.get('executor')=='deployment_logs' else 330
     try:
         if input.get('upload') or input.get('download'):
             size=Path(input['upload']['localPath']).stat().st_size if input.get('upload') else input['download'].get('bytes',0)

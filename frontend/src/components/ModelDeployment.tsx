@@ -4,6 +4,7 @@ import type { FormInstance } from 'antd';
 import { deploymentAction } from '../api/modelDeployments';
 import type { DeploymentServer,ModelDeployment as Record } from '../api/modelDeployments';
 import {deploymentBusy,deploymentError,deploymentNames} from '../utils/modelDeployment';
+import DeploymentLogs,{DeploymentSshLinks} from './DeploymentLogs';
 export function DeploymentFields({form,servers,kind}:{form:FormInstance;servers:DeploymentServer[];kind:'model'|'image'}){
   const environment=Form.useWatch('environment',form),runtime=Form.useWatch('runtime',form);
   const options=servers.map(server=>({value:server.name,label:`${server.name} · ${server.host}:${server.port}`}));
@@ -48,7 +49,8 @@ export default function ModelDeployment({record,onChange}:{record:Record;onChang
     {instances.length>0&&<Table size="small" rowKey="uid" dataSource={instances} pagination={{pageSize:10}} scroll={{x:650}} columns={[{title:'实例',dataIndex:'name'},{title:'结果',render:(_,row)=>row.ok===undefined?'待核验':row.ok?'已核验':'未通过'},
       {title:'运行镜像',render:(_,row)=><><div>{row.image}</div><Typography.Text type="secondary" copyable={!!row.image_id}>{row.image_id}</Typography.Text></>},{title:'详情',dataIndex:'detail'}]}/>}
     {!!record.inspection.image_receipt?.nodes?.length&&<Collapse items={[{key:'nodes',label:`查看全部 ${record.inspection.image_receipt.nodes.length} 个节点的预分发结果`,children:<Table rowKey="uid" size="small" pagination={{pageSize:10}} scroll={{x:650}} dataSource={record.inspection.image_receipt.nodes} columns={[{title:'节点',dataIndex:'node'},{title:'结果',render:(_,row)=>row.ok?'摘要已验证':'未通过'},{title:'镜像摘要',dataIndex:'digest'}]}/>}]} />}
-    <Typography.Paragraph style={{whiteSpace:'pre-wrap',maxHeight:260,overflow:'auto'}}>{record.logs.map(log=>`${new Date(log.at).toLocaleTimeString('zh-CN')}  ${log.message}`).join('\n')||'创建记录不会变更远程服务。'}</Typography.Paragraph>
+    <DeploymentSshLinks control={record.target.control_server} file={record.target.file_server}/>
+    <DeploymentLogs key={record.id} id={record.id}/>
     {confirm&&<Modal open title={confirm==='rollback'?'恢复此记录前的旧版本？':image?'更新全部指定实例的镜像？':'使此模型在全部指定实例生效？'} okText={confirm==='rollback'?'确认恢复':'确认生效'} cancelText="返回" confirmLoading={!!busy}
       okButtonProps={{danger:confirm==='rollback'}} onCancel={()=>{if(!busy)setConfirm(undefined);}} onOk={()=>void act(confirm)}>
       <Typography.Paragraph>{record.target.control_server} · {record.target.workload||record.target.containers.join('、')}</Typography.Paragraph>

@@ -6,11 +6,12 @@ async page => {
   const releases=[{id:'release-one',run_id:run.id,name:'Detector',version:'v1',runtime:'triton_plan',status:'ready',created_at:now,source:{artifact_path:'model.engine'},archive:{path:'F:/archive/model.zip',bytes:7,sha256:'a'.repeat(64),archived_at:now}}];
   const target=(id,kind,server)=>({id,name:id,kind,target:{environment:kind==='model'?'docker':'docker_kafka',runtime:'triton_plan',file_server:server,control_server:server,repository:'/data/models',model_name:'detector',containers:[kind==='model'?'triton':'nexusai-worker'],namespace:'ai',container:'triton-server'},current:{state:'unmanaged'}});
   const targets=[target('model-one','model','control-one'),target('model-two','model','control-two'),target('image-one','image','control-one'),target('image-two','image','control-two')];
-  let records=[],batchIndex=0;
-  await page.route('**/api/**',async route=>{
+  let records=[],batchIndex=0,userRole='admin';
+  await page.route('http://127.0.0.1:3000/api/**',async route=>{
     const request=route.request(),url=new URL(request.url()),path=url.pathname,method=request.method();if(!path.startsWith('/api/'))return route.continue();
     calls.push({method,path});if(method!=='GET')writes.push({method,path,input:request.postData()?request.postDataJSON():null});
-    if(path==='/api/auth/me')return route.fulfill({json:{id:1,tenant_id:1,username:'fixture',role:'admin',is_active:true,created_at:now}});
+    if(path==='/api/auth/me')return route.fulfill({json:{id:1,tenant_id:1,username:'fixture',role:userRole,is_active:true,created_at:now}});
+    if(path.endsWith('/logs'))return route.fulfill({json:{content:'fixture update log',truncated:false,source:'updates',server:'control-one',status:'staged',collected_at:now,instances:[],selected_instance:null}});
     if(path==='/api/model-deployments/servers')return route.fulfill({json:[{name:'control-one',host:'10.0.0.1',user:'root',port:22},{name:'control-two',host:'10.0.0.2',user:'root',port:22}]});
     if(path==='/api/model-deployments/sources')return route.fulfill({json:{items:[run],has_more:false}});
     if(path==='/api/training/runs/source')return route.fulfill({json:run});
