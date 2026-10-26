@@ -90,6 +90,7 @@ async def process_one(sessions):
         await db.commit()
     result={};evidence={};failure=None;stage='detection'
     policy=AutomationConfig.model_validate(job.config)
+    review_labels=policy.labels if job.kind=='review' and policy.labels else job.label_schema['labels']
     async def still_current():
         async with sessions() as check:
             return bool(await check.scalar(select(AutomationItem.id).join(AutomationJob).where(
@@ -116,7 +117,7 @@ async def process_one(sessions):
         elif policy.auto_review and (job.kind=='review' or high or not boxes):
             reviewer=ModelServiceConfig.model_validate(job.models['reviewer']['config'])
             stage='audit'
-            evidence=await audit_image(reviewer,content,boxes,labels,policy.crop_expansion,policy.prompt,should_continue=still_current)
+            evidence=await audit_image(reviewer,content,boxes,review_labels,policy.crop_expansion,policy.prompt,should_continue=still_current)
         else:evidence={'boxes':[],'completeness':'uncertain','negative':'uncertain',
             'reason':'检测框置信度未全部严格超过自动通过阈值' if policy.auto_review else '此任务未启用大模型审核'}
         approved=not unknown and auto_pass(boxes,evidence,policy.auto_approve_confidence,job.kind=='preannotate')
@@ -144,7 +145,7 @@ async def process_one(sessions):
         else:
             evidence={**evidence,'provenance':dict(content_hash=current.content_hash,
                 models={kind:dict(id=value['id'],revision=value['revision'],name=value['config']['name'],model_name=value['config']['model_name']) for kind,value in current_job.models.items()},
-                project_labels=current_job.label_schema['labels'],crop_expansion=policy.crop_expansion,
+                project_labels=current_job.label_schema['labels'],review_labels=review_labels,crop_expansion=policy.crop_expansion,
                 auto_approve_confidence=policy.auto_approve_confidence,reviewed_at=datetime.utcnow().isoformat()+'Z')}
             current.result=result;current.evidence=evidence;current.reason=reason[:1000]
             if failure:current.status='failed'

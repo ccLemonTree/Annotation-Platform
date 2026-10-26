@@ -48,6 +48,36 @@ def test_crop_expansion_and_confidence_gate():
     assert auto_pass([box],{**evidence,'rounds':[],'template_version':1},.9,True)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('selected',[['bike'],[]])
+@pytest.mark.parametrize('outside_verdict',['pass','fail'])
+async def test_review_uses_selected_completeness_scope_without_dropping_existing_boxes(client,auth_headers,ready,test_engine,test_db,test_project,test_asset,monkeypatch,selected,outside_verdict):
+    from services import automation
+    test_project.label_schema={'labels':['person','bike']};await test_db.commit()
+    data=dict(boxes=[dict(x=1,y=2,width=10,height=20,label=label) for label in ['person','bike']],negative=False)
+    annotation=client.post('/api/annotations',headers=auth_headers,json={'asset_id':str(test_asset.id),'annotation_data':data,'base_version':0}).json()
+    async def audit(config,content,boxes,labels,*args,**kwargs):
+        assert labels==(selected or ['person','bike'])
+        assert boxes==data['boxes']
+        return dict(boxes=[dict(index=i,verdict=outside_verdict if i==0 else 'pass',reason='逐框检查') for i in range(2)],completeness='pass',negative='uncertain',reason='所选类别无遗漏')
+    monkeypatch.setattr(automation,'audit_image',audit)
+    response=client.post('/api/automation/jobs',headers=auth_headers,json={**ready,'kind':'review','config':{'labels':selected}})
+    assert response.status_code==201,response.text
+    await automation.process_one(async_sessionmaker(test_engine,expire_on_commit=False))
+    items=client.get('/api/automation/jobs/'+response.json()['id']+'/items',headers=auth_headers).json()['items']
+    assert items[0]['status']==('approved' if outside_verdict=='pass' else 'needs_review')
+    assert items[0]['evidence']['provenance']['review_labels']==(selected or ['person','bike'])
+    current=client.get('/api/annotations/'+annotation['id'],headers=auth_headers).json()
+    assert current['annotation_data']==data and current['version']==1
+
+
+def test_review_scope_rejects_unknown_classes_but_detector_prompts_allow_aliases(client,auth_headers,ready):
+    invalid=client.post('/api/automation/jobs',headers=auth_headers,json={**ready,'kind':'review','config':{'labels':['not-project-class']}})
+    assert invalid.status_code==400 and '审核类别' in invalid.json()['detail']
+    detector=client.post('/api/automation/jobs',headers=auth_headers,json={**ready,'config':{'labels':['a walking person']}})
+    assert detector.status_code==201,detector.text
+
+
 def test_structured_review_must_cover_every_box_and_allow_uncertainty():
     from services.automation_review import validate_review
     valid=dict(boxes=[dict(index=0,verdict='uncertain',reason='遮挡')],completeness='uncertain',negative='uncertain',reason='需人工')
@@ -69,6 +99,8 @@ async def test_qwen_review_sends_overview_and_separate_crops_with_three_image_li
     seen=[]
     def handle(request):
         body=json.loads(request.content);content=body['messages'][0]['content']
+        assert '未选类别不要求补标，不得以其漏标判定失败' in content[0]['text']
+        assert '已有框仍须逐框检查' in content[0]['text']
         indices=expected_rounds[len(seen)];seen.append(indices)
         pictures=[row for row in content if row['type']=='image_url']
         assert len(pictures)==1+len(indices)<=3

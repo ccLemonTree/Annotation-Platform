@@ -4,6 +4,7 @@ import JsonView from '../JsonView';
 
 export default function AutomationEvidence({ item }: { item: AutomationItem }) {
   const evidence = item.evidence || {};
+  const provenance = evidence.provenance as Record<string, unknown> | undefined;
   const verdict = (value: unknown) => value === 'pass' ? '通过' : value === 'fail' ? '不通过' : value === 'uncertain' ? '待确认' : '缺少证据';
   const boxes = Array.isArray(evidence.boxes) ? evidence.boxes.filter((box): box is Record<string, unknown> => !!box && typeof box === 'object') : [];
   return <>
@@ -12,6 +13,7 @@ export default function AutomationEvidence({ item }: { item: AutomationItem }) {
       { key: 'asset', label: '资产 ID', children: item.asset_id },
       { key: 'annotation', label: '标注 / 版本', children: `${item.annotation_id || '尚无标注'} / ${item.annotation_version ?? '—'}` },
       { key: 'reason', label: '原因', children: item.reason || '—' },
+      { key: 'scope', label: '实际漏标检查类别', children: Array.isArray(provenance?.review_labels) ? provenance.review_labels.join('、') : '历史记录未保存有效类别范围；需新建任务重新审核' },
     ]} />
     <Alert type="info" title="逐框结论、整图完整性与负样本结论以服务端完整证据为准；缺少证据不能视为通过。" />
     <Space wrap style={{ marginBlock: 16 }}>

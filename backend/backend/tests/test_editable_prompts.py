@@ -94,7 +94,7 @@ async def test_saved_review_reaches_request_with_runtime_context_and_validation(
         text = json.loads(request.content)['messages'][0]['content'][0]['text']
         seen.append(text)
         assert '重点核对人员是否遮挡。' in text and '本次检查安全帽' in text
-        assert '项目类别：' in text and 'person' in text and '本轮编号：[0]' in text
+        assert '本任务整图完整性及负样本检查仅限以下类别：' in text and 'person' in text and '本轮编号：[0]' in text
         assert '"completeness"' in text and '"boxes"' in text
         return httpx.Response(200, json={'choices': [{'message': {'content': '{}'}}]})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:

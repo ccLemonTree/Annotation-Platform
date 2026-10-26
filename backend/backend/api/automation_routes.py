@@ -41,6 +41,8 @@ async def create_job(request:AutomationCreate,db:AsyncSession=Depends(get_db),us
     project=await scoped_project(db,request.project_id,user.tenant_id)
     labels=(project.label_schema or {}).get('labels')
     if project.task_type!='detection' or not labels:raise HTTPException(400,'请选择已配置类别的检测项目')
+    if request.kind=='review' and any(label not in labels for label in request.config.labels):
+        raise HTTPException(400,'审核类别必须属于项目类别')
     models={}
     if request.kind=='preannotate':models['detector']=await model_snapshot(db,request.detector_id,user.tenant_id,'detection')
     if request.config.auto_review or request.kind=='review':models['reviewer']=await model_snapshot(db,request.reviewer_id,user.tenant_id,'caption')

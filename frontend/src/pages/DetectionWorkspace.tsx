@@ -180,8 +180,20 @@ export default function DetectionWorkspace() {
   const review = async (approved: boolean) => {
     if (!latest || dirty || readonly || negativeReviewRestricted || busy || drawing || jumping || saving.current || ((annotationLabel||reviewStatus)&&!neighbors)) return;
     saving.current=true;setBusy(true);setError('');
-    try { await reviewAnnotation(latest.id, { approved, review_comment: approved ? '人工核对通过' : '需要修改' }); await refresh(); }
-    catch { setError('审核失败，请重试或重新加载最新版本'); }
+    let reviewed=false;
+    try {
+      await reviewAnnotation(latest.id, { approved, review_comment: approved ? '人工核对通过' : '需要修改' });
+      reviewed=true;
+      if (approved) {
+        try {
+          const queue=await getAssetNeighbors(assetId,annotationLabel,reviewStatus);
+          if (queue.next_id) { go(queue.next_id); return; }
+          notice.info('审核已通过，当前筛选没有下一张图片');
+        } catch { notice.warning('审核已通过，但下一张读取失败，请手动切图或重新加载'); }
+      }
+      await refresh();
+    }
+    catch { setError(reviewed?'审核已完成，但页面刷新失败，请重新加载最新版本':'审核失败，请重试或重新加载最新版本'); }
     finally { saving.current=false;setBusy(false); }
   };
   const previewRemoval=async()=>{
@@ -364,7 +376,7 @@ export default function DetectionWorkspace() {
     <Modal title="标注快捷键" open={showShortcuts} onCancel={() => setShowShortcuts(false)} footer={null}>
       <p>Ctrl/Cmd+S 保存；Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 或 Ctrl+Y 重做。</p>
       <p>Delete/Backspace 删除选中框；B 画框；V 选择；1–9 选择项目类别并修改选中框类别。</p>
-      <p>R 审核通过当前图片，不自动切图；须为最新已保存版本，负样本仍需管理员审核。标签筛选按最新已保存标注生效，前后切图和序号跳转保持该范围。</p>
+      <p>R 审核通过后自动进入当前筛选的下一张，末张会提示；须为最新已保存版本，负样本仍需管理员审核。标签筛选按最新已保存标注生效，前后切图和序号跳转保持该范围。</p>
       <p>N 清空当前图片的全部框并标记负样本，可撤销；手动保存或切图时保存。在上一张与下一张之间输入图片序号，回车跳转，有修改时先自动保存。</p>
       <p>A/D 或左右方向键切换图片（先自动保存，失败不切换）；Tab/Shift+Tab 在聚焦的画布中选择下一个/上一个框，到边缘后继续按可离开画布；Esc 取消拖动或选择。</p>
       <p>滚轮缩放；Ctrl/空格拖动平移；Shift 拖动在已有框上强制画框；Alt 点击循环选择重叠框。</p>

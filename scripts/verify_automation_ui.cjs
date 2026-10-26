@@ -33,7 +33,7 @@ async (page) => {
     if (path==='/api/auth/me') return route.fulfill({json:{id:1,username:'fixture',role}});
     if (path==='/api/projects') {
       const p=Number(url.searchParams.get('page')||1); projectPages.push(p);
-      const projects=p===1 ? Array.from({length:100},(_,i)=>({id:'p'+(i+1),project_name:'检测项目 '+(i+1),task_type:'detection',label_schema:{labels:['fire']}}))
+      const projects=p===1 ? Array.from({length:100},(_,i)=>({id:'p'+(i+1),project_name:'检测项目 '+(i+1),task_type:'detection',label_schema:{labels:['fire','person']}}))
         : [{id:'p101',project_name:'分页末尾项目 101',task_type:'detection',label_schema:{labels:['fire']}}];
       return route.fulfill({json:paginate(projects,url,101)});
     }
@@ -91,13 +91,13 @@ async (page) => {
     import Provider from '/src/ui/PlatformProvider.tsx';
     import AutomationPage from '/src/pages/AutomationPage.tsx';
     export default function App(){return React.createElement(BrowserRouter,null,React.createElement(Provider,null,React.createElement('main',{style:{padding:20,minWidth:0}},React.createElement(AutomationPage))));}` }));
-  await page.route('**/api/**',handler);
+  await page.route(origin+'/api/**',handler);
   const choose = async (name,text) => {
     await page.getByRole('combobox',{name,exact:true}).click();
     if(name.includes('项目'))await page.getByRole('combobox',{name,exact:true}).fill(text);
     await page.locator('.ant-select-dropdown:visible .ant-select-item-option-content').getByText(text,{exact:true}).click();
   };
-  const goto=async()=>{await page.goto(origin+'/automation');await page.getByRole('heading',{name:'预标注与AI审核',exact:true}).waitFor();};
+  const goto=async()=>{await page.goto(origin+'/automation');await page.getByRole('button',{name:'刷新任务',exact:true}).waitFor();};
   const row=id=>(id.startsWith('job-')?page.locator('.ant-table-wrapper').first():page).getByRole('row').filter({hasText:id});
   try {
     await page.setViewportSize({width:1440,height:1000});await goto();
@@ -135,10 +135,14 @@ async (page) => {
     if(writes.filter(w=>w.path==='/api/automation/jobs').length!==1)throw Error('Closing form submitted a job');
     await page.getByRole('button',{name:'创建任务',exact:true}).click();
     await choose('任务项目','检测项目 1');await choose('任务类型','AI审核（已有标注）');
+    const scope=page.getByRole('combobox',{name:'审核类别',exact:true});
+    await scope.locator('xpath=ancestor::*[contains(@class,"ant-form-item-control")][1]').locator('.ant-select-selection-item').filter({hasText:'person'}).locator('.ant-select-selection-item-remove').click();
+    await page.getByText('仅检查所选类别是否漏标；留空检查全部项目类别。未选类别无需补标，所有已有框仍逐框核验。历史审核结论不会自动更新。',{exact:true}).waitFor();
     await page.getByRole('textbox',{name:'审核提示词',exact:true}).fill('检查全部项目类别有无遗漏');
     await page.getByRole('spinbutton',{name:'自动通过置信度',exact:true}).fill('0.95');
     await page.getByRole('button',{name:'提交任务',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
     const reviewPayload=writes.filter(w=>w.path==='/api/automation/jobs')[1].payload;
+    if(JSON.stringify(reviewPayload.config.labels)!=='["fire"]')throw Error('Review scope retained removed person category');
     if(reviewPayload.kind!=='review'||'asset_ids' in reviewPayload||'detector_id' in reviewPayload||reviewPayload.config.crop_expansion!==.2||reviewPayload.config.auto_approve_confidence!==.95||reviewPayload.config.prompt!=='检查全部项目类别有无遗漏')throw Error('Whole project review contract wrong');
     checks.push('closing form has no writes, whole project review omits asset scope and detector, modified threshold/prompt');
     await row('job-running').getByRole('button',{name:'取消任务',exact:true}).click();
@@ -263,6 +267,6 @@ async (page) => {
     throw Error(error.message+'\nDOM: '+(await page.locator('body').innerText()).slice(-6500));
   } finally {
     if(release)release();await page.clock.resume().catch(()=>{});
-    await page.goto('about:blank');await page.unroute('**/api/**',handler);await page.unroute(appPattern);
+    await page.goto('about:blank');await page.unroute(origin+'/api/**',handler);await page.unroute(appPattern);
   }
 }
