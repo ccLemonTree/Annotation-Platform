@@ -1,0 +1,74 @@
+{
+  "date": "2026-10-26",
+  "scope": "Administrator preview and removal of exact-label boxes from the current detection project's full annotation scope",
+  "approved_scope": "Current project's all images containing person boxes; images and other classes retained",
+  "implementation": {
+    "preview": "POST /api/projects/{project_id}/annotations/remove-label/preview",
+    "apply": "POST /api/projects/{project_id}/annotations/remove-label",
+    "requires_administrator": true,
+    "stale_preview_rejected": true,
+    "atomic_transaction": true,
+    "history_preserved": true,
+    "changed_annotations_pending_review": true,
+    "crop_annotation_scope_preserved": true,
+    "other_projects_library_imports_and_export_snapshots_preserved": true,
+    "project_category_configuration_preserved": true,
+    "migration": false,
+    "dependencies_added": false
+  },
+  "tests": {
+    "red": "Feature tests returned 404 before the two new endpoints existed",
+    "backend_command": ".venv/Scripts/python.exe -m pytest tests/test_project_label_removal.py tests/test_p2_annotations.py tests/test_project_labels.py tests/test_label_sync.py tests/test_annotation_scope.py tests/test_annotation_analytics.py tests/test_multimodal_annotations.py -q --disable-warnings --tb=short",
+    "backend_passed": 60,
+    "isolated_postgres_passed": 1,
+    "isolated_postgres_affected_images": 1280,
+    "isolated_postgres_concurrent_seconds": 16.77,
+    "concurrent_requests": "one success and one stale-preview 409; exactly two versions per image",
+    "temporary_database_cleanup_verified": true,
+    "transaction_failure_rolls_back_all_changes": true,
+    "frontend_build": "passed with existing chunk size warning",
+    "targeted_lint": "passed with 5 existing workspace warnings",
+    "browser_checks": [
+      "Cancel before preview sends no removal request",
+      "Preview uses whole project and reports boxes, images and resulting negatives; changing label invalidates preview",
+      "Stale-preview 409 preserves current boxes and requires another preview",
+      "Successful removal refreshes boxes, version, review state and neighbors, clearing the removed-label filter",
+      "Unsaved local edits block the action",
+      "Previous version retains person boxes and is read-only",
+      "Zero matches disable confirmation; dialog fits 390px viewport",
+      "Non-administrator cannot see removal controls"
+    ],
+    "browser_delete_requests_intercepted": 2,
+    "browser_successful_mock_deletions": 1,
+    "real_business_delete_requests": 0
+  },
+  "live_readonly_preview": {
+    "project_id": "79f9b4de-d798-4a43-88f0-2a05b19c65e3",
+    "project_name": "电瓶车进电梯检测",
+    "label": "person",
+    "total_images": 9330,
+    "affected_images": 1264,
+    "removed_boxes": 1844,
+    "empty_images": 725,
+    "reviewed_images": 1264,
+    "authenticated_preview_http": 200,
+    "unauthenticated_preview_http": 401,
+    "health_http": 200,
+    "frontend_proxy_verified": true,
+    "business_row_fingerprints_unchanged": true,
+    "active_tasks_before_reload": 0
+  },
+  "evidence": [
+    "output/project-label-removal-ui.txt",
+    "output/project-label-removal-postgres.xml",
+    "output/project-label-removal-live-preview.json",
+    "output/playwright/project-label-removal-preview.png",
+    "output/playwright/project-label-removal-desktop.png",
+    "output/playwright/project-label-removal-mobile.png"
+  ],
+  "limits": [
+    "The actual project was previewed only; the user must confirm the operation in the new dialog",
+    "Empty results are pending-review negative samples and require administrator review",
+    "Existing frozen exports retain their original annotations"
+  ]
+}

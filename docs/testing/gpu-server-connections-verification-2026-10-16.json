@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-16",
+  "timezone": "Asia/Shanghai",
+  "feature": "GPU多服务器IP及密码连接管理",
+  "page": "/gpu-resources",
+  "implemented": [
+    "新增服务器IP/SSH端口/用户名/密码，默认22和root",
+    "多服务器选择、直接保存、编辑/启停采集/删除，原ssh-manager连接保留只读",
+    "未保存连接测试，密码留空保留/重填替换/明确清除，目标变化须重填",
+    "Fernet认证加密存储，响应只有has_password，浏览器不持久保存密码",
+    "动态凭据只走stdin及MCP子进程临时环境，不写明文或全局配置",
+    "固定NVIDIA查询、独立缓存、修改/删除拒绝迟到结果",
+    "缺密码和停用不轮询，30秒自动刷新、隐藏暂停及失败陈旧提示",
+    "无MIG能力的NVIDIA卡不误报MIG状态未知"
+  ],
+  "verification": {
+    "backend_full": {
+      "passed": 550,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "warnings": 1651,
+      "seconds": 447.32,
+      "junit": "backend/backend/.backups/gpu-server-connections/full-tests.xml",
+      "enabled": ["P0_POSTGRES_INTEGRATION", "P1_POSTGRES_INTEGRATION", "P2_POSTGRES_INTEGRATION", "P3_POSTGRES_INTEGRATION", "P2_DATASET_POSTGRES_INTEGRATION", "P0_STORAGE_CLEANUP_POSTGRES", "SEMANTICS_POSTGRES_INTEGRATION", "GPU_MCP_INTEGRATION", "P2_LOADER_PYTHON"]
+    },
+    "gpu_scope": {
+      "passed": 92,
+      "modules": {"test_gpu_resources": 14, "test_gpu_servers": 65, "test_gpu_connections_bridge": 7, "test_gpu_servers_postgres": 5, "test_gpu_mcp_integration": 1},
+      "coverage": ["原解析/缓存/权限兼容", "IP/端口/账号/密码严格校验", "加密及密钥轮换", "留空/替换/清除", "租户隔离和配额", "未保存测试无数据库写入", "密码不在argv/缓存/错误/响应", "真实PG创建/修改/清除/删除", "采集期间配置变化拒绝旧结果", "017结构和拒绝覆盖"]
+    },
+    "real_mcp_dynamic_password": {
+      "test": "backend/backend/tests/test_gpu_mcp_integration.py",
+      "script": "scripts/verify_gpu_mcp.mjs",
+      "scope": "实际ssh-manager MCP及Node桥，对本机临时SSH端点；GPU输出为夹具，未把夹具称作真实硬件",
+      "correct_password": true,
+      "unicode_newline_special_characters": true,
+      "wrong_password_rejected": true,
+      "fixed_gpu_queries": 1,
+      "credentials_in_output": false,
+      "global_ssh_configuration_unchanged": true
+    },
+    "frontend_state": {"script": "scripts/verify_gpu_resources.cjs", "passed": 11, "scope": "实际GpuSnapshot逻辑，React/AntD为内存替身"},
+    "browser_fixture": {
+      "script": "scripts/verify_gpu_servers.cjs",
+      "passed_groups": 6,
+      "intercepted_writes": 11,
+      "real_business_writes": 0,
+      "coverage": ["原默认连接", "跨服务器迟到保护及停用/缺密码停止采集", "未保存测试及直接保存/错误", "编辑不回显密码及保留/替换/清除", "390px/删除确认与重试", "403及普通用户停止访问/无凭据持久化"]
+    },
+    "browser_live": {
+      "script": "scripts/verify_gpu_servers_live.cjs",
+      "passed_groups": 3,
+      "api_list_status": 200,
+      "api_default_resources_status": 200,
+      "real_gpu_count": 4,
+      "real_compute_process_count": 8,
+      "processes_complete": true,
+      "new_form_default_port": 22,
+      "new_form_default_username": "root",
+      "new_form_password_empty": true,
+      "real_business_writes": 0,
+      "page_and_console_errors_during_final_check": 0,
+      "screenshots": ["output/playwright/gpu-servers-live.png", "output/playwright/gpu-servers-form-live.png", "output/playwright/gpu-servers-form-live-narrow.png"],
+      "visual_inspection": "桌面及390px新增表单已检查；表格内部滚动，页面无横向溢出"
+    },
+    "frontend_build": {"exit_code": 0, "scope": "TypeScript、主平台及SmartEye双入口", "existing_large_chunk_warning": true},
+    "frontend_lint": {"exit_code": 0, "warnings_remain": true},
+    "pip_check": "No broken requirements found"
+  },
+  "database_and_data": {
+    "migration": "016 -> 017",
+    "new_table": "gpu_servers",
+    "new_table_rows_after_verification": 0,
+    "original_tables_in_backup": 42,
+    "changed_business_tables": [],
+    "expected_changes": "Alembic版本；核对排除正常登录时间字段",
+    "original_files": 4676,
+    "file_sha256_unchanged": true,
+    "private_backup": "backend/backend/.backups/gpu-server-connections/database.json",
+    "verification_record": "backend/backend/.backups/gpu-server-connections/verification.json"
+  },
+  "runtime_at_verification": {"frontend": "http://localhost:3000", "backend": "http://127.0.0.1:8000", "backend_launcher_pid": 36044, "backend_listener_pid": 21444, "future_operations_require_fresh_ownership_check": true},
+  "boundaries": [
+    "尚未获得并验证其他真实服务器密码；已验证原A100和完整MCP密码连接链路，不在业务库写假服务器",
+    "远端需要Linux、SSH、Python3和nvidia-smi；不安装驱动、不修改服务或停止进程",
+    "无训练调度、GPU配额预留、抢占或历史曲线；剩余显存不等于可分配配额",
+    "GPU_CREDENTIAL_KEY可配置独立密钥，未配时从JWT密钥派生；相关密钥轮换需重存密码",
+    "每租户最多200条连接，单后端内存缓存；未验收200台真实服务器并发或多实例缓存",
+    "原ssh-manager连接凭据未迁移到平台，管理员接口兼容保留"
+  ]
+}

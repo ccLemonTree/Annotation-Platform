@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-14",
+  "request": "每个图片集独立配置分辨率与场景分类；用户补充同集相同图片只保留一张，场景分类跟原图走",
+  "final_semantics": ["每个图片集独立持久化阈值、分类开关、模型地址/名称与场景名单", "平台配置仅作为新图片集模板，后续模板修改不影响已有集", "同集按内容哈希去重，批量响应也只返回一张同内容图片", "同图跨集共享原图和场景结果；复用成功结果，不自动按第二个集再次推理", "未分类图排队时固定来源图片集规则；手动重分类需指定图片集，成功结果所有所属集可见", "分类失败保留图片与旧标签，attempt/来源集revision拒绝迟到结果", "分辨率沿用max(width,height)>=threshold，本次覆盖可选，空值按目标集规则"],
+  "backend": {
+    "full_suite_passed": 176,
+    "skipped": 0,
+    "warnings": 521,
+    "seconds": 113.77,
+    "postgres_enabled_tests": 7,
+    "real_sdk_enabled_tests": 6,
+    "pip_check": "No broken requirements found",
+    "focused_checks": {"passed": 26, "warnings": 54, "seconds": 8.67},
+    "red_evidence": ["原实现创建图片集405，独立规则用例失败", "同批上传重复图返回两条，去重响应用例失败后修复"],
+    "tests": ["tests/test_collection_ingest.py", "tests/test_collection_ingest_postgres.py", "tests/test_smarteye_runtime.py", "tests/test_scene_worker.py"],
+    "coverage": ["720/1080两个集独立规则", "模板更改不改变旧集", "同图两个集只调用一次模型、只存一份文件", "按第二个集手动重分类后两个集共享更新标签", "同集唯一成员与同批唯一响应", "跨租户配置拒绝、非成员重试拒绝", "来源图片集策略更新与重试拒绝旧结果", "SmartEye按平台集阈值及固定任务快照", "指定SmartEye目标集优先于平台名", "取消/裁剪输入/HTTP下载/ZIP等旧回归", "真实PG旧010结构升级011、已有标签/metadata与成员不变", "重复011升级不覆盖已定制集", "原审核/标注/冻结/SDK回归"]
+  },
+  "frontend": {
+    "build": "TypeScript + both Vite entries passed",
+    "editor_tests": 5,
+    "lint": "exit 0 with warnings",
+    "feature_browser_checks": 10,
+    "regression_browser_checks": 34,
+    "total_browser_checks": 44,
+    "feature_scripts": ["scripts/verify_scene_ingest_ui.cjs", "scripts/verify_scene_retry_ui.cjs", "scripts/verify_smarteye_ingest_ui.cjs"],
+    "regression_scripts": ["scripts/verify_image_library_ui.cjs", "scripts/verify_image_collections_ui.cjs", "scripts/verify_unified_ui.cjs"],
+    "checks": ["未选集时设置禁用，保存包含目标集ID且不改另一个集", "切换图片集加载不同阈值", "上传按目标集并可仅本次覆盖", "先创建空图片集再配置", "重试携带精确image_ids与collection_id", "SmartEye目标集/阈值/认证请求头", "图片库/图片集旧交互、桌面及390px与六组SmartEye布局"],
+    "scope": "浏览器创建/设置/上传/重试/关联/子平台查询及拉取写入全部拦截；实际读取已有原图、项目和配置",
+    "screenshots": ["output/playwright/image-scenes-library.png", "output/playwright/image-scenes-settings.png", "output/playwright/smarteye-ingest-mobile.png"],
+    "warnings": ["既有React/lint警告", "共享UI包约1035KB", "SmartEye Tailwind运行时提示"]
+  },
+  "runtime": {
+    "migration": "011 applied after private backup",
+    "real_requests": ["读取历史图片自己的720规则", "按图片集模型配置实际/models连接测试可用", "未传min_long_edge的719x719上传201/空数组/跳过1", "两份同内容原图上传201、唯一ID/唯一响应/原场景和metadata复用", "未传collection_id的手动重分类400", "SmartEye任务读取200及无认证设置401"],
+    "no_synthetic_business_images_created": true,
+    "original_scene_example_preserved": ["工厂", "高位摄像头"],
+    "backend_and_frontend_started_hidden": true,
+    "no_real_subordinate_or_paid_ai_calls": true
+  },
+  "data_protection": {
+    "projects": 19,
+    "project_image_references": 12,
+    "original_images": 6,
+    "annotation_versions": 10,
+    "annotation_events": 33,
+    "frozen_snapshots": 2,
+    "original_scene_results_and_records_unchanged": true,
+    "original_and_frozen_hashes_unchanged": true,
+    "collections_before_migration": 1,
+    "collections_after_migration": 1,
+    "collections_at_final_check": 2,
+    "additional_collection_during_checks": "1014，空集；保留检查期间的实际新增，不回退。浏览器测试的创建请求使用拦截，未创建此集",
+    "collection_members": 6,
+    "temporary_test_databases_remaining": 0
+  },
+  "limits": ["按完全相同文件内容哈希去重，未实现近似/裁剪图自动合并", "手动重分类影响原图在所有所属集的场景", "已存在图片不会因修改设置自动重新过滤/分类", "按平台名的SmartEye集首次处理图片时固定任务规则；同一任务重试复用旧规则", "单进程分类、EOS/真实子平台/生产Docker等既有边界不扩展"]
+}

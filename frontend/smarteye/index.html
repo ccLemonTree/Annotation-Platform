@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>数据拉取 · 图像数据平台</title>
+    <script src="/smarteye/tailwind.min.js"></script>
+    <link href="/smarteye/fonts/material-icons.css" rel="stylesheet" />
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              primary: "rgb(var(--ui-primary-rgb) / <alpha-value>)",
+              "background-light": "var(--ui-background)",
+              "background-dark": "var(--ui-background)",
+              "surface-dark": "var(--ui-surface)",
+              "surface-hover": "var(--ui-surface-raised)",
+            },
+            fontFamily: {
+              display: ["var(--ui-font)"],
+            },
+            borderRadius: {
+              DEFAULT: "0.25rem",
+              lg: "0.5rem",
+              xl: "0.75rem",
+              full: "9999px",
+            },
+          },
+        },
+      };
+    </script>
+
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/smarteye/index.tsx"></script>
+  </body>
+</html>

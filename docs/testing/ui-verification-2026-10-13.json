@@ -1,0 +1,380 @@
+{
+  "date": "2026-10-13",
+  "request": "使用ui-skills MCP统一主平台和内置SmartEye界面与组件",
+  "skills": [
+    {
+      "name": "ibelick/baseline-ui",
+      "source": "https://www.ui-skills.com/skills/ibelick/baseline-ui/llms.txt",
+      "fetched_via": "ui-skills MCP get_skill"
+    },
+    {
+      "name": "ibelick/fixing-accessibility",
+      "source": "https://www.ui-skills.com/skills/ibelick/fixing-accessibility/llms.txt",
+      "fetched_via": "ui-skills MCP get_skill"
+    }
+  ],
+  "architecture": {
+    "frontend_entries": [
+      "src/main.tsx",
+      "smarteye/index.tsx"
+    ],
+    "shared_provider": "src/ui/PlatformProvider.tsx",
+    "tokens": "src/ui/tokens.css",
+    "business_api_unchanged": true,
+    "new_dependencies": [],
+    "embedded_same_origin_iframe": true
+  },
+  "build": {
+    "exit_code": 0,
+    "warning_large_chunks": true,
+    "dual_entry": true,
+    "shared_provider": true
+  },
+  "lint": {
+    "exit_code": 0,
+    "warnings": 36,
+    "errors": 0
+  },
+  "browser": {
+    "total_checks": 58,
+    "visual": [
+      {
+        "name": "desktop 工作概览",
+        "width": 1440,
+        "scrollWidth": 1440,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "mobile 工作概览",
+        "width": 390,
+        "scrollWidth": 390,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "desktop 项目管理",
+        "width": 1440,
+        "scrollWidth": 1440,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "mobile 项目管理",
+        "width": 390,
+        "scrollWidth": 390,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "desktop 图片管理",
+        "width": 1440,
+        "scrollWidth": 1440,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "mobile 图片管理",
+        "width": 390,
+        "scrollWidth": 390,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "desktop 标注与审核",
+        "width": 1440,
+        "scrollWidth": 1440,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "mobile 标注与审核",
+        "width": 390,
+        "scrollWidth": 390,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "desktop 检测标注工作台",
+        "width": 1440,
+        "scrollWidth": 1440,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "mobile 检测标注工作台",
+        "width": 390,
+        "scrollWidth": 390,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop 检测查询",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile 检测查询",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop 台账查询",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile 台账查询",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop 台账下载",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile 台账下载",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop 智搜下载",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile 智搜下载",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop AI 生图",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile AI 生图",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye desktop 工具任务",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye mobile 工具任务",
+        "width": 300,
+        "scrollWidth": 300,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      },
+      {
+        "name": "SmartEye destination and task drawer",
+        "width": 1166,
+        "scrollWidth": 1166,
+        "primary": "#2563eb",
+        "background": "#f5f7fb",
+        "dark": false
+      }
+    ],
+    "interactions": {
+      "count": 27,
+      "checks": [
+        "新建项目 retains input",
+        "新建项目 keyboard tab cycle",
+        "新建项目 Escape closes",
+        "上传资产 retains input",
+        "上传资产 keyboard tab cycle",
+        "上传资产 Escape closes",
+        "检测数据导出 retains input",
+        "检测数据导出 keyboard tab cycle",
+        "检测数据导出 Escape closes",
+        "legacy detection-query route preserved",
+        "新建下载任务 retains input",
+        "新建下载任务 keyboard tab cycle",
+        "新建下载任务 Escape closes",
+        "更新设备 retains input",
+        "更新设备 keyboard tab cycle",
+        "更新设备 Escape closes",
+        "新建监听任务 retains input",
+        "新建监听任务 keyboard tab cycle",
+        "新建监听任务 Escape closes",
+        "AI 生图历史 retains input",
+        "AI 生图历史 keyboard tab cycle",
+        "AI 生图历史 Escape closes",
+        "mobile overflow navigation remains accessible",
+        "mobile task drawer has no page overflow",
+        "mobile login no overflow",
+        "login field validation inline",
+        "registration labels retained"
+      ]
+    },
+    "task_controls": {
+      "scope": "browser fixtures only; no real tasks modified",
+      "checks": [
+        "cancel state refresh",
+        "retry state refresh",
+        "operation error inline",
+        "authentication retained",
+        "operation destination headers absent"
+      ],
+      "calls": [
+        {
+          "id": "ui-fixture-running",
+          "operation": "cancel",
+          "authenticated": true,
+          "destinationHeader": false
+        },
+        {
+          "id": "ui-fixture-failed",
+          "operation": "retry",
+          "authenticated": true,
+          "destinationHeader": false
+        },
+        {
+          "id": "ui-fixture-running",
+          "operation": "retry",
+          "authenticated": true,
+          "destinationHeader": false
+        }
+      ]
+    },
+    "previews": {
+      "checks": [
+        "detection details modal",
+        "shared original preview decoded",
+        "preview Escape closes"
+      ],
+      "scope": "browser query fixtures only; no upstream calls"
+    },
+    "desktops": {
+      "width": 1440,
+      "height": 1000
+    },
+    "narrow": {
+      "width": 390,
+      "height": 844
+    },
+    "task_and_query_fixtures": "browser-only interception, removed in finally; no real task action or external query",
+    "console": "real page navigation has no errors; inherited Tailwind runtime warning remains; fixture 409 is deliberate"
+  },
+  "regression": {
+    "problem": "台账新建任务弹窗点击输入框时立即关闭",
+    "before": {
+      "formStillVisible": false
+    },
+    "after": {
+      "formRetainsInput": true,
+      "escapeCloses": true
+    },
+    "fix": "reuse existing AntD Modal/Drawer with standard focus handling; no overlay parent click handler"
+  },
+  "data_protection": {
+    "database": {
+      "projects": {
+        "count": 19,
+        "unchanged": true
+      },
+      "assets": {
+        "count": 6,
+        "unchanged": true
+      },
+      "annotations": {
+        "count": 4,
+        "unchanged": true
+      },
+      "export_snapshots": {
+        "count": 2,
+        "unchanged": true
+      },
+      "alembic_version": "007",
+      "smarteye_tasks": 0,
+      "configured_platforms": 99
+    },
+    "live_api": [
+      {
+        "path": "/health",
+        "status": 200
+      },
+      {
+        "path": "/api/stats/dashboard",
+        "status": 200
+      },
+      {
+        "path": "/api/smarteye/tasks",
+        "status": 200
+      },
+      {
+        "path": "/api/smarteye/platform-list",
+        "status": 200
+      }
+    ]
+  },
+  "scope_limits": [
+    "未启动真实下级平台拉取或付费AI生成",
+    "没有模型服务部署或预标注联调",
+    "未执行后端回归、PG隔离测试和训练加载器测试，本轮没有修改后端",
+    "窄屏为Chromium 390px视口；真实移动设备与其他浏览器未验收",
+    "未做完整WCAG审计",
+    "原Tailwind浏览器运行脚本及大包提示仍保留",
+    "任务按钮、查询结果和图片预览含明确标记的浏览器模拟验收；不等于真实业务平台验收"
+  ],
+  "reproduce": {
+    "cwd": "F:/hzxf/数据管理平台",
+    "requires": "已启动3000/8000、有效登录状态、test-img示例项目和对应资产。认证状态保存在忽略的 .backups。",
+    "commands": [
+      "npm run build (frontend)",
+      "npm run lint (frontend)",
+      "npx --yes --package @playwright/cli playwright-cli -s=ui-check run-code --filename=scripts/verify_unified_ui.cjs",
+      "npx --yes --package @playwright/cli playwright-cli -s=ui-check run-code --filename=scripts/verify_unified_ui_interactions.cjs",
+      "npx --yes --package @playwright/cli playwright-cli -s=ui-check run-code --filename=scripts/verify_unified_ui_task_controls.cjs",
+      "npx --yes --package @playwright/cli playwright-cli -s=ui-check run-code --filename=scripts/verify_unified_ui_previews.cjs"
+    ]
+  }
+}

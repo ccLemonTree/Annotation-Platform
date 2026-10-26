@@ -1,0 +1,110 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #0A0D12;
+  color: #E2E8F0;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0F131C;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1E2636;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2D3748;
+}
+
+/* Element Plus 暗色主题覆盖 */
+.el-dialog {
+  background: #0F131C !important;
+  border: 1px solid #1E2636 !important;
+}
+
+.el-dialog__header {
+  border-bottom: 1px solid #1E2636 !important;
+}
+
+.el-dialog__title {
+  color: #E2E8F0 !important;
+}
+
+.el-form-item__label {
+  color: #A0AEC0 !important;
+}
+
+.el-input__inner {
+  background: #161D2B !important;
+  border-color: #1E2636 !important;
+  color: #E2E8F0 !important;
+}
+
+.el-textarea__inner {
+  background: #161D2B !important;
+  border-color: #1E2636 !important;
+  color: #E2E8F0 !important;
+}
+
+.el-select-dropdown {
+  background: #0F131C !important;
+  border: 1px solid #1E2636 !important;
+}
+
+.el-select-dropdown__item {
+  color: #E2E8F0 !important;
+}
+
+.el-select-dropdown__item:hover {
+  background: #161D2B !important;
+}
+
+.el-picker-panel {
+  background: #0F131C !important;
+  border: 1px solid #1E2636 !important;
+  color: #E2E8F0 !important;
+}
+
+.el-date-picker__header-label {
+  color: #E2E8F0 !important;
+}
+
+.el-picker-panel__icon-btn {
+  color: #A0AEC0 !important;
+}
+
+.el-date-table td.available:hover {
+  color: #38BDF8 !important;
+}
+
+.el-date-table td.current:not(.disabled) span {
+  background-color: #38BDF8 !important;
+}
+
+.el-empty {
+  padding: 60px 0;
+}
+
+.el-empty__description {
+  color: #718096 !important;
+}

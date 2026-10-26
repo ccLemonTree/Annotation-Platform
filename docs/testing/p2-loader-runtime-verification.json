@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "case": "live-yolo",
+      "images": 2
+    },
+    {
+      "case": "live-coco",
+      "images": 2
+    },
+    {
+      "case": "frozen-yolo",
+      "id": "38ffa339-6c6e-444a-b5c3-74fd96cc48a4",
+      "images": 2
+    }
+  ],
+  "core_rows_unchanged": true,
+  "old_frozen_hashes_unchanged": true,
+  "new_frozen_snapshot_id": "38ffa339-6c6e-444a-b5c3-74fd96cc48a4",
+  "new_frozen_split": "train-only; validation/test empty",
+  "approved_only": true
+}

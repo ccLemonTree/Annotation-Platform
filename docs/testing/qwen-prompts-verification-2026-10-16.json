@@ -1,0 +1,113 @@
+{
+  "date": "2026-10-16",
+  "feature": "Qwen3.8-27B核心提示词开放编辑",
+  "coverage": [
+    "模型管理：描述与AI审核核心指令，各1–8000字符，管理员编辑并可恢复默认",
+    "图片集设置：独立场景分类指令及恢复默认",
+    "单图描述和批量描述：支持单次/单批覆盖；审核任务保留追加要求"
+  ],
+  "backend": {
+    "isolated_postgres_migration_passed": 1,
+    "focused_passed": 69,
+    "full_passed": 580,
+    "full_skipped": 72
+  },
+  "frontend": {
+    "existing_build_warning": "大于500kB包体",
+    "build_exit_code": 0,
+    "existing_lint_warnings": 44,
+    "lint_exit_code": 0
+  },
+  "editor_browser": {
+    "checks": [
+      "saved complete instructions load",
+      "both instructions submitted with model config",
+      "saved instruction survives reopen",
+      "restore changes draft only until save",
+      "failed save retains input",
+      "mobile editor has no page overflow",
+      "scene prompt loads from collection config",
+      "scene prompt saved with collection settings",
+      "scene restore remains unsaved draft",
+      "batch caption override is submitted with job",
+      "no browser runtime errors: "
+    ],
+    "writesIntercepted": 5,
+    "scope": "All API calls mocked; no real config changes or model requests."
+  },
+  "ingress_regression": {
+    "checks": [
+      "copy only enabled chat address/model; manual editing and collection rules preserved; no model_service_id sent",
+      "model-list 404 safely falls back to existing manual settings"
+    ],
+    "writesIntercepted": 2
+  },
+  "semantics_regression": {
+    "checks": [
+      "scale and similarity caveat visible",
+      "selected images and model IDs submitted",
+      "per-item cancellation submitted",
+      "per-item retry submitted",
+      "batch cancellation submitted",
+      "text search and cosine result rendered",
+      "image search submitted with exclusive source",
+      "late result discarded after input changes",
+      "over-limit backend error visible",
+      "whole collection job submitted without truncating selection",
+      "no browser errors: "
+    ],
+    "interceptedWrites": 10,
+    "realBusinessWrites": 0,
+    "screenshot": "output/playwright/image-semantics.png"
+  },
+  "real_page_get_only": {
+    "checks": [
+      "real model default instructions render on desktop/mobile; cancel without save",
+      "real existing collection expands default scene instruction without rewriting saved settings"
+    ],
+    "readRequests": 30,
+    "writes": 0,
+    "runtimeErrors": [],
+    "scope": "Real local APIs and saved data, GET only, no inference/training/config writes."
+  },
+  "live_migration": {
+    "revision": "019",
+    "original_model_configs_unchanged": true,
+    "retained_business_hashes_unchanged": true,
+    "models": 8,
+    "running_training": 1,
+    "backup_created": true
+  },
+  "live_api": {
+    "api_gets_passed": 6,
+    "models": 8,
+    "training": [
+      {
+        "id": "053025f1-a981-43f2-a5cd-57f116045d09",
+        "status": "running",
+        "updated_at": "2026-10-16 15:01:10.647743",
+        "monitored_status": "running"
+      }
+    ],
+    "real_config_writes": 0
+  },
+  "final_retained_data_and_gpu_holds_unchanged": true,
+  "backend_runtime": {
+    "listener_pid": 43388,
+    "note": "后续操作前重新核对归属",
+    "launcher_pid": 16748,
+    "bind": "127.0.0.1:8000"
+  },
+  "screenshots": [
+    "output/playwright/prompt-editor-live-desktop.png",
+    "output/playwright/prompt-editor-live-mobile.png",
+    "output/playwright/prompt-scene-live-mobile.png"
+  ],
+  "limits": [
+    "新提示词实际效果尚未调用真实Qwen评估；HTTP请求内容使用隔离transport验证",
+    "真实页面只读检查；保存、恢复、失败和权限用隔离数据库/API验证，未改写现有提示词",
+    "系统追加输出约束，解析/逐框覆盖/负样本人审/置信度门槛由代码保持",
+    "已有任务使用快照，模型版本变化需新建批次；不会自动重算旧结果",
+    "未发送训练启动/停止命令；本机训练状态running及GPU hold保持，未独立登录远端检查训练质量"
+  ]
+}

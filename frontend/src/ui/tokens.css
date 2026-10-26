@@ -1,0 +1,50 @@
+:root {
+  --ui-primary: #699cff;
+  --ui-primary-rgb: 105 156 255;
+  --ui-primary-soft: #1b2e4d;
+  --ui-action: #2c62d7;
+  --ui-action-hover: #3d72e5;
+  --ui-background: #0b101b;
+  --ui-surface: #121b2a;
+  --ui-surface-raised: #192438;
+  --ui-sidebar: #0e1522;
+  --ui-text: #e8eef9;
+  --ui-muted: #a1afc4;
+  --ui-border: #28354a;
+  --ui-success: #7ddaba;
+  --ui-warning: #efc784;
+  --ui-error: #ff9393;
+  --ui-motion-fast: 160ms;
+  --ui-motion-enter: 240ms;
+  --ui-motion-ease: cubic-bezier(.2, .7, .2, 1);
+  --ui-radius: 8px;
+  --ui-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  color-scheme: dark;
+  font-family: var(--ui-font);
+  font-size: 14px;
+  color: var(--ui-text);
+  background: var(--ui-background);
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--ui-font); -webkit-font-smoothing: antialiased; }
+h1, h2, h3 { text-wrap: balance; letter-spacing: normal; }
+p { text-wrap: pretty; }
+button, input, select, textarea { font: inherit; }
+button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 3px; }
+button:disabled { cursor: not-allowed; }
+table, .ant-statistic, .ant-tag { font-variant-numeric: tabular-nums; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--ui-background); }
+::-webkit-scrollbar-thumb { background: var(--ui-border); border-radius: 4px; }
+.ant-btn { transition: background-color var(--ui-motion-fast), border-color var(--ui-motion-fast), color var(--ui-motion-fast), transform var(--ui-motion-fast); }
+.ant-btn:not(:disabled):not(.ant-btn-loading):active { transform: translateY(1px); }
+@keyframes ui-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Ant Design needs end events to remove closed overlays. */
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  .ant-btn:not(:disabled):not(.ant-btn-loading):active { transform: none; }
+}

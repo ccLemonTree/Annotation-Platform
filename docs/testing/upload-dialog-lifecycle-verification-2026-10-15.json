@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-15",
+  "scope": "修复关闭上传弹窗误暂停与重开时进度清零；只改前端及相关测试/说明",
+  "root_causes": [
+    "原open effect清理、onCancel与关闭按钮均调用abort，隐藏弹窗即终止整个前端队列",
+    "原每次打开将所有行done/summary/phase/percent清空，并重设图片集/门槛"
+  ],
+  "observed_red": "Error: Closing the modal aborted the active queue",
+  "implementation": [
+    "关闭弹窗只隐藏，保留File对象、目标规则、活动进度和完成结果",
+    "仅在首次打开空队列时填默认目标，明确修改图片集/门槛才重置待校验行",
+    "明确暂停与组件卸载才中止传输；阻止重复启动同一队列"
+  ],
+  "verification": {
+    "lifecycle_script": "scripts/verify_upload_dialog_lifecycle.cjs",
+    "lifecycle_checks_passed": 5,
+    "lifecycle_checks": [
+      "未开始的选择关闭重开保留，且不自动上传",
+      "上传中关闭重开保留活动队列、图片集和门槛",
+      "后台入库中关闭重开保留17项进度",
+      "弹窗隐藏时继续第二个文件",
+      "完成后重开保留两行完成统计，重复点击开始不再提交"
+    ],
+    "lifecycle_requests": {"initializations": 2, "parts": 6},
+    "regression_script": "scripts/verify_resumable_upload_ui.cjs",
+    "regression_checks_passed": 11,
+    "regression_scope": [
+      "断网/刷新重选只补缺片及稳定SHA256清单",
+      "重开已完成状态保留，明确改目标/改门槛重新初始化，0门槛可传递",
+      "暂停可用，文件夹选择属性、窄屏/操作按钮布局、无未捕获异常"
+    ],
+    "all_browser_upload_writes_intercepted": true,
+    "build": "TypeScript + Vite main/SmartEye双入口通过",
+    "lint_exit_code": 0,
+    "existing_lint_and_bundle_size_warnings_remain": true,
+    "full_backend_suite_rerun": false,
+    "previous_backend_verification": "resumable-upload-verification-2026-10-15.json:189项；本轮未改后端",
+    "screenshot": "output/playwright/upload-dialog-lifecycle.png",
+    "live_readonly_browser": {"known_archive_history_rows_completed": 2, "writes": 0, "screenshot": "output/playwright/upload-dialog-live-history.png"}
+  },
+  "live_readonly_snapshot": {
+    "time": "2026-10-15T10:44:27+08:00",
+    "completed_archives": 2,
+    "imported_images": 2109,
+    "filtered_images": 56,
+    "scene_counts": {"completed": 559, "pending": 1549, "processing": 1},
+    "backend_restarted": false,
+    "schema_migrated": false,
+    "synthetic_business_writes": 0
+  },
+  "limits": [
+    "仅关闭上传弹窗会继续队列；刷新、关闭标签或离开图片管理页仍需重选原文件续传",
+    "旧版本已经丢失的前端状态需要刷新后重选同文件、同目标/门槛并点击继续；已完成服务端会话复用，不重复传输",
+    "没有操作用户浏览器里的8个真实File对象；测试采用独立浏览器和受控响应",
+    "本轮不改串行上传/入库流程，也未做大包压力测试"
+  ]
+}

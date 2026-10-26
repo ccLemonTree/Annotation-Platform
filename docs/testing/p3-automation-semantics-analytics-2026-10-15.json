@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-15",
+  "scope": ["批量预标注", "Qwen人工框及模型框审核", "管理员负样本/不确定队列", "描述与完整向量检索", "质量流程与人工效率", "图片预览方向键跨页"],
+  "accepted_policy": {"confidence_default": 0.9, "comparison": "every box strictly greater than threshold AND Qwen boxes+completeness pass", "expansion_each_side": 0.2, "negative_final_review": "admin always", "preannotation": "unannotated assets only", "manual_geometry": "unchanged by AI"},
+  "backend": {
+    "full_passed": 362, "skipped": 0, "failures": 0, "warnings": 1172, "seconds": 342.92,
+    "flags": ["P0_POSTGRES_INTEGRATION", "P1_POSTGRES_INTEGRATION", "P2_POSTGRES_INTEGRATION", "P3_POSTGRES_INTEGRATION", "P2_DATASET_POSTGRES_INTEGRATION", "P0_STORAGE_CLEANUP_POSTGRES", "SEMANTICS_POSTGRES_INTEGRATION", "P2_LOADER_PYTHON"],
+    "supplemental_audit_tests_after_provenance_change": 10,
+    "postgres": "015 schema/unique/FK/index compatibility and preservation, concurrent two-job same-asset race, semantic SKIP LOCKED/late result/cancel/config/content changes; providers mocked in isolated workflow tests",
+    "regressions_fixed": ["negative queue serialization server-side updated_at expired attribute", "late manual review decision protection in addition to annotation version", "existing P2 PG fixture includes new review-queue dependency", "Qwen one-image and 4096-context limits", "MCP/DB secrets not added to public task output"],
+    "owned_failed_test_database": "exact named codex_p2 temporary database removed after owner, identity and zero-session verification; no unrelated databases removed"
+  },
+  "real_models": {
+    "qwen": {"model": "Qwen3.8-27B", "existing_image_boxes": 2, "structured_results": 2, "completeness": "pass", "box_verdicts": ["fail", "fail"], "business_writes": 0,
+      "deployed_limits": {"images_per_prompt": 1, "context_tokens": 4096}, "adaptation": "single contact sheet: overview plus up to two expanded crops, output budget 768, template v2"},
+    "semantics": {"caption": "real nonempty response", "image_embedding_dimensions": 2048, "text_embedding_dimensions": 2048, "business_writes": 0},
+    "note": "real model requests establish protocol and structured evidence, not model accuracy or autoapproval precision"
+  },
+  "frontend": {
+    "work_activity_node_tests": 4,
+    "browser_checks": {"automation": 13, "image_semantics": 11, "analytics": 9, "paged_preview": 5, "live_platform": 5},
+    "browser_writes": "all fixture writes/heartbeats intercepted; live platform check attempted zero business writes",
+    "scripts": ["scripts/verify_automation_ui.cjs", "scripts/verify_image_semantics_ui.cjs", "scripts/verify_annotation_analytics.cjs", "scripts/verify_asset_preview.cjs", "scripts/verify_p3_live.cjs"],
+    "screenshots": ["output/playwright/automation-live.png", "output/playwright/image-semantics-live.png", "output/playwright/annotation-analytics-live.png"],
+    "responsive_fix": "semantic search controls constrained to parent width; 390px integrated layout checked, table scrolling remains internal",
+    "build": "main and embedded SmartEye passed", "lint_exit": 0, "warnings": "existing/new effect warnings and bundle size notice remain"
+  },
+  "runtime": {"read_endpoints": ["/api/automation/jobs", "/api/automation/review-queue", "/api/image-semantics/jobs", "/api/analytics"], "authenticated_status": 200, "unauthenticated_status": 401,
+    "real_semantic_search": {"http": 200, "dimensions": 2048, "indexed_count": 0, "reason": "no production batches created; user starts explicit generation"}},
+  "data": {"migration": "014 to 015, additive six tables", "original_tables": 33, "files_sha256": 4676, "original_records_preserved_except_alembic_and_normal_login": true,
+    "new_table_counts_at_verification": {"automation_jobs": 0, "automation_items": 0, "image_semantic_jobs": 0, "image_semantic_items": 0, "image_semantic_vectors": 0, "work_activity_intervals": 0}, "real_annotations_changed_by_validation": false},
+  "limits": ["single backend process; automation concurrency default 2", "10000 images per automation job", "100 boxes per image review budget; larger or unjudgeable images go to admin", "semantic exact search limited to 5000 records in current space/range, no silent truncation", "no independently calibrated autoapproval precision or real large-batch load acceptance", "no image quality scoring or active-learning feedback loop", "no Reranker/DINOv3 deployment, training or EOS integration", "activity timing is sampled and may lose offline intervals older than two minutes; old timing unknown"]
+}

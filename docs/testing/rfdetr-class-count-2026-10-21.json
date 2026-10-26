@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-21",
+  "scope": "Initialize RF-DETR Medium/2XLarge with the class count of the actual runtime training dataset before loading pretrained weights.",
+  "implementation": {
+    "file": "backend/backend/services/training_config.py",
+    "detection": "RFDETR._detect_num_classes_for_training(dataset)",
+    "source": "Existing server configuration, or the prepared frozen dataset after selected-label filtering and remapping.",
+    "failure": "Unreadable or empty classes stop execution before model construction; no fallback to pretrained class count.",
+    "logging": "Print runtime dataset path and num_classes before model initialization."
+  },
+  "tests": {
+    "red": "8 new cases failed because detection was missing and invalid metadata was accepted before model loading.",
+    "green": "78 passed in tests/test_training_runs.py and tests/test_training_dataset.py; existing deprecation warnings only.",
+    "coverage": ["Medium and 2XLarge", "server directory", "standard YAML file", "actual filtered snapshot preparation", "source metadata unchanged", "class count passed to constructor rather than train", "zero classes rejected before model loading", "metadata read error propagated"]
+  },
+  "remote_cpu_verification": {
+    "server": "绍兴a100",
+    "image": "aisfh5.com:9091/ai/jashan_train:yolo-rfdetr",
+    "rfdetr": "1.9.4",
+    "method": "Execute generated scripts with real RF-DETR initialization, force CPU in test harness, replace train with assertions so no training loop is called; server model and dataset mounts read-only.",
+    "cases": [
+      {"source": "server middle/data.yaml", "num_classes": 3, "classifier_weight_shape": [4, 512]},
+      {"source": "frozen YOLO fixture filtered to smoke", "num_classes": 1, "classifier_weight_shape": [2, 512]},
+      {"source": "frozen COCO fixture filtered to smoke", "num_classes": 1, "classifier_weight_shape": [2, 512]}
+    ],
+    "training_started": false,
+    "business_files_modified": false
+  },
+  "deployment": {
+    "backend_reloaded": true,
+    "backend_listener_pid": 31064,
+    "frontend_listener_pid": 83528,
+    "checks": {"health": 200, "training_page": 200, "training_catalog": 200, "training_runs": 200, "projects": 200},
+    "existing_training_run_status": "completed",
+    "existing_weights_modified": false,
+    "existing_run_records_modified": false,
+    "generated_script_preview": "output/rfdetr-class-count-script-preview.py"
+  },
+  "limits": ["No formal GPU training or new ONNX export performed.", "Uses the framework class-count helper verified in the installed 1.9.4 image; other image versions need compatibility verification."]
+}

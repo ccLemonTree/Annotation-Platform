@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-26",
+  "upload_id": "81e56a63-3141-43d3-9d9a-813da39fc61b",
+  "filename": "train.zip",
+  "archive_bytes": 4992425636,
+  "preflight": {
+    "entries": 15584,
+    "expanded_bytes": 5230077657,
+    "images": 7684,
+    "paired_valid_labels": 7684,
+    "orphan_labels": 211,
+    "missing_labels": 0,
+    "invalid_labels": 0,
+    "old_max_entries": 10000,
+    "cause": "ZIP entry count exceeded the limit; images, TXT labels and directories all count"
+  },
+  "fix": {
+    "default_max_entries": 50000,
+    "max_expanded_bytes_unchanged": 21474836480,
+    "max_upload_bytes_unchanged": 10737418240,
+    "entry_and_size_errors_distinguished": true,
+    "ui_displays_entry_and_expansion_limits": true,
+    "safe_path_and_link_checks_retained": true,
+    "migration": false,
+    "dependencies_added": false
+  },
+  "verification": {
+    "red": "3 focused cases failed for paired-dataset rejection and ambiguous ZIP/TAR limit messages",
+    "backend_related_tests_passed": 44,
+    "frontend_build": "passed with existing chunk size warning",
+    "targeted_lint": "passed with one pre-existing effect-cleanup warning",
+    "live_authenticated_config_max_entries": 50000,
+    "active_tasks_before_reload": 0,
+    "business_fingerprints_unchanged_after_reload_before_retry": true,
+    "retry_via_existing_complete_api": true,
+    "existing_parts_reused": 596,
+    "upload_bytes_resent": 0,
+    "import_observation": "output/train-archive-retry.json",
+    "browser_regression_cases_passed": 6
+  },
+  "limits": [
+    "Existing conflicting library annotations are retained and reported",
+    "The raised entry limit remains bounded; the 20 GiB expanded-size limit remains enforced"
+  ],
+  "final_result": {
+    "status": "completed",
+    "collection": "小区电瓶车",
+    "cursor": 7895,
+    "imported": 7589,
+    "duplicates": 95,
+    "annotated": 7585,
+    "conflicts": 98,
+    "annotation_skipped": 1,
+    "ignored": 211,
+    "invalid": 0,
+    "filtered": 0,
+    "stored_images": 7589,
+    "stored_annotations": 7589,
+    "error": null,
+    "authenticated_api": 200,
+    "staging_cleaned": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-19",
+  "source": "F:/hzxf/auto-img-downloader",
+  "source_revision": "851364d",
+  "source_checkout_modified": false,
+  "backend_tests": {"passed": 79, "log": "output/smarteye-sync-full-tests.txt"},
+  "frontend_build": "passed",
+  "frontend_lint": "passed with existing warnings",
+  "browser": {
+    "origin": "http://192.168.1.90:3000",
+    "entry": "/detection-query",
+    "flow_log": "output/smarteye-ledger-sync-ui.txt",
+    "live_readonly_log": "output/smarteye-ledger-live-ui.txt",
+    "task_creation_intercepted": true,
+    "checks": ["database query interval label", "watch alarm-only source", "fixed 15-second ledger offset", "reconciliation counts"]
+  },
+  "real_external_requests": {
+    "evidence": "output/smarteye-live-roundtrip.json",
+    "configured_platforms": 2,
+    "actual_alarms_per_platform": 1,
+    "actual_images_downloaded": 2,
+    "strict_image_decode": true,
+    "temporary_storage_isolated": true,
+    "temporary_files_removed": true,
+    "business_images_or_schedules_created": false
+  },
+  "not_checked": ["long-running periodic scheduling", "platforms without alarm database configuration"],
+  "retained_upstream_limit": "A download longer than the configured interval can leave a query gap."
+}

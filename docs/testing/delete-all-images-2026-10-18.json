@@ -1,0 +1,18 @@
+{
+  "date":"2026-10-18",
+  "feature":"Independent delete-all action without row selection or pagination limits",
+  "api":"GET /api/assets/selection returns all current project IDs with the same scope/source/status conditions as list; confirmation snapshots IDs, then reuses POST /api/batch/assets/delete",
+  "ui":["preparation range","description annotation scope","project image source filter","current returned matching results"],
+  "tests":{
+    "red":"output/delete-all-api-red.txt",
+    "backend":"60 passed; output/delete-all-tests.txt; includes 25 cross-page crops, original exclusion, authentication and unknown project",
+    "browser":"4 groups; zero-selection 21-image deletion in three lists, cancellation/retry/mobile and current matching results; output/delete-all-browser1.txt",
+    "selection_regression":"output/delete-all-selection-regression.txt",
+    "real_browser":"output/delete-all-live-browser.txt; visibleRows20, checkedRows0, deleted21, one request, remainingCrops0, original200, total1, no page errors",
+    "build":"passed; output/delete-all-build.txt",
+    "lint":"exit 0, 44 existing warnings; output/delete-all-lint.txt"
+  },
+  "preservation":{"library_originals":true,"other_projects":true,"physical_business_files":true,"business_rows_verified":true,"existing_running_training":1,"remote_training_start_stop":false},
+  "cleanup":"Owned temporary project and 21 generated PNG fixtures removed; private snapshot and auth under backend/backend/.backups/delete-all",
+  "limits":["Deletion uses the confirmed ID snapshot; images added later are not included","Matching action deletes current returned query results, not the whole project","No physical business file or Milvus cleanup"]
+}

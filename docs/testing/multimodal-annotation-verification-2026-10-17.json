@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-17",
+  "backend": {"passed":636,"skipped":76,"failures":0,"evidence":"output/multimodal-backend-final.txt"},
+  "postgres": {"migration_020_to_021":"passed in owned disposable PostgreSQL database","historic_chain":"passed","empty_bootstrap":"passed","evidence":["output/multimodal-postgres.txt","output/multimodal-postgres-final.txt"]},
+  "frontend": {"build":"passed","lint_errors":0,"existing_lint_warnings":44,"evidence":["output/multimodal-build-final.txt","output/multimodal-lint-final.txt"]},
+  "browser": {"mocked_checks":8,"mocked":"classification save/review, prompts, text/image matching, independent judgments, detector selection, expansion, mobile, export and project configuration","real":"authenticated live query results and approved classification, 1440/390px, zero writes and page errors","evidence":["output/multimodal-browser.txt","output/multimodal-live-browser.txt"]},
+  "live_models": {"qwen_caption_completed":1,"wemm_vectors_completed":2,"text_hits":2,"image_hits":2,"pair_export_http":200,"classification_export_http":200,"rf_detr":"real service inference on owned synthetic image; no detections, no negative annotation written"},
+  "milvus": {"address":"192.168.1.115:19530","database":"default","new_collection":"image_platform_annotations_v1","smoke":"two vectors indexed/searched, foreign tenant excluded; owned temporary smoke collection removed"},
+  "activation": {"database_revision":"021","backup":"backend/backend/.backups/multimodal-runtime/before.json (private)","original_business_fields":"hash comparison passed excluding routine training-monitor and login timestamps","original_training":"one running and six terminal records retained; no remote start/stop"},
+  "cleanup": {"owned_projects_removed":3,"owned_files_removed":2,"owned_vectors_removed":2,"new_processing_and_query_tables_empty":true,"original_business_hash_comparison":"passed after cleanup","owned_browser_sessions":"closed"},
+  "limits": ["76 tests requiring optional environments were skipped; selected PostgreSQL integration checks ran separately", "No large-scale indexing/load benchmark", "Positive crop geometry/provenance covered by isolated tests; real RF-DETR fixture intentionally had no objects", "Existing reduced-motion select/animation preparation issue was not changed", "Legacy library vectors remain accessible through old history APIs and are not automatically copied into Milvus"]
+}

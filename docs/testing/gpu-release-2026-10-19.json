@@ -1,0 +1,34 @@
+{
+  "date": "2026-10-19",
+  "backend_tests": {"passed": 181, "log": "output/gpu-release-regression.txt"},
+  "monitor_component_tests": {"passed": 11, "log": "output/gpu-release-monitor-unit.txt"},
+  "frontend_build": "passed",
+  "frontend_lint": "existing warnings only",
+  "browser_flow": "output/gpu-release-ui.txt",
+  "live_browser": "output/gpu-release-live-ui.txt",
+  "live_api": "output/gpu-release-live.json",
+  "linux_signal_check": {
+    "host": "绍兴a100",
+    "transport": "ssh-manager MCP",
+    "targets": "two owned CPU child processes, no GPU workload signaled",
+    "sigterm_returncode": -15,
+    "force_after_timeout_returncode": -9,
+    "pidfd_used": true,
+    "child_processes_reaped": true
+  },
+  "checks": [
+    "administrator, tenant and server scope",
+    "preview and cancellation never stop a target",
+    "signed confirmation bound to user and server revision, expires after 120 seconds",
+    "PID reuse rejection and pidfd signal targeting",
+    "managed training process resolves to its platform task",
+    "stale hold cleared only after remote stop or absence proof",
+    "training/validation stop uncertainty retains reservations",
+    "changed validation execution rejected",
+    "force termination is explicit",
+    "GPU caches invalidated after confirm and tables refresh",
+    "390px viewport remains within page width"
+  ],
+  "not_executed": ["stopping existing business GPU processes", "real GPU memory allocation/release benchmark"],
+  "limits": ["Kubernetes must be stopped through its workload", "MIG, graphics processes and GPU reset unsupported", "direct process stop requires Linux pidfd support"]
+}

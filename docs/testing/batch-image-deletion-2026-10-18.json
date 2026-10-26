@@ -1,0 +1,19 @@
+{
+  "date":"2026-10-18",
+  "feature":"Delete all explicitly selected project images in one confirmed request",
+  "surfaces":["project preparation","description list","project images","matching results"],
+  "selection":"Table selection preserved across pages; matching select-all applies to current query results; project/filter/scope/query changes reset selections",
+  "endpoint":"Existing POST /api/batch/assets/delete; no backend production change",
+  "tests":{
+    "red":"output/batch-delete-red.txt",
+    "backend":"45 passed; output/batch-delete-tests.txt",
+    "browser":"4 groups, cross-page selection, cancellation, retry, 390px and matching hit removal; output/batch-delete-browser1.txt",
+    "multimodal_browser":"14 checks, 0 page errors; output/batch-delete-multimodal-regression.txt",
+    "build":"passed; output/batch-delete-build.txt",
+    "lint":"exit 0, 44 existing warnings; output/batch-delete-lint.txt",
+    "real_browser":"output/batch-delete-live-browser.txt; one request deleted two owned temporary crops, both404/source200, project counters and matching history correct"
+  },
+  "retention":{"library_originals":true,"other_projects":true,"physical_files":true,"frozen_data":true},
+  "live_cleanup":{"owned_fixture_removed":true,"business_rows_and_crop_hashes_preserved":true,"running_training":1,"backend_restart":false},
+  "limits":["Deletes explicitly checked rows, not every row matching a filter","No disk or Milvus cleanup"]
+}

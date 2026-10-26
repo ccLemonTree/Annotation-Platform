@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-19",
+  "feature": "Archive and folder inputs for model effect preview",
+  "effective_limits": {"max_images": 5000, "upload_bytes": 10737418240, "expanded_image_bytes": 21474836480, "single_image_bytes": 104857600},
+  "formats": ["JPEG", "PNG", "BMP", "WebP", "ZIP", "TAR", "TAR.GZ", "TGZ", "folder with subdirectories"],
+  "checks": {
+    "backend_tests": 89,
+    "actual_5000_file_creation_and_page_250": "passed in isolated API tests",
+    "invalid_archive_and_atomic_cleanup": "passed",
+    "frontend_build": "passed",
+    "frontend_lint": "passed; no new warnings",
+    "browser": ["ZIP upload", "TAR.GZ upload", "Native folder selection", "Relative names and non-image filtering", "5000-result fixture with 20 rendered results", "Page restored on reload", "Upload stop retains files", "390px viewport"],
+    "actual_lan_inference": ["ZIP: 2 images completed", "TAR.GZ: 2 images completed", "folder: 2 images completed", "105906614-byte ZIP: 1 image completed"],
+    "actual_result_display": "All four owned previews opened and images displayed",
+    "cleanup": "Owned previews and private images removed; original business IDs unchanged",
+    "existing_training": "Original start time and restart count unchanged; running"
+  },
+  "limits_not_exercised": ["Full 10GiB upload", "Full 20GiB expansion", "5000 real model inference calls", "GPU weight inference this turn"],
+  "known_transfer_limit": "Interrupted multipart uploads restart from zero",
+  "evidence": ["output/model-preview-archives-tests.txt", "output/model-preview-archives-build.txt", "output/model-preview-archives-lint.txt", "output/preview-archive-folder-ui.txt", "output/preview-archives-live.txt", "output/preview-archives-large.txt", "output/preview-archives-live-ui.txt", "output/preview-archives-live-config.txt", "output/preview-archives-cleanup.txt"]
+}

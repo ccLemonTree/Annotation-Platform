@@ -1,0 +1,127 @@
+{
+  "date": "2026-10-23",
+  "migration": "024",
+  "backend": {
+    "passed": 165,
+    "skipped": 3,
+    "log": "output/model-deployment-regression.log"
+  },
+  "frontend": {
+    "build": "passed",
+    "targeted_lint": "passed",
+    "existing_build_warning": "large chunks",
+    "browser": {
+      "operations": [
+        "precheck",
+        "transfer",
+        "activate",
+        "rollback"
+      ],
+      "createdEnvironments": [
+        "docker_kafka",
+        "k8s"
+      ],
+      "manualActivation": true,
+      "rollback": true,
+      "realBusinessWrites": 0,
+      "remoteWrites": 0
+    },
+    "mobile_document_overflow_check": "passed after layout settles",
+    "screenshots": [
+      "output/playwright/model-deployment-staged.png",
+      "output/playwright/model-deployment-mobile.png"
+    ]
+  },
+  "live": {
+    "ssh_server_count": 46,
+    "profiles": [
+      {
+        "profile": "shaoxing-small-k8s",
+        "instances": 80,
+        "ready": 80,
+        "desired": 80,
+        "path": "/data/ai/chen/code/huggingface/aiseefor_small_model/rfdetr_2xlargemd",
+        "internal_model_path": "/models",
+        "read_only": true,
+        "sample_compatibility": {
+          "tensorrt": "10.14.1",
+          "gpus": [
+            "Tesla T4"
+          ]
+        }
+      },
+      {
+        "profile": "shaoxing-large-k8s",
+        "instances": 70,
+        "ready": 70,
+        "desired": 70,
+        "path": "/data/ai/chen/code/huggingface/aiseefor_vllm_model/cangqiong_4b",
+        "internal_model_path": "/models/cangqiong_4b/1/model",
+        "read_only": true
+      },
+      {
+        "profile": "hangzhou-docker",
+        "instances": 1,
+        "ready": 1,
+        "desired": 1,
+        "path": "/ai/chen/code/huggingface/aiseefor_model/yolov11det_smoking",
+        "internal_model_path": "/models",
+        "read_only": true,
+        "sample_compatibility": {
+          "tensorrt": "10.14.1",
+          "gpus": [
+            "Tesla T4",
+            "Tesla T4",
+            "Tesla T4",
+            "Tesla T4"
+          ]
+        }
+      },
+      {
+        "profile": "lishui-kafka",
+        "instances": 4,
+        "ready": 4,
+        "desired": 4,
+        "path": "/ai/chen/code/huggingface/aiseefor_model/yolov11det_smoking",
+        "internal_model_path": "/models",
+        "read_only": true,
+        "sample_compatibility": {
+          "tensorrt": "10.14.1",
+          "gpus": [
+            "Tesla T4"
+          ]
+        }
+      },
+      {
+        "profile": "shaoxing-vector",
+        "instances": 1,
+        "ready": 1,
+        "desired": 1,
+        "path": "/opt/gme-model-cache/0923_merged-4083",
+        "internal_model_path": "/models/0923-merged-4083",
+        "read_only": true,
+        "model_list": {
+          "name": "wemm-vllm",
+          "uid": "1c26f07403591cd98446aede55ea8af841cfd5e50eba0725d11d74fa766f5a09",
+          "ok": true,
+          "detail": "{\"object\":\"list\",\"data\":[{\"id\":\"/models/wemm_embedding_2b\",\"object\":\"model\",\"created\":1792751853,\"owned_by\":\"vllm\",\"root\":\"/models/0923-merged-4083\",\"parent\":null,\"max_model_len\":8192,\"permission\":[{\"id\":\"modelperm-88eb0fee1c36d28d\",\"object\":\"model_permission\",\"created\":1792751853,\"allow_create_engine\":false,\"allow_sampling\":true,\"allow_logprobs\":true,\"allow_search_indices\":false,\"allow_view\":true,\"allow_fine_tuning\":false,\"organization\":\"*\",\"group\":null,\"is_blocking\":false}]}]}"
+        }
+      }
+    ],
+    "remote_writes": 0
+  },
+  "http": {
+    "health": 200,
+    "unauthenticated": 401,
+    "authenticated_records": 200,
+    "authenticated_servers": 200,
+    "ssh_server_count": 46,
+    "credentials_exposed": false,
+    "writes": 0
+  },
+  "limits": [
+    "No real model upload, load, unload or restart was performed on production servers",
+    "Readiness and model registration checks do not replace real business-sample inference acceptance",
+    "One backend process owns deployment jobs"
+  ]
+}

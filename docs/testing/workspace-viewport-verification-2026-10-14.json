@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-14",
+  "scope": "检测标注工作台完整画布与控件适应桌面窗口",
+  "implementation": {
+    "desktop_min_width": 992,
+    "layout": "紧凑标题，Card与画布填充剩余窗口高度，工具栏/确认控件保持可见；右侧面板独立滚动",
+    "image": "SVG继续用原图viewBox及preserveAspectRatio完整适应，窗口尺寸变化不修改原图坐标和缩放状态",
+    "mobile": "宽度小于992px继续自然纵向布局，允许页面滚动",
+    "new_dependencies": false,
+    "backend_changed": false
+  },
+  "red_before_fix": {
+    "viewport": [
+      1366,
+      768
+    ],
+    "document_height": 948,
+    "canvas_bottom": 872.671875,
+    "negative_confirmation_bottom": 894.671875
+  },
+  "verification": {
+    "build": "TypeScript and main/SmartEye Vite entries passed",
+    "lint_exit_code": 0,
+    "editor_unit_tests": 5,
+    "browser_checks": 68,
+    "scripts": [
+      {
+        "path": "scripts/verify_workspace_viewport.cjs",
+        "checks": 7
+      },
+      {
+        "path": "scripts/verify_annotation_interactions.cjs",
+        "checks": 25
+      },
+      {
+        "path": "scripts/verify_autosave_navigation.cjs",
+        "checks": 6
+      },
+      {
+        "path": "scripts/verify_project_review_ui.cjs",
+        "checks": 7
+      },
+      {
+        "path": "scripts/verify_unified_ui.cjs",
+        "checks": 23
+      }
+    ],
+    "desktop_windows": [
+      [
+        1366,
+        768
+      ],
+      [
+        1692,
+        947
+      ],
+      [
+        1280,
+        600
+      ]
+    ],
+    "mobile_window": [
+      390,
+      844
+    ],
+    "long_inspector_boxes": 60,
+    "matching_user_screenshot": {
+      "asset_id": "8c3edbb6-033e-446e-96bd-6c6c21b48ca5",
+      "document_height": 947,
+      "viewport_height": 947,
+      "screenshot": "output/playwright/workspace-matching-user-image.png"
+    },
+    "other_screenshot": "output/playwright/workspace-viewport-final.png",
+    "runtime_read_only_api_requests": 10,
+    "write_scope": "画框/保存/关联测试写入被拦截；窗口布局只读，不修改真实标注",
+    "data": "6张原图和2冻结包哈希不变；当前版本总行9、最新标注5，保留用户此前新增标注，不声称与较早6版本基线相同"
+  },
+  "limits": [
+    "未重跑全后端测试，后端和数据结构未修改",
+    "小于600px高度未做定向验收",
+    "移动端保留页面滚动；原lint/包体积及SmartEye Tailwind提示仍在"
+  ]
+}

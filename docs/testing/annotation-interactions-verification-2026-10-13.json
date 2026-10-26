@@ -1,0 +1,323 @@
+{
+  "date": "2026-10-13",
+  "reference": {
+    "path": "F:/hzxf/labeling",
+    "files": [
+      "frontend/src/components/BBoxCanvas.vue",
+      "frontend/src/views/LabelView.vue",
+      "frontend/src/views/DatasetsView.vue"
+    ],
+    "read_only": true,
+    "findings": [
+      "滚轮缩放、Ctrl平移、Shift在框内强制绘制、数字类别、删除与换图快捷键",
+      "原撤销只跟踪新建标注ID，不覆盖移动/修改/删除；当前平台保留整体版本存储"
+    ]
+  },
+  "category": {
+    "source": "project.label_schema.labels",
+    "actual_test_project": {
+      "project_name": "test-img",
+      "labels_at_initial_inspection": [
+        "人"
+      ],
+      "labels_at_final_inspection": [
+        "person"
+      ],
+      "latest_schema_updated_at": "2026-10-13T14:01:22.888514Z",
+      "stored_latest_boxes_labels": [
+        "人"
+      ],
+      "note": "最后实际项目配置发生变化，已有框保留名称，类别不一致提示符合预期。未执行成功的真实项目PUT；测试写入均为浏览器拦截，实际非法类别PUT返回422。"
+    },
+    "previous_bug": "配置入口缺失，未配置项目前端硬编码人",
+    "fix": "项目创建/编辑类别表单、后端校验、移除未配置默认",
+    "legacy_empty_schema_supported": true
+  },
+  "unit_tests": {
+    "command": "node --experimental-strip-types --test tests/detection-editor.test.mjs",
+    "passed": 5
+  },
+  "backend_tests": {
+    "command": ".venv/Scripts/python.exe -m pytest -q tests/test_project_labels.py tests/test_p2_annotations.py tests/test_p2_exports.py tests/test_p0_contracts.py --tb=short --disable-warnings",
+    "passed": 66,
+    "warnings": 230,
+    "new_category_tests": 7,
+    "red_before_change": "新增类别校验中6失败/1通过；新增编辑状态测试因实现缺失失败",
+    "new_after_change": "类别7通过，状态5通过"
+  },
+  "browser": {
+    "checks": [
+      "category select renders project options",
+      "draw rectangle",
+      "undo drawing",
+      "redo drawing",
+      "zoom preserves pixel coordinates",
+      "Shift draws nested rectangle after zoom",
+      "overlap selects smaller rectangle",
+      "Alt cycles overlapping rectangles",
+      "Delete removes selected rectangle",
+      "undo restores deleted rectangle",
+      "completed draw remains undoable after Escape",
+      "move uses image coordinates under zoom",
+      "undo restores moved box",
+      "Shift Tab starts from last box",
+      "resize handle changes geometry",
+      "undo restores resized box",
+      "Escape cancels active drawing without adding undo step",
+      "Delete in numeric input does not remove box",
+      "number shortcut reassigns selected box category",
+      "number shortcut selects a different configured category",
+      "save uses project categories and original pixels",
+      "successful save resets local undo history",
+      "409 preserves unsaved local rectangles",
+      "save retains base-version concurrency check",
+      "Ctrl pan changes view only"
+    ],
+    "scope": "real image read; project labels and annotation writes intercepted in browser; no real annotations changed"
+  },
+  "category_ui": {
+    "checks": [
+      "project edit exposes labels and preserves schema metadata",
+      "unconfigured project prompts configuration instead of defaulting to person"
+    ],
+    "scope": "project writes intercepted; no real project settings changed"
+  },
+  "ui_regression": [
+    {
+      "name": "desktop 工作概览",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "mobile 工作概览",
+      "width": 390,
+      "scrollWidth": 390,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "desktop 项目管理",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "mobile 项目管理",
+      "width": 390,
+      "scrollWidth": 390,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "desktop 图片管理",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "mobile 图片管理",
+      "width": 390,
+      "scrollWidth": 390,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "desktop 标注与审核",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "mobile 标注与审核",
+      "width": 390,
+      "scrollWidth": 390,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "desktop 检测标注工作台",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "mobile 检测标注工作台",
+      "width": 390,
+      "scrollWidth": 390,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop 检测查询",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile 检测查询",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop 台账查询",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile 台账查询",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop 台账下载",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile 台账下载",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop 智搜下载",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile 智搜下载",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop AI 生图",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile AI 生图",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye desktop 工具任务",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye mobile 工具任务",
+      "width": 300,
+      "scrollWidth": 300,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    },
+    {
+      "name": "SmartEye destination and task drawer",
+      "width": 1166,
+      "scrollWidth": 1166,
+      "primary": "#2563eb",
+      "background": "#f5f7fb",
+      "dark": false
+    }
+  ],
+  "build": {
+    "exit_code": 0,
+    "large_chunk_warning": true
+  },
+  "data_verification": {
+    "projects": {
+      "count": 19,
+      "unchanged_at_earlier_check": true,
+      "changed_at_final_check": true,
+      "scope": "项目标签在最后检查时已变为person；保留当前配置，未执行成功的真实项目写入。"
+    },
+    "assets": {
+      "count": 6,
+      "unchanged": true
+    },
+    "annotations": {
+      "count": 4,
+      "unchanged": true
+    },
+    "export_snapshots": {
+      "count": 2,
+      "unchanged": true
+    },
+    "invalid_labels_api_status": 422,
+    "health": 200
+  },
+  "limits": [
+    "本地撤销100步，保存/加载/图片或历史切换后清空",
+    "同类IoU >= 0.9只提示可能重复，不自动删除，也不是审核依据",
+    "浏览器项目与标注写入为拦截验证，真实已上传图片只读；真实标注仍保留",
+    "实际多用户同时编辑及触屏手势未手工联调",
+    "lint仍有历史Hook等警告；完整PG和训练加载器未重复运行"
+  ],
+  "backend_runtime": {
+    "restarted_main_service": true,
+    "active_smarteye_jobs_before_restart": 0,
+    "migration": false
+  },
+  "final_protected_data": {
+    "assets": {
+      "count": 6,
+      "unchanged": true
+    },
+    "annotations": {
+      "count": 4,
+      "unchanged": true
+    },
+    "export_snapshots": {
+      "count": 2,
+      "unchanged": true
+    }
+  }
+}

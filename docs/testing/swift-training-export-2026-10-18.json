@@ -1,0 +1,38 @@
+{
+  "date":"2026-10-18",
+  "feature":"ms-swift image SFT and embedding training exports",
+  "formats":["portable","swift_sft","infonce","contrastive","online_contrastive","cosine_similarity"],
+  "sources":["descriptions","labels","matches"],
+  "contract":{
+    "positive_samples_per_row":1,
+    "independent_image_alignment":true,
+    "infonce_multiple_positives":"one row per positive; only explicit incorrect judgments become hard negatives",
+    "binary_label_source":"human correct/incorrect, never retrieval score",
+    "cosine_labels":[1.0,0.0],
+    "sft_instruction_editable":true,
+    "crop_scope_and_review_filters_preserved":true,
+    "relative_image_paths":"extract the complete ZIP and run from its root"
+  },
+  "tests":{
+    "red":"output/swift-export-red.txt; 15 conversion tests failed before implementation",
+    "new_conversion_and_api":{"passed":23,"evidence":"output/swift-export-green2.txt"},
+    "focused_regression":{"passed":57,"evidence":"output/swift-export-tests-final.txt"},
+    "browser":{"checks":14,"page_errors":0,"evidence":"output/swift-export-browser-final.txt"},
+    "real_read_only_browser":{"widths":[1440,390],"write_requests":0,"page_errors":0,"evidence":"output/swift-export-live-browser.txt"},
+    "build":"passed; output/swift-export-build.txt",
+    "lint":"exit 0; 44 existing warnings; output/swift-export-lint.txt"
+  },
+  "live_api":{
+    "export_combinations":8,
+    "evidence":"output/swift-export-live-api-final.txt",
+    "jsonl_alignment_and_image_decode":true,
+    "text_and_image_anchors":true,
+    "temporary_fixture_cleaned":true,
+    "business_rows_and_crop_files_preserved":true,
+    "inference_jobs":0,
+    "schema_revision":"022",
+    "remote_training_start_stop":false,
+    "existing_running_training":1
+  },
+  "limits":["No ms-swift training or embedding quality evaluation launched","No new continuous similarity rating UI; existing binary judgments map to 1.0/0.0","No automatic train/val split or negative sampling","Current image platform does not export video/audio or grounding datasets"]
+}

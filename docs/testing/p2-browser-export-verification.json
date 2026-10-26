@@ -1,0 +1,18 @@
+[
+  {
+    "format": "yolo",
+    "images": 1,
+    "boxes": 2,
+    "version": 2,
+    "image_hash_verified": true,
+    "coordinates_verified": true
+  },
+  {
+    "format": "coco",
+    "images": 1,
+    "boxes": 2,
+    "version": 2,
+    "image_hash_verified": true,
+    "coordinates_verified": true
+  }
+]

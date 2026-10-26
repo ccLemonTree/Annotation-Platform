@@ -1,0 +1,43 @@
+{
+  "api": [
+    {
+      "path": "/health",
+      "status": 200
+    },
+    {
+      "path": "/api/training/catalog",
+      "status": 200
+    },
+    {
+      "path": "/api/training/runs",
+      "status": 200
+    },
+    {
+      "path": "/api/training/defaults?kind=yolo26",
+      "status": 200
+    },
+    {
+      "path": "/api/projects?page_size=1",
+      "status": 200
+    },
+    {
+      "path": "POST /api/training/runs remote selected_labels",
+      "status": 422,
+      "expected": true
+    }
+  ],
+  "tests": 56,
+  "frontend_build": "passed",
+  "targeted_lint": "passed",
+  "server_native_cpu_checks": [
+    "yolo26_with_original_yaml_and_mount",
+    "rfdetr_with_original_dataset_dir"
+  ],
+  "business_counts": {
+    "training_runs": 0,
+    "training_gpu_holds": 0
+  },
+  "formal_training": false,
+  "screenshot": "output/playwright/training-platform-config.jpg",
+  "source_rule": "server config unchanged; platform frozen data auto config and optional labels"
+}

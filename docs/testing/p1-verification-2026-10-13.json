@@ -1,0 +1,94 @@
+{
+  "date": "2026-10-13",
+  "scope": "P1 embedded SmartEye, local and isolated integration acceptance",
+  "source": {
+    "formal_revision": "ebee9a9",
+    "python_files_compared_before_adaptation": 20,
+    "original_workspace_modified": false,
+    "registered_routes": 48
+  },
+  "tests": {
+    "passed": 103,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 236,
+    "seconds": 33.49,
+    "postgres_opt_in_tests": 3,
+    "source_parser_dedup_regressions": 14,
+    "command": "P0_POSTGRES_INTEGRATION=1 P1_POSTGRES_INTEGRATION=1 .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings",
+    "pip_check": "No broken requirements found"
+  },
+  "frontend": {
+    "build": "passed",
+    "entries": [
+      "dist/index.html",
+      "dist/smarteye/index.html"
+    ],
+    "browser_url": "http://localhost:3000/smarteye",
+    "pages_opened": [
+      "检测查询",
+      "台账查询",
+      "台账下载",
+      "智搜下载",
+      "AI生图",
+      "执行工具任务"
+    ],
+    "flows_checked": [
+      "same-origin iframe with all six navigation links",
+      "annotation purpose exposes 18 existing projects",
+      "task panel opens without annotation project",
+      "final reload after backend restart"
+    ],
+    "console_errors": 0,
+    "console_warnings": 1,
+    "screenshot": "output/playwright/p1-smarteye-final.png",
+    "warnings": [
+      "existing and copied lint warnings",
+      "main bundle over 500 kB",
+      "Tailwind runtime warning"
+    ]
+  },
+  "checks": [
+    "actual Alembic 005 to 006 via asyncpg in isolated PostgreSQL",
+    "repeated SmartEye schema initialization",
+    "real local HTTP image source through detection, ledger, smart search and tool workers and ZIP",
+    "PostgreSQL real detection worker directly associates project with shared storage",
+    "AI original worker using substitute provider responses without paid call",
+    "authenticated preview and ZIP; missing identity and wrong scope rejected",
+    "hardlink and hash evidence, project dedup count and shared deletion",
+    "crop-only temporary original excluded from project",
+    "replacement updates reference and preserves old original",
+    "same selected filename retained separately in ZIP, failure returns 502",
+    "restart/retry cache and old attempt/cancel guards",
+    "watch owner, persisted progress/log and generic cancel stops polling",
+    "independent schedulers restore stopped configurations and stop separately",
+    "OpenAPI bridge verbs have six distinct operation IDs"
+  ],
+  "runtime_checks_file": "p1-runtime-verification.json",
+  "database_file": "p1-final-database-verification.json",
+  "migration_file": "p1-migration-verification.json",
+  "route_inventory_file": "p1-route-inventory.json",
+  "limitations": [
+    "No real subordinate platform requests or paid AI calls performed",
+    "Real ledger details/logs, long-running watch and captcha model effects pending",
+    "Original standalone historical images/tasks/AI history were not migrated",
+    "Single backend process and local volume supporting hardlinks required",
+    "EOS and Docker deployment untested; new database complete bootstrap pending",
+    "Cancelling local AI task may not cancel remote billable request; original AI history keeps own status, task panel is cancellation authority",
+    "Orphan originals and ZIPs retained; physical garbage collection deferred",
+    "P2 annotation drawing, version counts and valid YOLO/COCO exports remain unfinished"
+  ],
+  "runtime_requests_after_final_restart": 13,
+  "static_verification": {
+    "python_syntax_files": 122,
+    "local_document_links": 77,
+    "p1_json": "valid",
+    "private_env_browser_state_ignored": true,
+    "environment_check_exit_code": 1,
+    "expected_missing_tables": [
+      "models",
+      "training_metrics",
+      "training_tasks"
+    ]
+  }
+}

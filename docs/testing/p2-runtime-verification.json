@@ -1,0 +1,161 @@
+{
+  "requests": [
+    {
+      "path": "/health",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/projects/e251de70-5c16-46f4-9cd9-d90a2262539e",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets?project_id=e251de70-5c16-46f4-9cd9-d90a2262539e",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/annotations?asset_id=01ba049a-bc58-4749-848e-c3ce35979269&latest_only=false",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/annotations/assets/01ba049a-bc58-4749-848e-c3ce35979269/events",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/stats",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/stats/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/distribution",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/stats/dashboard",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/smarteye/tasks",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/smarteye/platform-list",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/stats",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/annotations?asset_id=01ba049a-bc58-4749-848e-c3ce35979269&latest_only=false",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/annotations/<old-version>",
+      "method": "PUT",
+      "status": 409
+    },
+    {
+      "path": "/api/annotations",
+      "status": 401,
+      "authenticated": false
+    },
+    {
+      "path": "/api/assets/01ba049a-bc58-4749-848e-c3ce35979269/content",
+      "status": 401,
+      "authenticated": false
+    },
+    {
+      "path": "/api/export/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/export?format=yolo",
+      "status": 401,
+      "authenticated": false
+    },
+    {
+      "path": "/api/export/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/snapshots",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/export/snapshots/72af2e39-de39-4de3-a73c-acc25957e49e/download",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets?project_id=e251de70-5c16-46f4-9cd9-d90a2262539e",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/74fb6f65-f526-4dd0-9a87-483a9a13aa9f/content",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/15c06cee-f25d-4dac-a2e0-b9c05689bed3/content",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/8c3edbb6-033e-446e-96bd-6c6c21b48ca5/content",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/904333bf-4eb1-40d2-a2b4-b491ed8ad982/content",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/181789e9-a388-4d98-b568-55ad75a58d90/content",
+      "status": 200,
+      "authenticated": true
+    },
+    {
+      "path": "/api/assets/01ba049a-bc58-4749-848e-c3ce35979269/content",
+      "status": 200,
+      "authenticated": true
+    }
+  ],
+  "database": {
+    "revision": "007",
+    "projects": 19,
+    "users": 3,
+    "assets": 6,
+    "annotations": 3,
+    "latest_annotations": 1,
+    "events": 11,
+    "snapshots": 1,
+    "temp_databases": 0
+  },
+  "test_project_id": "e251de70-5c16-46f4-9cd9-d90a2262539e",
+  "test_asset_id": "01ba049a-bc58-4749-848e-c3ce35979269",
+  "current_version": 3,
+  "human_demo_boxes": 2,
+  "remaining_unannotated_images": 5,
+  "original_images_verified": 6,
+  "old_frozen_version": 2,
+  "frozen_bytes_unchanged_after_edit": true,
+  "latest_stats": {
+    "project_id": "e251de70-5c16-46f4-9cd9-d90a2262539e",
+    "total_assets": 6,
+    "annotated_count": 1,
+    "reviewed_count": 1,
+    "annotation_progress": 16.666666666666664,
+    "review_progress": 16.666666666666664
+  },
+  "current_exports_after_final_restart": [
+    "yolo: 1 image, 2 person boxes, v3",
+    "coco: 1 image, 2 person boxes, v3"
+  ],
+  "process_time_header_verified": true
+}

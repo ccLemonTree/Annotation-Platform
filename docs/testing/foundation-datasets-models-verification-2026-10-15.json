@@ -1,0 +1,86 @@
+{
+  "verified_date": "2026-10-15",
+  "scope": "P0基础收尾、P2数据集管理、可配置模型服务与工作台预测预览",
+  "backend": {
+    "full_suite": {"passed": 284, "skipped": 0, "warnings": 982, "seconds": 318.32},
+    "supplemental_first_admin": {"passed": 3, "previously_in_full_suite": 1, "new_distinct_cases": 2, "seconds": 17.66},
+    "distinct_cases_passed": 286,
+    "focused_model_cases": 8,
+    "postgres_flags": ["P0_POSTGRES_INTEGRATION", "P1_POSTGRES_INTEGRATION", "P2_POSTGRES_INTEGRATION", "P3_POSTGRES_INTEGRATION", "P2_DATASET_POSTGRES_INTEGRATION", "P0_STORAGE_CLEANUP_POSTGRES"],
+    "real_dataset_loader_cases": 6,
+    "pip_check": "No broken requirements found",
+    "verify_setup": "Imports, current table presence, OpenAPI and revision 014 passed",
+    "training_execution_route_registered": false,
+    "private_junit": "backend/backend/.backups/foundation-datasets-models/final-tests.xml"
+  },
+  "migration": {
+    "from": "012",
+    "to": "014",
+    "added_tables": ["training_tasks", "training_metrics", "models", "model_services"],
+    "original_business_tables_preserved": 28,
+    "file_hashes_preserved": 4676,
+    "normal_login_exception": "One successful actual login updated users.last_login_at and updated_at only; all other original fields/rows preserved",
+    "existing_accounts_preserved": true,
+    "new_empty_database_bootstrap": "Explicit target, refuse nonempty objects, transactional schema and exact head stamp, optional first admin without default password",
+    "destructive_old_migrations_replayed": false,
+    "private_backup": "backend/backend/.backups/foundation-datasets-models/database.json"
+  },
+  "storage": {
+    "actual_preview_files": 4676,
+    "actual_orphan_candidates": 0,
+    "actual_files_archived_or_deleted": 0,
+    "online_execution": "Always 409 until all writers share a maintenance guard",
+    "offline_execution": "Explicit target and stopped-writer confirmation, exclusive storage lock, database connection fence, reference recheck, SHA256 verification, reversible same-volume quarantine and manifest",
+    "tests": "Only owned temporary PostgreSQL databases and temporary files; interruption/restore/connection recovery checked"
+  },
+  "datasets": {
+    "source_fields": ["parent_image_id", "group_id", "sequence_id", "device_id"],
+    "features": ["Transitive source/content/near-duplicate grouping", "Explicit source editing with audit", "Manual preview and deterministic suggestions", "Configurable per-class training-image budget excluding val/test", "Configurable pHash/color thresholds", "Freeze revalidates and pins policy/source/fingerprint evidence"],
+    "new_page_require_source_default": true,
+    "old_snapshot_requests_and_downloads_compatible": true,
+    "actual_preview_used_latest_annotations_without_writes": true,
+    "actual_missing_source_freeze_blocked": true,
+    "real_independent_test_set_accepted": false,
+    "arbitrary_crop_or_cross_frame_leakage_guaranteed": false
+  },
+  "models": {
+    "remote_source_inspected_via": "ssh-manager, 绍兴移动算法2, /ai/chen/code/model_service",
+    "remote_code_or_deployment_changed": false,
+    "registry_configs": 9,
+    "enabled_configs": 8,
+    "actual_platform_api_prediction_success": ["yolov26_fire", "yolov11_smoking", "yolov5_dwcar", "rfdetr_fire", "sam3", "fastvlm", "qwen", "embedding"],
+    "embedding_model_id": "/models/wemm_embedding_2b",
+    "embedding_dimensions": 2048,
+    "qwen_model_id": "Qwen3.8-27B",
+    "fastvlm_scope": "Actual deployed FastVLM LPR is license-plate recognition, not general image description",
+    "upstream_failure": {"key": "rfdetr_fire_sahi", "remote_status": 500, "platform_status": 502, "action": "Disabled registry config; ordinary RF-DETR remains available"},
+    "reranker": "Configurable, new configs default disabled, trial disabled, no inference used",
+    "dinov3": "Not deployed or registered",
+    "annotation_writes_from_prediction": 0,
+    "application": "Explicit class mapping then undoable local draft replacement; existing manual save/version protection retained",
+    "vector_index_or_retrieval_implemented": false
+  },
+  "frontend": {
+    "build": "TypeScript and main/SmartEye entries passed",
+    "unit_tests_passed": 7,
+    "lint_exit_code": 0,
+    "lint_and_existing_bundle_warnings_remain": true,
+    "model_browser_checks": 9,
+    "ingest_copy_browser_checks": 2,
+    "dataset_browser_checks": 8,
+    "workspace_navigation_regression_checks": 18,
+    "live_browser_checks": 5,
+    "mocked_mutations": "11 model requests, 2 ingest settings requests, 8 annotation regression requests; dataset fixture intercepted all 30 API requests",
+    "live_business_writes_attempted": 0,
+    "live_checks": ["Model list plus disabled failed service", "Narrow model table scrolling", "Real workspace RF-DETR prediction without apply; 1366x768 and 1280x600 keep controls visible", "Admin storage preview", "New-page strict source policy rejects actual missing-source freeze"],
+    "screenshots": ["output/playwright/model-services-live.png", "output/playwright/model-prediction-live.png", "output/playwright/dataset-splits-live.png", "output/playwright/storage-maintenance-live.png"]
+  },
+  "remaining": [
+    "Real independent test dataset, threshold calibration and model quality evaluation",
+    "SAHI upstream endpoint repair; no remote deployment changes were authorized or made",
+    "Stop all writers before offline cleanup; quarantine does not release disk space",
+    "Hard-killing offline maintenance may require documented database connection recovery",
+    "P3 quality scoring, batch model queue, multi-round automatic review and persistent vector retrieval",
+    "P4 actual training, EOS migration, Docker deployment and multi-instance operation"
+  ]
+}

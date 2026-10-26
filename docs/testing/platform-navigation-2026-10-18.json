@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-18",
+  "scope": "前端交互流程、入口、导航与上下文；保留钴蓝主题",
+  "build": {"command": "npm run build", "exit_code": 0, "evidence": "output/navigation-build.txt", "known_warning": "既有大体积 bundle 提示"},
+  "lint": {"command": "npm run lint", "exit_code": 0, "existing_warnings": 44, "new_warnings": 0, "evidence": "output/navigation-lint.txt"},
+  "browser": [
+    {"script": "scripts/verify_platform_navigation.cjs", "groups": 5, "evidence": "output/platform-navigation-ui.txt", "checks": ["项目图片、准备、队列、标注、审核、导出、训练完整入口", "模型配置往返与浏览器前进后退", "检索模式及历史查询恢复", "未保存离开保护", "训练、验证及自动标注预选项目", "功能搜索、7页390px布局、普通用户权限"]},
+    {"script": "scripts/verify_navigation_context.cjs", "groups": 2, "evidence": "output/navigation-context.txt", "checks": ["单图下一张保留审核来源", "返回审核恢复状态筛选及页码"]},
+    {"script": "scripts/verify_navigation_workspaces.cjs", "groups": 4, "evidence": "output/navigation-workspaces.txt", "checks": ["检测画布高度", "旧项目图片链接", "项目读取失败可返回", "SSH到GPU保留服务器"]},
+    {"script": "scripts/verify_match_ai_json_ui.cjs", "groups": 3, "evidence": "output/navigation-match-json-regression.txt", "checks": ["原匹配AI审核队列、失败重试与人工复核", "JSON格式化展示", "模型提示词及JSON映射编辑"]}
+  ],
+  "live_read_only": {"script": "scripts/audit_navigation_live.cjs", "pages": 18, "business_write_requests": 0, "page_errors": 0, "evidence": "output/navigation-live-after.txt", "before": "output/navigation-live-audit.txt"},
+  "runtime": {"frontend_only_restart": true, "frontend_pid": 37936, "port": 3000, "backend_unchanged_pid": 65324, "reason": "Vite缓存曾返回旧模块；重启后以当前代码重跑流程"},
+  "screenshots": ["output/playwright/navigation-prepare.png", "output/playwright/navigation-mobile.png", "output/playwright/navigation-detection.png", "output/playwright/navigation-deliver-live.png", "output/playwright/navigation-review-live.png"],
+  "limits": ["浏览器可写交互使用隔离mock，真实平台仅只读走查", "未执行业务标注写入、批量生成、删除、SSH会话或训练", "未重跑后端测试；无后端、数据库或业务规则修改"]
+}

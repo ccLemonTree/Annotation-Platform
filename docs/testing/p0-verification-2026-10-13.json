@@ -1,0 +1,327 @@
+{
+  "runtime": {
+    "checked_at": "2026-10-13T04:49:55.146071+00:00",
+    "checks": [
+      {
+        "name": "health",
+        "status": 200
+      },
+      {
+        "name": "unauthenticated annotations",
+        "status": 401
+      },
+      {
+        "name": "unauthenticated SmartEye",
+        "status": 401
+      },
+      {
+        "name": "login",
+        "status": 200
+      },
+      {
+        "name": "current user",
+        "status": 200
+      },
+      {
+        "name": "project baseline",
+        "status": 200
+      },
+      {
+        "name": "create project",
+        "status": 201
+      },
+      {
+        "name": "update project",
+        "status": 200
+      },
+      {
+        "name": "upload image",
+        "status": 201
+      },
+      {
+        "name": "upload image",
+        "status": 201
+      },
+      {
+        "name": "read image",
+        "status": 200
+      },
+      {
+        "name": "asset count",
+        "status": 200
+      },
+      {
+        "name": "create annotation",
+        "status": 201
+      },
+      {
+        "name": "read annotation",
+        "status": 200
+      },
+      {
+        "name": "review annotation",
+        "status": 200
+      },
+      {
+        "name": "batch asset status",
+        "status": 200
+      },
+      {
+        "name": "batch asset delete",
+        "status": 200
+      },
+      {
+        "name": "count after delete",
+        "status": 200
+      },
+      {
+        "name": "cascaded annotation delete",
+        "status": 404
+      },
+      {
+        "name": "cleanup owned test project",
+        "status": 204
+      },
+      {
+        "name": "project baseline preserved",
+        "status": 200
+      },
+      {
+        "name": "foreign SmartEye tenant denied",
+        "status": 403
+      },
+      {
+        "name": "invalid UUID rejected",
+        "status": 422
+      },
+      {
+        "name": "legacy SmartEye tasks still unfinished",
+        "status": 500
+      }
+    ],
+    "image": {
+      "width": 64,
+      "height": 48,
+      "content_hash": "ea0c64165b1f5cd9d39da10fe254db3ba60a1031cea9ae9b6b14a8b1822c4263",
+      "deduplicated": true
+    },
+    "original_project_count": 18,
+    "process_time_header_present": true,
+    "synthetic_project_cleaned_up": true,
+    "physical_test_blob_retained": true,
+    "final_source_checks": [
+      {
+        "name": "latest health",
+        "status": 200
+      },
+      {
+        "name": "latest no-auth error contract",
+        "status": 401
+      },
+      {
+        "name": "latest login",
+        "status": 200
+      },
+      {
+        "name": "latest create test project",
+        "status": 201
+      },
+      {
+        "name": "latest truncated JPEG rejected",
+        "status": 400
+      },
+      {
+        "name": "latest valid upload",
+        "status": 201
+      },
+      {
+        "name": "latest image content",
+        "status": 200
+      },
+      {
+        "name": "latest locked batch delete",
+        "status": 200
+      },
+      {
+        "name": "latest project count",
+        "status": 200
+      },
+      {
+        "name": "latest cleanup test project",
+        "status": 204
+      },
+      {
+        "name": "latest SmartEye foreign filter blocked",
+        "status": 403
+      },
+      {
+        "name": "latest invalid UUID",
+        "status": 422
+      },
+      {
+        "name": "latest expected SmartEye gap",
+        "status": 500
+      }
+    ],
+    "latest_server_started_from_powershell_launcher": true
+  },
+  "pytest": {
+    "command": "P0_POSTGRES_INTEGRATION=1 .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings",
+    "passed": 61,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 163,
+    "seconds": 19.16,
+    "isolation": "SQLite temporary files and independently created/dropped PostgreSQL databases",
+    "postgres_concurrent_requests": 5,
+    "postgres_delete_modes": [
+      "single",
+      "batch"
+    ]
+  },
+  "frontend_build": {
+    "command": "npm run build",
+    "exit_code": 0,
+    "warning": "chunk exceeds 500 KiB"
+  },
+  "python_syntax": {
+    "backend_files": 89,
+    "failures": 0,
+    "root_verifier_parsed": true
+  },
+  "dependency_check": {
+    "command": ".venv/Scripts/python.exe -m pip check",
+    "broken_requirements": 0
+  },
+  "migration": {
+    "database": "postgres",
+    "revision": "005",
+    "tables_restored_and_hash_verified": 10,
+    "existing_primary_keys_preserved": true,
+    "original_projects": 18,
+    "original_users": 3,
+    "constraint": "uq_asset_project_content",
+    "temporary_restore_database_removed": true
+  },
+  "browser": {
+    "existing_project_count": 18,
+    "project_status_rendered": true,
+    "asset_project_switch_verified": true,
+    "nonempty_image_ui_verified": false
+  },
+  "docker": {
+    "configuration_aligned": true,
+    "build_and_run_verified": false,
+    "reason": "Docker command unavailable"
+  },
+  "current_todo_status_counts": {
+    "已验证": 9,
+    "部分": 23,
+    "已实现未验收": 5,
+    "未完成": 36,
+    "暂缓": 35,
+    "有问题": 6
+  },
+  "updated_original_items": {
+    "O002": {
+      "status": "部分",
+      "note": "已验证10表备份恢复及004→005非破坏迁移，原数据/主键保留；SmartEye/训练最终持久模型及全新库初始化待完成。"
+    },
+    "O004": {
+      "status": "部分",
+      "note": "59项隔离测试和24次运行服务检查通过；未覆盖全部OpenAPI操作，真实SmartEye任务仍500、YOLO/COCO仍有缺口。"
+    },
+    "O006": {
+      "status": "已验证",
+      "note": "隔离测试覆盖登录、注册、默认租户、错密码、未登录、无效/过期Token、管理员依赖和验证错误脱敏；按P0范围通过。"
+    },
+    "O007": {
+      "status": "已验证",
+      "note": "隔离创建/读取/更新/删除、任务类型筛选和标签保存回读通过；运行服务合成项目CRUD及浏览器项目选择通过。"
+    },
+    "O008": {
+      "status": "已验证",
+      "note": "真实合成图片上传/读取/去重、范围检查、大小与损坏图片拒绝、批量回滚、共享删除和PG并发通过；限核心资产流程。"
+    },
+    "O009": {
+      "status": "部分",
+      "note": "JSON标注保存/读取/审核/删除、操作者及权限回归通过；检测画框、历史版本与完整计数仍排P2。"
+    },
+    "O010": {
+      "status": "部分",
+      "note": "旧SourceType收集阻断已消除；上传/共享读取/删除及运行服务合成标注流程通过，真实SmartEye到导出尚未验收。"
+    },
+    "O012": {
+      "status": "部分",
+      "note": "当前主应用统一success/code/message及HTTP状态，HTTP异常保留detail与认证头兼容旧调用；设计规范完整错误码表待同步。"
+    },
+    "O028": {
+      "status": "部分",
+      "note": "人工审核有效reviewer_id、reviewed_at已保存并测试；模型轮次、策略、证据和版本仍待P2/P3。"
+    },
+    "O032": {
+      "status": "部分",
+      "note": "上传/删除total_assets及并发计数已验证；标注保存/审核计数和版本口径尚待P2修复。"
+    },
+    "O038": {
+      "status": "已验证",
+      "note": "内容哈希路径及项目内唯一约束生效；共享图只存一份，PG中5请求并发去重、计数和单条/批量并发删除通过。"
+    },
+    "O040": {
+      "status": "部分",
+      "note": "已增加认证图片内容端点和Token Blob预览组件；合成图片读取与项目选择通过，真实数据预览性能仍未验收。"
+    },
+    "O078": {
+      "status": "部分",
+      "note": "主配置/JWT从环境读取，诊断不打印密码URL，验证响应不回显输入；历史脚本/报告默认凭据及全链日志脱敏未全面审计。"
+    },
+    "O083": {
+      "status": "部分",
+      "note": "耗时日志和运行响应头已确认正常；先前大小写敏感判定已更正，持久指标/聚合/监控平台尚未实现。"
+    },
+    "O097": {
+      "status": "已验证",
+      "note": "59项可重复pytest通过，业务库fixture改为隔离目标；2项PG用例本轮显式启用实跑，CI流水线仍属于O096。"
+    },
+    "O100": {
+      "status": "部分",
+      "note": "主入口、项目虚拟环境、前端构建及全部后端Python语法通过，ZIP/Git基线已建立；多层旧脚手架保留。"
+    },
+    "O102": {
+      "status": "部分",
+      "note": "id/UUID、状态、标签和批量请求已对齐并测试；有效框/类别结构约束与历史版本仍待P2。"
+    },
+    "O103": {
+      "status": "已验证",
+      "note": "配置密钥、登录/Token失效、role管理员依赖、标注/SmartEye认证及资源范围回归通过；限P0认证范围，不等于完整安全审计。"
+    },
+    "O104": {
+      "status": "部分",
+      "note": "核心用户/项目/资产/JSON标注契约和合成写读流程已验证；SmartEye真实功能、版本及标注统计尚未完成。"
+    },
+    "O105": {
+      "status": "已实现未验收",
+      "note": "Compose已改用DB_*实际字段、配置密钥、持久图片卷；Docker构建排除.env/私有备份/Windows虚拟环境，未实机构建运行。"
+    },
+    "O107": {
+      "status": "已验证",
+      "note": "通过PowerShell7启动脚本实际启动项目.venv后端；health、登录、读取和合成图片流程通过。"
+    },
+    "O109": {
+      "status": "部分",
+      "note": "构建/契约/权限/测试基线已修复；P0-03最终持久模型/初始化及P0-05真实SmartEye共享存储仍待接入。"
+    }
+  },
+  "remaining": [
+    "real SmartEye integration and persisted tasks",
+    "annotation drawing/history/count semantics",
+    "correct YOLO/COCO packages",
+    "initialization of a new final-schema database",
+    "EOS protocol/real requests",
+    "physical blob garbage collection"
+  ],
+  "documentation_links": {
+    "checked": 166,
+    "broken": 0
+  }
+}

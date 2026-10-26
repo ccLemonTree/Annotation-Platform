@@ -1,0 +1,68 @@
+{
+  "verified_date": "2026-10-15",
+  "scope": "标注工作台0/4676、上一张/下一张禁用及逐页扫描延迟",
+  "root_cause": {
+    "list_order_before": "created_at DESC without unique tie breaker",
+    "live_returned_before": 4676,
+    "live_unique_before": 3395,
+    "workspace_before": "Scanned all 47 pages on every image change; missing current ID yielded index -1"
+  },
+  "backend": {
+    "asset_order": "created_at DESC, id DESC",
+    "endpoint": "GET /api/assets/{asset_id}/neighbors",
+    "response_fields": ["position", "total", "previous_id", "next_id"],
+    "permission_checks": "Authentication and current asset project tenant scope; unknown and foreign assets return 404",
+    "focused_tests": {"passed": 2, "warnings": 41, "seconds": 10.62},
+    "full_suite": {"passed": 197, "warnings": 789, "seconds": 151.31, "postgres_cases": 8, "real_loader_cases": 6},
+    "regression_test": "backend/backend/tests/test_asset_navigation.py",
+    "postgres_test": "backend/backend/tests/test_resumable_upload_postgres.py: tied timestamps, actual TCP HTTP paging and neighbors",
+    "schema_revision": "012",
+    "schema_changed": false
+  },
+  "frontend": {
+    "build": "TypeScript, main and SmartEye entries passed",
+    "lint_exit_code": 0,
+    "lint_warnings_remain": true,
+    "existing_chunk_size_warning_remains": true,
+    "browser_script": "scripts/verify_workspace_navigation.cjs",
+    "browser_checks_passed": 8,
+    "browser_writes_intercepted": 5,
+    "neighbor_requests": 13,
+    "full_list_requests": 0,
+    "browser_checks": [
+      "4676-image fixture locates current image in one neighbor request without full list scan",
+      "Previous and next without creating unnecessary annotation versions",
+      "Edited box saves once before switching",
+      "HTTP 500 retains current image and draft",
+      "HTTP 409 retains current image and draft",
+      "Keyboard saves confirmed negative and navigates back",
+      "First and last boundaries and review return context",
+      "Neighbor HTTP 503 preserves image; retry restores navigation"
+    ],
+    "screenshots": ["output/playwright/workspace-navigation.png", "output/playwright/workspace-navigation-live.png"]
+  },
+  "live_readonly": {
+    "project_total": 4676,
+    "pages_checked": 47,
+    "unique_assets_after": 4676,
+    "screenshot_asset_position": 513,
+    "previous_then_next_consistent_with_list": true,
+    "real_browser_next_then_previous": true,
+    "ready_ms_single_sample": 870,
+    "ready_ms_is_benchmark": false,
+    "browser_neighbor_requests": 3,
+    "browser_full_list_requests": 0,
+    "browser_writes_attempted": 0,
+    "business_tables_count_and_sha256_unchanged": 9,
+    "business_counts": {"projects": 1, "assets": 4676, "annotations": 2, "annotation_events": 2, "images": 4676, "collections": 1, "members": 4676, "upload_receipts": 10, "upload_items": 6785},
+    "private_snapshots": "backend/backend/.backups/workspace-navigation/before.json and after.json",
+    "file_bytes_rehashed": false,
+    "backend_restarted_after_scene_queue_drained": true
+  },
+  "limits": [
+    "Browser save, failure and conflict requests were intercepted; no real annotation writes performed",
+    "Positions follow current project contents and may change during concurrent additions or deletions",
+    "Million-image projects and multiple backend instances were not validated",
+    "Existing lint, dependency deprecation and bundle size warnings remain"
+  ]
+}

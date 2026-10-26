@@ -1,0 +1,73 @@
+{
+  "verified_date": "2026-10-15",
+  "scope": "图片管理与项目选图：筛选、跨页选择、筛选全部、批次提交",
+  "backend": {
+    "full_run": {"passed": 190, "skipped": 6, "warnings": 743, "seconds": 101.96},
+    "separate_real_sdk_run": {"passed": 6, "warnings": 49, "seconds": 51.01},
+    "distinct_tests_passed": 196,
+    "postgres_cases": 8,
+    "new_test": "backend/backend/tests/test_image_selection.py",
+    "postgres_extension": "test_resumable_upload_postgres.py: actual TCP selection and JSONB scene filter",
+    "selection_checks": ["same filters as listing", "all IDs beyond page size", "tenant isolation", "project exclusion", "legacy NULL reference", "401/404/422 and invalid date range"],
+    "pip_check": "No broken requirements found",
+    "schema_revision": "012",
+    "schema_changed": false
+  },
+  "frontend": {
+    "build": "TypeScript plus main and SmartEye entries passed",
+    "lint_exit_code": 0,
+    "lint_warnings_remain": true,
+    "build_chunk_size_warning_remains": true,
+    "page_sizes": [20, 50, 100],
+    "batch_size": 1000,
+    "batch_assertions": "scripts/test_image_batches.mjs: ordering, bounds, stop on failure, remaining-only retry passed",
+    "browser_script": "scripts/verify_image_bulk_selection.cjs",
+    "browser_checks_passed": 13,
+    "browser_fixture_images": 2005,
+    "browser_writes_intercepted": 11,
+    "browser_checks": [
+      "library cross-page 40 selections",
+      "page size 100 preserves selection",
+      "all-filtered selection forwards scene/status/collection/source/name",
+      "collection assignment batches 1000/3",
+      "classification batches 1000/3",
+      "picker pagination visible and used image disabled",
+      "picker cross-page 39 selections",
+      "picker full selection filters and excludes used images",
+      "second-batch failure retains 1004 remaining IDs",
+      "retry sends only remaining 1000/4",
+      "390x844 pagination and footer within viewport",
+      "selection read failure preserves 2005 selected IDs",
+      "library project association batches 1000/1000/5 and stays on library page"
+    ],
+    "screenshots": ["output/playwright/image-bulk-selection.png", "output/playwright/image-bulk-selection-mobile.png", "output/playwright/image-library-live-selection.png"],
+    "expected_fixture_errors": "simulated HTTP 500 for second association batch and selection lookup; existing static-message context warning remains"
+  },
+  "live_readonly": {
+    "api_total": 4676,
+    "scene_filtered_total": 4265,
+    "available_to_current_project": 4676,
+    "real_browser_selected_then_cleared": 4676,
+    "business_writes_performed": 0,
+    "business_tables_count_and_sha256_unchanged": 8,
+    "project_count": 1,
+    "project_assets": 0,
+    "annotations": 0,
+    "collection_count": 1,
+    "collection_members": 4676,
+    "completed_scene_images": 4676,
+    "upload_receipts": 10,
+    "upload_items": 6785,
+    "private_snapshots": "backend/backend/.backups/image-selection/before.json and after.json",
+    "file_bytes_rehashed": false,
+    "services": "backend 127.0.0.1:8000; frontend 127.0.0.1:3000"
+  },
+  "limits": [
+    "Changing filters clears selection; page changes preserve it; browser refresh does not persist selection",
+    "Successful batches are committed independently; failure does not roll them back",
+    "Classification retry after ambiguous network timeout may enqueue again; association and collection assignment retain existing deduplication",
+    "No actual thousands-image business association or classification was submitted",
+    "Million-image selection, EOS and multiple backend instances were not validated",
+    "One pre-existing idle codex_p1 temporary PostgreSQL database with unconfirmed ownership was retained"
+  ]
+}

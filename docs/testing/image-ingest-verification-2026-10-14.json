@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-14",
+  "request": "上传/SmartEye拉取图片按可配置分辨率入库，调用可配置vLLM Qwen模型进行自定义场景分类，失败保留并支持重试",
+  "confirmed_resolution_rule": "max(width,height) >= min_long_edge; default 720; zero disables filtering",
+  "boundary_examples": {"719x719": "skip", "720x720": "import", "720x30": "import", "30x720": "import"},
+  "backend": {
+    "full_suite_passed": 170,
+    "skipped": 0,
+    "warnings": 501,
+    "seconds": 116.93,
+    "postgres_enabled_tests": 6,
+    "real_cpu_loader_enabled_tests": 6,
+    "enabled_flags": ["P0_POSTGRES_INTEGRATION", "P1_POSTGRES_INTEGRATION", "P2_POSTGRES_INTEGRATION", "P3_POSTGRES_INTEGRATION", "P2_LOADER_PYTHON"],
+    "boundary_red": "修正测试后原规则5项失败：库上传、旧项目上传和3种SmartEye等号尺寸",
+    "boundary_green": {"passed": 39, "warnings": 98, "seconds": 13.98},
+    "pip_check": "No broken requirements found",
+    "new_tests": ["tests/test_image_ingest.py", "tests/test_scene_worker.py", "tests/test_image_ingest_postgres.py"],
+    "coverage": ["配置权限/验证/持久化", "包含等号的尺寸边界", "混合批次过滤在保存之前", "旧项目上传兼容", "去重和成功结果复用", "SmartEye统一保存与硬链接", "最终图过滤与裁剪临时输入保留", "取消/旧attempt拒绝迟到", "全过滤检测任务不重试", "多场景及精确筛选", "超时/HTTP错误/非法或未知标签保留并重试", "重试或策略变更拒绝旧结果", "独立PG实际010迁移兼容旧/新列", "并发任务只领取一次", "原标注/审核/冻结/SDK回归"]
+  },
+  "frontend": {
+    "build": "TypeScript + main and SmartEye entries passed",
+    "lint": "exit 0, warnings remain",
+    "new_browser_checks": 9,
+    "regression_browser_checks": 34,
+    "total_browser_checks": 43,
+    "scripts": ["scripts/verify_scene_ingest_ui.cjs", "scripts/verify_scene_retry_ui.cjs", "scripts/verify_smarteye_ingest_ui.cjs", "scripts/verify_image_library_ui.cjs", "scripts/verify_image_collections_ui.cjs", "scripts/verify_unified_ui.cjs"],
+    "scope": "新配置/上传/分类重试/SmartEye查询与任务写入拦截；真实配置、现有图片、项目及各页面读取。未调用真实下级平台或付费AI生成",
+    "checks": ["模型地址/自定义场景保存与连接测试", "本次上传阈值和跳过数", "场景/失败状态筛选", "精确选图重试", "SmartEye共享配置与带认证阈值请求头", "手机/桌面布局", "原图片库7项和图片集4项", "主页面与SmartEye六组23项风格/布局回归"],
+    "screenshots": ["output/playwright/image-scenes-library.png", "output/playwright/image-scenes-settings.png", "output/playwright/smarteye-ingest-mobile.png"],
+    "warnings": ["现有React/lint警告", "共享UI构建包约1035KB", "原SmartEye Tailwind运行时提示"]
+  },
+  "actual_runtime": {
+    "backend_restarted_after_inclusive_fix": true,
+    "configured_model_url": "http://10.11.12.123:31030/v1",
+    "configured_model": "Qwen3.8-27B",
+    "classification_enabled": true,
+    "min_long_edge": 720,
+    "scenes": ["山上", "河边", "工厂", "电梯", "高位摄像头", "低位摄像头"],
+    "real_model_verified": ["本轮/models实际返回配置模型", "直接图文请求成功", "持久后台队列对一张现有图实际推理并保存多标签"],
+    "example_labels": ["工厂", "高位摄像头"],
+    "post_restart_verified": ["719x719实际上传201、空结果、X-Images-Skipped=1且无目录新增", "场景结果重启后持久保留", "场景精确筛选", "重复原图上传复用ID/已分类状态和字节", "SmartEye任务接口200", "无认证配置读取401"],
+    "no_new_business_test_images_created": true,
+    "equal_720_acceptance_evidence": "隔离库中真实图片上传及SmartEye保存测试；未向业务库写入合成720图片"
+  },
+  "database": {
+    "revision": "010",
+    "private_backup_before_upgrade": true,
+    "migration_verified_against_isolated_postgres": true,
+    "final_verified_at": "2026-10-14T07:15:16.693283+00:00",
+    "counts": {"tenants": 1, "users": 3, "projects": 19, "assets": 12, "images": 6, "annotations": 10, "annotation_events": 33, "export_snapshots": 2, "image_collections": 1, "image_collection_members": 6, "smarteye_jobs": 0, "smarteye_files": 0, "smarteye_schedules": 0},
+    "preserved": "原记录/关系/主键一致，除新增场景字段、设置及用户正常登录last_login_at/updated_at；未修改或回退用户数据",
+    "originals_and_frozen_snapshot_hashes_unchanged": true,
+    "temporary_test_databases_remaining": 0
+  },
+  "limits": ["当前分类恢复按单后端进程运行，单张顺序处理，多实例需租约", "场景是模型判断，需要按实际数据核对", "配置变化不会全量重跑历史图，需手动选图分类", "本轮无真实子平台拉取/EOS/生产Docker验收", "检测/Grounding预标注、完整描述、Embedding/Reranker、自动审核未完成", "物理无引用图片/ZIP清理仍未实现"]
+}

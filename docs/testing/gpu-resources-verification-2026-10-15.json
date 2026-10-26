@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-15",
+  "scope": "管理员只读绍兴A100资源页面，不含训练调度",
+  "route": "/gpu-resources",
+  "api": "GET /api/gpu-resources",
+  "transport": "ssh-manager MCP stdio，固定只读ssh_execute，无普通SSH客户端",
+  "server": "绍兴a100",
+  "live_sample": {
+    "gpu_count": 4,
+    "model": "NVIDIA A100-PCIE-40GB",
+    "memory_total_mib": 163840,
+    "memory_free_mib": 11588,
+    "compute_process_rows": 8,
+    "note": "单次快照，不能表示长期负载、GPU可调度性或训练配额；同一PID跨卡保留多行"
+  },
+  "backend_tests": {
+    "red": "13项专项因缺少实现失败后开发",
+    "gpu_focused": 14,
+    "full_passed": 300,
+    "skipped": 0,
+    "failures": 0,
+    "warnings": 995,
+    "elapsed_seconds": 334.85,
+    "postgres_and_real_loader_enabled": true,
+    "coverage": ["CSV、单位与未知值", "MIG与跨卡PID", "缺失/截断/非法指标拒绝", "缓存到期、并发合并、失败缓存", "固定参数和超时/错误脱敏", "401/403/405、管理员读取、失败不返回空成功"]
+  },
+  "frontend_state_tests": {
+    "passed": 11,
+    "script": "scripts/verify_gpu_resources.cjs",
+    "method": "Node harness，非真实浏览器",
+    "includes": ["45秒超时与取消", "默认30秒刷新与隐藏暂停", "迟到响应", "失败保留陈旧数据", "未知显存不计零", "UTC与北京时间", "权限拒绝停止采集"]
+  },
+  "browser": {
+    "passed": 10,
+    "script": "scripts/verify_gpu_resources_browser.cjs",
+    "fixture_requests": 7,
+    "business_write_attempts": 0,
+    "checks": ["真实四卡与vLLM进程", "390px无整页横向溢出", "首次失败无虚构零资源", "重试及未知指标", "失败保留陈旧快照", "进程未采集与无进程区分", "慢请求不重叠自动刷新", "隐藏暂停", "后端403停止轮询", "非管理员无菜单且直达不采集"],
+    "screenshots": ["output/playwright/gpu-resources-live.png", "output/playwright/gpu-resources-narrow.png"],
+    "console": "拦截503/403产生预期网络错误，不作为业务写入或页面异常"
+  },
+  "build": {"main_and_smarteye": "passed", "lint_exit": 0, "warnings": "仍有Hook等lint警告及构建大包提示"},
+  "data": {"migration": "none, remains 014", "tables_fingerprinted": 33, "files_sha256": 4676, "preserved": true, "normal_user_login_times_excluded": true},
+  "remote_changes": "none，未修改服务、驱动、GPU配置或进程",
+  "boundaries": ["单服务器、单后端进程15秒缓存，不保存历史", "只列计算进程，不覆盖全部图形或MIG实例", "未实现配额、预留、调度、抢占和资源释放", "部署其他主机需要Node、ssh-manager依赖及连接配置", "未做长时间压力或断电恢复验收"]
+}

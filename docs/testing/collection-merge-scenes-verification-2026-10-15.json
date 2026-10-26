@@ -1,0 +1,167 @@
+{
+  "verified_at": "2026-10-15T03:29:11.224360+00:00",
+  "scope": "上传默认已有目标、两个现有图片集合并、场景有界并发",
+  "upload_default": {
+    "priority": [
+      "当前筛选",
+      "上次使用且仍存在的图片集",
+      "已有第一集"
+    ],
+    "no_existing": "留空，主动命名",
+    "implicit_date_default": false,
+    "both_toolbar_and_empty_state": true,
+    "last_choice_survives_refresh": true
+  },
+  "backend": {
+    "passed": 195,
+    "skipped": 0,
+    "warnings": 780,
+    "duration_seconds": 156.43,
+    "postgres_cases": 8,
+    "real_loader_cases": 6,
+    "pip_check": "No broken requirements found",
+    "concurrency_default": 4,
+    "concurrency_range": [
+      1,
+      16
+    ],
+    "new_tests": [
+      "tests/test_collection_merge.py",
+      "tests/test_scene_worker.py::test_worker_bounded_parallelism_and_cancellation"
+    ],
+    "postgres_extension": "tests/test_resumable_upload_postgres.py verifies merged receipt via actual TCP API",
+    "no_new_dependencies_or_schema_migration": true
+  },
+  "frontend": {
+    "build": "TypeScript + main/SmartEye entries passed",
+    "lint_exit_code": 0,
+    "warnings_remain": true,
+    "browser_checks": {
+      "default_target": 5,
+      "dialog_lifecycle": 5,
+      "resumable_regression": 11
+    },
+    "scripts": [
+      "scripts/verify_upload_collection_default.cjs",
+      "scripts/verify_upload_dialog_lifecycle.cjs",
+      "scripts/verify_resumable_upload_ui.cjs"
+    ],
+    "browser_upload_writes_intercepted": true,
+    "live_default_target_verified": true,
+    "screenshot": "output/playwright/merged-collection-upload-default.png"
+  },
+  "merge": {
+    "source": "1015",
+    "target": "绍兴嘉兴误报-1015",
+    "image_count": 4676,
+    "added_count": 2567,
+    "uploads_moved": 8,
+    "images_and_scene_results_preserved": true,
+    "upload_receipts_preserved": true,
+    "protected_tables_preserved": 24,
+    "files_unchanged": true,
+    "processing_at_restart": 0
+  },
+  "backup": {
+    "private_path": "backend/backend/.backups/collection-merge-scenes/database-merge.json",
+    "roundtrip_and_sha256_verified": true,
+    "file_verification": "size/mtime and blob references unchanged; no claim of fresh bytewise hashing",
+    "classified_labels_and_metadata": "identical before/after merge; frozen rule collection/revision reference retargeted",
+    "schema_revision": "012",
+    "initial_stop_check_failure": "Windows listener state delay caused rollback; verified restored service and fresh backup, then successfully retried; only owned maintenance helper and backend processes touched"
+  },
+  "performance": {
+    "baseline": {
+      "concurrency": 1,
+      "seconds": 20,
+      "before": {
+        "time": "2026-10-15T11:11:10+08:00",
+        "counts": {
+          "failed": 13,
+          "completed": 1760,
+          "pending": 2902,
+          "processing": 1
+        }
+      },
+      "after": {
+        "time": "2026-10-15T11:11:30+08:00",
+        "counts": {
+          "failed": 13,
+          "completed": 1776,
+          "pending": 2886,
+          "processing": 1
+        }
+      },
+      "completed_delta": 16
+    },
+    "concurrent": {
+      "concurrency": 4,
+      "seconds": 20,
+      "before": {
+        "time": "2026-10-15T11:24:51+08:00",
+        "counts": {
+          "failed": 13,
+          "completed": 2526,
+          "pending": 2133,
+          "processing": 4
+        }
+      },
+      "after": {
+        "time": "2026-10-15T11:25:11+08:00",
+        "counts": {
+          "failed": 13,
+          "completed": 2565,
+          "pending": 2094,
+          "processing": 4
+        }
+      },
+      "completed_delta": 39,
+      "failed_delta": 0,
+      "collection_count": 1,
+      "images": 4676,
+      "upload_receipts": 10,
+      "all_resume_keys_valid": true
+    },
+    "short_window_speedup": 2.4375,
+    "interpretation": "20-second live queue windows; not a long-run throughput guarantee"
+  },
+  "runtime": {
+    "checks": [
+      {
+        "path": "/health",
+        "status": 200
+      },
+      {
+        "path": "/api/images/collections",
+        "status": 200
+      },
+      {
+        "path": "/api/images",
+        "status": 200
+      },
+      {
+        "path": "/api/projects",
+        "status": 200
+      },
+      {
+        "path": "/api/image-uploads",
+        "status": 200
+      },
+      {
+        "path": "/api/smarteye/platform-list",
+        "status": 200
+      }
+    ],
+    "collection_count": 1,
+    "images": 4676,
+    "upload_receipts": 10,
+    "read_only": true
+  },
+  "limits": [
+    "原有13张模型请求失败保留供手动重试，未自动反复调用",
+    "仍为单后端进程、本地存储；4是全局上限而非每集独立并发",
+    "未实现通用合并UI/API，仅维护服务与此次实际合并",
+    "合并后旧浏览器筛选/已选File对象须刷新，新上传默认现有集合；未操作用户本地文件队列",
+    "长期满载、EOS、Docker及模型服务器/K8s资源未变更或验收"
+  ]
+}

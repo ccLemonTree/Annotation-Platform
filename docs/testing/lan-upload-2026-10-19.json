@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-19",
+  "root_causes": {
+    "lan_http": "crypto.subtle unavailable in insecure context; client previously rejected upload",
+    "missing_images": {"collection": "1019弥漫烟雾测试", "threshold": 720, "filtered_per_zip": [93, 94], "imported": 0, "invalid": 0}
+  },
+  "checks": {
+    "sha256_against_node_native": 42,
+    "backend_upload_yolo_collection_tests": 42,
+    "frontend_build": "passed",
+    "frontend_lint": "passed with existing warnings",
+    "browser_groups": ["LAN HTTP hashing, manifest, history and target navigation", "interruption, resume, refresh and pause", "close/reopen transfer lifecycle", "collection defaults and selection"],
+    "real_lan_zip": {"threshold_720": {"imported": 1, "filtered": 1}, "override_0": {"imported": 1, "duplicates": 1}, "visible_images": 2},
+    "remote_lan_login_page": {"source": "192.168.1.115", "http": 200},
+    "owned_fixture_cleanup": "completed; preexisting image/collection/asset/annotation/snapshot IDs unchanged"
+  },
+  "business_changes": "No business archive reimport or threshold change; 187 previously filtered images require original ZIP reselection with override 0",
+  "limits": ["No original archive reupload on user's other device", "No multi-GiB end-to-end transfer"],
+  "evidence": ["output/lan-upload-tests.txt", "output/lan-upload-build.txt", "output/lan-upload-lint.txt", "output/lan-upload-ui.txt", "output/lan-upload-live-browser.txt", "output/lan-upload-resume-regression.txt", "output/lan-upload-lifecycle-regression.txt", "output/lan-upload-target-regression.txt", "output/lan-upload-investigation.txt"]
+}

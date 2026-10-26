@@ -1,0 +1,30 @@
+{
+  "feature": "图片描述、文搜图与图搜图验证和效果预览",
+  "sources": ["model_service", "server_merged_directory", "server_base_plus_lora"],
+  "verification": {
+    "regression": "127 passed before final progress/error checks; final 19 multimodal tests passed, plus 2 focused progress/retry checks passed",
+    "frontend_build": "passed",
+    "browser": {
+      "isolated_api_mocks": true,
+      "passed": ["caption reference and generated output", "manual semantic review", "arrow image navigation", "create validation set", "text and image retrieval results", "multipart vector preview", "server weight and LoRA controls", "390px layout without horizontal overflow"]
+    },
+    "real_service_smoke": {
+      "input": "synthetic 64x48 red JPEG; no business writes",
+      "WEMM Embedding 2B": "image and text vectors returned, 2048 dimensions",
+      "FastVLM LPR": "caption returned",
+      "Qwen3.8-27B": "HTTP 502 from configured service; unavailable during check"
+    },
+    "runtime": {
+      "reloaded": true,
+      "launcher_pid": 32928,
+      "log": "output/runtime/backend-20261023-002116.err.log",
+      "pre_restart": "no active training or validation, no unresolved remote validation reservation",
+      "health": 200,
+      "frontend_local_and_lan": 200,
+      "unauthenticated_api": 401,
+      "authenticated_type_filtered_apis": "200 for detection, caption and embedding sets/runs/previews"
+    }
+  },
+  "not_verified": ["real GPU inference from Swift/WeMM checkpoint or merged directory", "large batch upload and load test"],
+  "boundaries": ["no business annotations or vector indexes modified", "no full validation retry or remote training started", "no SSH manager changes", "no schema migration or new dependency"]
+}

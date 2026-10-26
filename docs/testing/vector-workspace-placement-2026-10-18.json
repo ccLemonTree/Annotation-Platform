@@ -1,0 +1,17 @@
+{
+  "date":"2026-10-18",
+  "change":"Move vector retrieval and judgment from project management to the dedicated annotation workspace",
+  "route":"/annotate/project/:projectId",
+  "scope":"frontend component extraction, navigation and documentation; no API, model inference, schema or vector data changes",
+  "red":"output/vector-placement-red.txt reproduced management rendering matching controls",
+  "browser":{
+    "mocked_checks":11,
+    "mocked_evidence":"output/vector-placement-browser.txt",
+    "checks":["management does not render or fetch matching queries","start and continue enter the vector workspace","project image entry reaches the workspace","direct URL refresh works","non-vector projects cannot mount matching controls","existing text/image query, judgment, export and preparation flows remain usable"],
+    "real_read_only":"passed against existing vector project, 1440px and 390px, zero write requests and page errors",
+    "real_evidence":"output/vector-placement-live-browser.txt"
+  },
+  "build":"passed; output/vector-placement-build.txt",
+  "lint":"exit 0, 44 existing warnings; output/vector-placement-lint.txt",
+  "not_rerun":"backend full suite and new live inference, because backend behavior is unchanged"
+}

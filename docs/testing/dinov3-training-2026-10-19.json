@@ -1,0 +1,44 @@
+{
+  "date": "2026-10-19",
+  "model": "dinov3/vits16-ltdetr-coco",
+  "kind": "dinov3_vits16_ltdetr",
+  "image": "lightly/train:latest",
+  "scope": "Supervised detection fine-tuning, frozen YOLO/COCO and remote data, checkpoint preview and validation",
+  "backend": {
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_dinov3_training.py tests/test_training_runs.py tests/test_training_dataset.py tests/test_training_outputs.py tests/test_platform_swift_training.py tests/test_checkpoint_validation.py tests/test_model_preview.py -q --tb=short --disable-warnings",
+    "passed": 156,
+    "skipped": 1,
+    "skip_reason": "Windows symlink privilege unavailable in existing artifact test",
+    "note": "Generated training API calls and CPU checkpoint conversion use isolated substitutes; they are not a real Lightly training run"
+  },
+  "frontend": {
+    "build": "passed",
+    "lint_exit_code": 0,
+    "existing_warnings": 44,
+    "warnings_in_modified_components": 0,
+    "browser": "passed",
+    "browser_evidence": "output/dinov3-browser-verification.txt",
+    "browser_scope": "Isolated API fixtures: defaults, GPU selection, COCO snapshot and class filtering, 400 retry, draft edit, 390px, completed checkpoint preview selection; no compute launch or business write"
+  },
+  "runtime": {
+    "health": 200,
+    "authenticated_catalog": "new trainer and latest image verified",
+    "openapi": "new TrainingCreate kind verified",
+    "record_primary_key_hashes": "unchanged across backend reload",
+    "running_training_count": 1,
+    "gpu_hold_count": 2,
+    "evidence": ["output/dinov3-runtime-before.json", "output/dinov3-runtime-after.json"]
+  },
+  "upstream": {
+    "source_release": "v0.17.0",
+    "checkpoint_url_head_status": 200,
+    "checkpoint_sha256": "4812416b861a80f305889cf1408775044c8b05f1baf9be45cd4b1d0edd5d4532"
+  },
+  "not_verified": [
+    "Remote Lightly image readiness and dependency/API compatibility",
+    "Actual full detector weight download, hash and CPU load",
+    "Actual GPU training and exported detector reload/inference",
+    "Electric bicycle detection accuracy on independent business images"
+  ],
+  "non_actions": ["No remote image pull or weight download", "No new training launch", "No database migration", "No commit", "No automatic model deployment"]
+}

@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-19",
+  "cause": "WorkActivityTracker called secure-context-only crypto.randomUUID on LAN HTTP",
+  "fix": "Generate RFC4122 v4 UUID with crypto.getRandomValues, including version and variant bits",
+  "checks": {
+    "before_fix": "Actual LAN project prepare annotation link reproduced the reported crash",
+    "after_fix": "Same real entry opens successfully, annotation/review timing emit distinct valid v4 session IDs",
+    "browser_environment": {"secure": false, "randomUUID": "undefined", "getRandomValues": "function"},
+    "frontend_build": "passed",
+    "backend_analytics_tests": 21,
+    "business_writes": 0,
+    "activity_write_scope": "Intercepted, not persisted"
+  },
+  "evidence": ["output/lan-review-uuid-red.txt", "output/lan-review-uuid-ui.txt", "output/lan-review-build.txt", "output/lan-review-analytics-tests.txt"],
+  "limits": ["User's separate browser not directly operated", "No real annotation/review submission or activity persistence during verification"]
+}

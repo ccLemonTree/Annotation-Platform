@@ -1,0 +1,183 @@
+{
+  "verified_at": "2026-10-15T02:23:15.714027+00:00",
+  "scope": "图片/文件夹/ZIP/TAR分片续传；现有独立图片库、每集规则、内容去重与共享场景",
+  "backend": {
+    "command": "P0/P1/P2/P3_POSTGRES_INTEGRATION=1; P2_LOADER_PYTHON=.backups/loader-env/Scripts/python.exe; .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings --show-capture=no",
+    "passed": 189,
+    "skipped": 0,
+    "warnings": 766,
+    "duration_seconds": 134.59,
+    "postgres_cases": 8,
+    "real_loader_cases": 6,
+    "new_upload_cases": 13,
+    "pip_check": "No broken requirements found",
+    "new_case_files": [
+      "backend/backend/tests/test_resumable_upload.py",
+      "backend/backend/tests/test_resumable_upload_postgres.py"
+    ],
+    "coverage": [
+      "ZIP/TAR子目录、同图去重",
+      "断开TCP重连只补缺片、并发初始化复用会话",
+      "分片校验失败/损坏后补传",
+      "其他真实用户无权读写会话",
+      "非法归档路径/链接、展开大小限制",
+      "导入游标重启恢复、不重复提交",
+      "任一边等于门槛通过、低分辨率过滤、原有场景排队",
+      "7天清理保留已入库原图",
+      "真实012 Alembic迁移"
+    ]
+  },
+  "frontend": {
+    "build": "TypeScript + Vite主应用/SmartEye双入口通过",
+    "lint_exit_code": 0,
+    "lint_warnings_remain": true,
+    "bundle_size_warning_remains": true,
+    "browser_script": "scripts/verify_resumable_upload_ui.cjs",
+    "browser_checks": [
+      "文件夹属性与ZIP/TAR选择",
+      "503中断保留已收首片",
+      "刷新后重选同文件只补缺片、SHA256清单稳定",
+      "目标图片集与720门槛传到初始化",
+      "重开弹窗重新校验当前目标",
+      "暂停停止浏览器操作并保留会话",
+      "上传按钮保持可见、内容内部滚动",
+      "390px窄屏无页面/弹窗溢出",
+      "无未捕获浏览器异常"
+    ],
+    "observed_chunk_indices": [
+      0,
+      1,
+      1,
+      2,
+      0
+    ],
+    "native_folder_extra_check": {
+      "actual_directory_selected": true,
+      "nested_path_visible": true,
+      "files_uploaded": 2,
+      "all_target_same_collection": true,
+      "script_private": ".backups/resumable-upload-runtime/verify_folder.cjs"
+    },
+    "live_dialog_reads_new_8MiB_capabilities": true,
+    "all_browser_upload_writes_intercepted": true,
+    "expected_browser_errors": "模拟503请求及已有组件警告；不等于零console输出",
+    "screenshots": [
+      "output/playwright/resumable-upload-desktop.png",
+      "output/playwright/resumable-upload-mobile.png",
+      "output/playwright/resumable-upload-live.png"
+    ]
+  },
+  "migration": {
+    "revision": "012",
+    "existing_tables_preserved": 26,
+    "all_existing_rows_and_files_unchanged": true,
+    "counts": {
+      "public.alarm_types": 0,
+      "public.alembic_version": 1,
+      "public.annotation_events": 0,
+      "public.annotations": 0,
+      "public.assets": 0,
+      "public.datasets": 0,
+      "public.export_snapshots": 0,
+      "public.image_collection_members": 0,
+      "public.image_collections": 1,
+      "public.image_ingest_settings": 1,
+      "public.image_upload_items": 0,
+      "public.image_uploads": 0,
+      "public.images": 0,
+      "public.import_batches": 0,
+      "public.platforms": 0,
+      "public.projects": 1,
+      "public.smarteye_files": 0,
+      "public.smarteye_jobs": 0,
+      "public.smarteye_schedules": 0,
+      "public.tenants": 1,
+      "public.users": 3,
+      "smarteye.ai_image_task_items": 0,
+      "smarteye.ai_image_tasks": 0,
+      "smarteye.alarm_types": 401,
+      "smarteye.devices": 0,
+      "smarteye.ledger_watch_jobs": 0,
+      "smarteye.ledger_watch_watermarks": 0,
+      "smarteye.ledger_watermarks": 0,
+      "smarteye.platforms": 99
+    },
+    "active_storage_files": 0,
+    "remaining_test_databases": []
+  },
+  "runtime": {
+    "requests": [
+      {
+        "path": "/health",
+        "status": 200
+      },
+      {
+        "path": "/api/image-uploads/config",
+        "status": 200
+      },
+      {
+        "path": "/api/image-uploads",
+        "status": 200
+      },
+      {
+        "path": "/api/images",
+        "status": 200
+      },
+      {
+        "path": "/api/images/collections",
+        "status": 200
+      },
+      {
+        "path": "/api/images/ingest-settings",
+        "status": 200
+      },
+      {
+        "path": "/api/projects",
+        "status": 200
+      },
+      {
+        "path": "/api/annotations",
+        "status": 200
+      },
+      {
+        "path": "/api/smarteye/tasks",
+        "status": 200
+      },
+      {
+        "path": "/api/smarteye/platform-list",
+        "status": 200
+      },
+      {
+        "path": "/api/stats/dashboard",
+        "status": 200
+      }
+    ],
+    "unknown_upload": 404,
+    "unauthenticated_uploads": 401,
+    "capabilities": {
+      "chunk_size": 8388608,
+      "max_file_size": 10737418240,
+      "max_image_size": 104857600,
+      "max_expanded_size": 21474836480,
+      "max_entries": 10000,
+      "retention_days": 7
+    },
+    "only_read_requests": true
+  },
+  "data_protection": {
+    "private_backup": ".backups/resumable-upload-runtime/database.json",
+    "user_project_and_collection_preserved": true,
+    "synthetic_live_business_writes": 0,
+    "env_not_overwritten": true,
+    "old_history_backup_retained": true
+  },
+  "limits": [
+    "仅单后端进程、本地存储",
+    "localhost/HTTPS提供Web Crypto；普通远程HTTP上传会被提示阻止",
+    "未验收10GiB实包、长时断网、多实例、跨机器代理、EOS、Docker",
+    "单图示例默认10MiB，当前既有配置100MiB；包10GiB/展开20GiB/10000条目/7天保留",
+    "RAR/7z未实现；文件夹子目录不自动创建图片集",
+    "分片/组装包与入库原图需要临时磁盘空间",
+    "场景服务本轮未真实调用；沿用此前模型接入与现有规则，本轮用隔离测试验证排队"
+  ]
+}

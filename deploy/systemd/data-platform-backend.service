@@ -1,0 +1,18 @@
+[Unit]
+Description=Data platform backend
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/ai/chen/code/workspace/数据管理平台/backend/backend
+Environment="SSH_CONFIG_PATH=/ai/chen/code/workspace/数据管理平台/.runtime/ssh-config.toml"
+Environment=PREFER_TOML_CONFIG=true
+Environment=PYTHONUNBUFFERED=1
+ExecStart="/ai/chen/code/workspace/数据管理平台/backend-venv/bin/python" -m uvicorn main:app --host 127.0.0.1 --port 18000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-15",
+  "authorization": "用户明确选择全部历史业务数据，保留账号、模型默认设置和SmartEye平台配置",
+  "operation": "后台停机备份后，在显式业务表白名单上事务TRUNCATE，不使用CASCADE；活动文件归档后重建空目录，随后启动后端",
+  "cleared": {"projects": 19, "image_collections": 2, "images": 6, "project_image_references": 12, "annotation_versions": 10, "annotation_events": 33, "frozen_snapshots": 2, "active_storage_files": 9, "active_storage_bytes": 19237650},
+  "business_tables_empty": ["public.annotation_events", "public.annotations", "public.export_snapshots", "public.assets", "public.image_collection_members", "public.image_collections", "public.images", "public.datasets", "public.import_batches", "public.projects", "public.smarteye_files", "public.smarteye_jobs", "public.smarteye_schedules", "smarteye.ai_image_task_items", "smarteye.ai_image_tasks", "smarteye.devices", "smarteye.ledger_watch_watermarks", "smarteye.ledger_watch_jobs", "smarteye.ledger_watermarks"],
+  "preserved_counts": {"users": 3, "tenants": 1, "model_default_settings": 1, "alembic_revision": "011", "smarteye_platforms": 99, "smarteye_alarm_types": 401},
+  "protected_tables_compared_by_complete_row_fingerprint": true,
+  "backup": {"directory": "backend/backend/.backups/history-reset-2026-10-15", "database": "database.json and database.sha256", "database_restore_type_cast": "所有业务表JSON在原PG行类型中完成只读转换并与原始行比较，未执行恢复插入", "file_copy": "storage-files", "original_directory_archive": "storage-originals", "verified_files_in_each_copy": 9, "file_sha256_checked": true, "existing_backups_retained": true, "secret_config_files_unchanged": true},
+  "runtime": {
+    "backend_restarted": true,
+    "health": 200,
+    "empty_list_200": ["/api/projects", "/api/images", "/api/annotations", "/api/images/collections", "/api/smarteye/tasks"],
+    "dashboard_all_counts": 0,
+    "deleted_project_assets": 404,
+    "unauthenticated_images": 401,
+    "model_default_settings": "Qwen3.8-27B and min_long_edge 720 retained",
+    "smarteye_platform_list": 99
+  },
+  "browser": {"checks_passed": 5, "page_errors": 0, "checks": ["工作概览空状态", "图片管理空状态", "标注与审核无项目", "项目管理无旧记录", "SmartEye任务历史为空"], "scope": "真实页面只读，不新建项目/图片集或上传样本", "screenshots": ["output/playwright/history-reset-dashboard.png", "output/playwright/history-reset-assets.png", "output/playwright/history-reset-annotations.png"]},
+  "scope_limits": ["未修改生产功能代码或数据库结构，无需重跑全量构建/测试", "备份仍保留原图和记录，可恢复，并非不可恢复擦除", "保留既有私有备份、源码、文档及原独立SmartEye项目目录", "旧的真实业务样本和项目UUID已删除，历史实库浏览器验收脚本需改为新夹具后使用", "本轮未执行备份恢复写入"]
+}

@@ -1,0 +1,68 @@
+{
+  "date": "2026-10-26",
+  "reported_symptom": "428.8 MiB 目标检测.zip stopped at 58 percent with Network Error",
+  "investigation": {
+    "backend_alive": true,
+    "backend_upload_http_errors": 0,
+    "disk_space_exhausted": false,
+    "original_network_failure_cause": "Not established from available logs; manual resume succeeded without a backend restart",
+    "reproduced_client_gap": "An XHR connection reset on one part stopped the full queue immediately despite durable idempotent parts"
+  },
+  "changes": {
+    "scope": ["frontend/src/api/imageUploads.ts", "frontend/src/api/client.ts"],
+    "maximum_part_retries": 2,
+    "retry_delays_ms": [1000, 2000],
+    "retryable_errors": ["ERR_NETWORK", "ECONNABORTED", "ETIMEDOUT", 502, 503, 504],
+    "received_parts_preserved": true,
+    "pause_cancels_backoff": true,
+    "transient_chunk_error_toasts_suppressed": true,
+    "authentication_401_handler_preserved": true,
+    "backend_changes": false,
+    "migration": false,
+    "dependencies_added": false
+  },
+  "verification": {
+    "red": "Actual upload dialog stopped with Network Error when a part connection was reset; retry expectation failed",
+    "new_browser_cases": [
+      "Single connection reset recovers without an error toast",
+      "Persistent reset stops after two retries; manual resume skips acknowledged parts",
+      "A lost response after accepted bytes can retry without duplicating data",
+      "Temporary HTTP 503 recovers",
+      "HTTP 422 is not retried",
+      "Pause during retry delay cancels immediately without another PUT"
+    ],
+    "existing_resume_browser_checks_passed": 11,
+    "backend_command": ".venv/Scripts/python.exe -m pytest tests/test_resumable_upload.py tests/test_yolo_import.py -q --disable-warnings --tb=short",
+    "backend_tests_passed": 41,
+    "backend_warnings": 416,
+    "frontend_build": "passed with existing chunk size warning",
+    "targeted_lint": "passed",
+    "browser_api_fixtures_only": true,
+    "test_business_writes": 0
+  },
+  "reported_file_readonly_verification": {
+    "upload_id": "d2a97097-cb06-4930-b1d9-a42b16261cb4",
+    "filename": "目标检测.zip",
+    "bytes": 449618056,
+    "parts": 54,
+    "collection": "电瓶车进电梯",
+    "status": "completed",
+    "stored_images": 1745,
+    "stored_annotations": 1745,
+    "invalid": 0,
+    "filtered": 0,
+    "duplicates": 0,
+    "errors": [],
+    "agent_reimported_file": false
+  },
+  "artifacts": [
+    "scripts/verify_upload_network_retry.cjs",
+    "scripts/verify_resumable_upload_ui.cjs",
+    "output/upload-network-retry-ui.txt",
+    "output/playwright/upload-network-retry.png"
+  ],
+  "limits": [
+    "Original physical network interruption was not reproduced on the user's device",
+    "No additional business file was uploaded; the reported file completed through the existing user-initiated resume"
+  ]
+}

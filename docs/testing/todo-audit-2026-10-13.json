@@ -1,0 +1,1648 @@
+{
+  "checked_at": "2026-10-13",
+  "scope": "Audit only. No migration, service restart, project/task/annotation creation or deletion. Login refreshed last_login_at. Storage checks used owned temporary directories. Database inspection used a read-only transaction.",
+  "api": {
+    "checked_at": "2026-10-13",
+    "scope": "Login updates last_login_at; other checks read data. No projects, files, annotations or tasks created or deleted.",
+    "authenticated_admin": true,
+    "tenant_id_present": true,
+    "jwt_claims": [
+      "user_id",
+      "username",
+      "tenant_id",
+      "exp",
+      "iat"
+    ],
+    "results": [
+      {
+        "check": "health",
+        "method": "GET",
+        "path": "/health",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 85,
+        "keys": [
+          "success",
+          "data",
+          "message",
+          "code"
+        ]
+      },
+      {
+        "check": "openapi",
+        "method": "GET",
+        "path": "/openapi.json",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 54802,
+        "keys": [
+          "openapi",
+          "info",
+          "paths",
+          "components"
+        ]
+      },
+      {
+        "check": "unauthenticated_me",
+        "method": "GET",
+        "path": "/api/auth/me",
+        "status": 401,
+        "x_process_time_present": false,
+        "bytes": 30,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "invalid_token_me",
+        "method": "GET",
+        "path": "/api/auth/me",
+        "status": 401,
+        "x_process_time_present": false,
+        "bytes": 31,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "wrong_password",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "status": 401,
+        "x_process_time_present": false,
+        "bytes": 37,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "admin_login",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 247,
+        "keys": [
+          "access_token",
+          "token_type",
+          "expires_in"
+        ]
+      },
+      {
+        "check": "authenticated_me",
+        "method": "GET",
+        "path": "/api/auth/me",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 218,
+        "keys": [
+          "id",
+          "tenant_id",
+          "username",
+          "email",
+          "full_name",
+          "role",
+          "is_active",
+          "created_at",
+          "last_login_at"
+        ]
+      },
+      {
+        "check": "project_list",
+        "method": "GET",
+        "path": "/api/projects?page=1&page_size=1",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 374,
+        "keys": [
+          "total",
+          "items",
+          "page",
+          "page_size"
+        ],
+        "total": 18,
+        "item_count": 1
+      },
+      {
+        "check": "user_list",
+        "method": "GET",
+        "path": "/api/users?page=1&page_size=1",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 238,
+        "keys": [
+          "total",
+          "items",
+          "page",
+          "page_size"
+        ],
+        "total": 3,
+        "item_count": 1
+      },
+      {
+        "check": "annotation_list_authenticated",
+        "method": "GET",
+        "path": "/api/annotations?page=1&page_size=1",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 45,
+        "keys": [
+          "total",
+          "items",
+          "page",
+          "page_size"
+        ],
+        "total": 0,
+        "item_count": 0
+      },
+      {
+        "check": "annotation_list_unauthenticated",
+        "method": "GET",
+        "path": "/api/annotations?page=1&page_size=1",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 45,
+        "keys": [
+          "total",
+          "items",
+          "page",
+          "page_size"
+        ],
+        "total": 0,
+        "item_count": 0
+      },
+      {
+        "check": "tenant_stats",
+        "method": "GET",
+        "path": "/api/stats/tenant/stats",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 231,
+        "keys": [
+          "total_projects",
+          "active_projects",
+          "total_assets",
+          "total_annotations",
+          "storage_used",
+          "projects_by_task_type",
+          "assets_by_source"
+        ]
+      },
+      {
+        "check": "dashboard_stats",
+        "method": "GET",
+        "path": "/api/stats/dashboard",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 267,
+        "keys": [
+          "projects_overview",
+          "assets_overview",
+          "annotations_overview",
+          "recent_trends"
+        ]
+      },
+      {
+        "check": "smarteye_platforms",
+        "method": "GET",
+        "path": "/api/smarteye/platforms",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 276
+      },
+      {
+        "check": "smarteye_tasks",
+        "method": "GET",
+        "path": "/api/smarteye/tasks?limit=1",
+        "status": 500,
+        "x_process_time_present": false,
+        "bytes": 74,
+        "keys": [
+          "success",
+          "data",
+          "message",
+          "code"
+        ]
+      },
+      {
+        "check": "detection_platforms",
+        "method": "GET",
+        "path": "/api/detections/platforms",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 216
+      },
+      {
+        "check": "detection_targets",
+        "method": "GET",
+        "path": "/api/detections/detection-targets",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 328
+      },
+      {
+        "check": "detection_query_demo",
+        "method": "POST",
+        "path": "/api/detections/query",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 211,
+        "keys": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "total": 50,
+        "item_count": 1
+      },
+      {
+        "check": "unauthenticated_assets",
+        "method": "GET",
+        "path": "/api/assets",
+        "status": 401,
+        "x_process_time_present": false,
+        "bytes": 30,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "unregistered_file_route",
+        "method": "GET",
+        "path": "/files/__codex_audit_missing__.jpg",
+        "status": 404,
+        "x_process_time_present": false,
+        "bytes": 22,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "project_detail",
+        "method": "GET",
+        "path": "/api/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 328,
+        "keys": [
+          "id",
+          "tenant_id",
+          "project_name",
+          "task_type",
+          "status",
+          "description",
+          "total_assets",
+          "annotated_count",
+          "reviewed_count",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      {
+        "check": "asset_list",
+        "method": "GET",
+        "path": "/api/assets?project_id=c8dc6722-a6d5-475e-934b-2ecd71d73e99&page=1&page_size=1",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 45,
+        "keys": [
+          "total",
+          "items",
+          "page",
+          "page_size"
+        ],
+        "total": 0,
+        "item_count": 0
+      },
+      {
+        "check": "project_basic_stats",
+        "method": "GET",
+        "path": "/api/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/stats",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 157,
+        "keys": [
+          "project_id",
+          "total_assets",
+          "annotated_count",
+          "reviewed_count",
+          "annotation_progress",
+          "review_progress"
+        ]
+      },
+      {
+        "check": "project_detailed_stats",
+        "method": "GET",
+        "path": "/api/stats/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/stats",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 305,
+        "keys": [
+          "total_assets",
+          "annotated_count",
+          "reviewed_count",
+          "annotation_progress",
+          "review_progress",
+          "assets_by_status",
+          "annotations_by_review",
+          "recent_activity"
+        ]
+      },
+      {
+        "check": "export_json",
+        "method": "GET",
+        "path": "/api/export/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/export?format=json",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 307,
+        "keys": [
+          "project",
+          "assets",
+          "export_time"
+        ]
+      },
+      {
+        "check": "export_csv",
+        "method": "GET",
+        "path": "/api/export/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/export?format=csv",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 99
+      },
+      {
+        "check": "export_coco",
+        "method": "GET",
+        "path": "/api/export/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/export?format=coco",
+        "status": 200,
+        "x_process_time_present": false,
+        "bytes": 308,
+        "keys": [
+          "info",
+          "licenses",
+          "images",
+          "annotations",
+          "categories"
+        ]
+      },
+      {
+        "check": "export_yolo",
+        "method": "GET",
+        "path": "/api/export/projects/c8dc6722-a6d5-475e-934b-2ecd71d73e99/export?format=yolo",
+        "status": 400,
+        "x_process_time_present": false,
+        "bytes": 43,
+        "keys": [
+          "detail"
+        ]
+      },
+      {
+        "check": "invalid_project_uuid",
+        "method": "GET",
+        "path": "/api/projects/undefined",
+        "status": 422,
+        "x_process_time_present": false,
+        "bytes": 419,
+        "keys": [
+          "success",
+          "data",
+          "message",
+          "code"
+        ]
+      }
+    ],
+    "operation_count_in_openapi": 46,
+    "schema_id_fields": {
+      "ProjectResponse": [
+        "id",
+        "tenant_id",
+        "project_name",
+        "task_type",
+        "status",
+        "description",
+        "total_assets",
+        "annotated_count",
+        "reviewed_count",
+        "created_at",
+        "updated_at"
+      ],
+      "AssetResponse": [
+        "id",
+        "project_id",
+        "batch_id",
+        "blob_path",
+        "content_hash",
+        "original_name",
+        "file_size",
+        "source_type",
+        "source_record_id",
+        "width",
+        "height",
+        "format",
+        "annotation_status",
+        "quality_score",
+        "created_at",
+        "updated_at"
+      ],
+      "AnnotationResponse": [
+        "id",
+        "asset_id",
+        "annotator_id",
+        "reviewer_id",
+        "annotation_data",
+        "review_status",
+        "review_comment",
+        "version",
+        "is_latest",
+        "annotation_source",
+        "created_at",
+        "updated_at",
+        "reviewed_at"
+      ]
+    }
+  },
+  "database": {
+    "read_only": true,
+    "database": "postgres",
+    "postgres_version": "PostgreSQL 16.11 (Debian 16.11-1.pgdg13+1) on x86_64-pc-linux-gnu",
+    "alembic_revisions": [
+      "004"
+    ],
+    "tables": [
+      "alarm_types",
+      "alembic_version",
+      "annotations",
+      "assets",
+      "datasets",
+      "import_batches",
+      "platforms",
+      "projects",
+      "tenants",
+      "users"
+    ],
+    "indexes_per_table": {
+      "alarm_types": 2,
+      "alembic_version": 1,
+      "annotations": 4,
+      "assets": 5,
+      "datasets": 2,
+      "import_batches": 1,
+      "platforms": 4,
+      "projects": 3,
+      "tenants": 3,
+      "users": 6
+    },
+    "model_schema_mismatches": [
+      {
+        "table": "smarteye_tasks",
+        "missing_table": true,
+        "orm_columns_absent_in_db": [
+          "completed_at",
+          "created_at",
+          "downloaded_count",
+          "error_message",
+          "failed_count",
+          "id",
+          "keyword",
+          "platform",
+          "started_at",
+          "status",
+          "target_count",
+          "task_name",
+          "tenant_id"
+        ],
+        "db_columns_absent_in_orm": []
+      },
+      {
+        "table": "smarteye_downloads",
+        "missing_table": true,
+        "orm_columns_absent_in_db": [
+          "blob_path",
+          "content_hash",
+          "created_at",
+          "file_name",
+          "file_size",
+          "height",
+          "id",
+          "mime_type",
+          "platform",
+          "reference_count",
+          "source_url",
+          "task_id",
+          "width"
+        ],
+        "db_columns_absent_in_orm": []
+      },
+      {
+        "table": "training_tasks",
+        "missing_table": true,
+        "orm_columns_absent_in_db": [
+          "best_metric",
+          "completed_at",
+          "config_yaml",
+          "created_at",
+          "dataset_version",
+          "error_message",
+          "final_loss",
+          "framework",
+          "gpu_count",
+          "gpu_type",
+          "id",
+          "k8s_job_name",
+          "k8s_namespace",
+          "model_path",
+          "model_type",
+          "progress",
+          "project_id",
+          "started_at",
+          "status",
+          "task_name"
+        ],
+        "db_columns_absent_in_orm": []
+      },
+      {
+        "table": "training_metrics",
+        "missing_table": true,
+        "orm_columns_absent_in_db": [
+          "accuracy",
+          "created_at",
+          "epoch",
+          "extra_metrics",
+          "id",
+          "learning_rate",
+          "loss",
+          "step",
+          "task_id"
+        ],
+        "db_columns_absent_in_orm": []
+      },
+      {
+        "table": "models",
+        "missing_table": true,
+        "orm_columns_absent_in_db": [
+          "accuracy",
+          "created_at",
+          "deployment_url",
+          "f1_score",
+          "framework",
+          "id",
+          "inference_time",
+          "is_deployed",
+          "model_name",
+          "model_path",
+          "model_size",
+          "model_type",
+          "model_version",
+          "project_id",
+          "training_task_id",
+          "updated_at"
+        ],
+        "db_columns_absent_in_orm": []
+      }
+    ]
+  },
+  "focused_checks": [
+    {
+      "check": "current_local_storage_save_and_exists",
+      "status": "passed",
+      "scope": "Temporary files only; not upload API or image serving"
+    },
+    {
+      "check": "current_local_storage_url_format",
+      "status": "passed",
+      "scope": "URL string only; file route absent"
+    },
+    {
+      "check": "current_local_storage_delete",
+      "status": "passed",
+      "scope": "Unshared temporary file only"
+    },
+    {
+      "check": "local_storage_rejects_parent_traversal",
+      "status": "failed",
+      "observed": "../ path writes outside the storage base, inside the owned temporary test directory"
+    },
+    {
+      "check": "coco_boxes_array",
+      "status": "failed",
+      "annotations_expected": 2,
+      "annotations_actual": 1,
+      "category_mapping_valid": true,
+      "bbox_valid": false
+    },
+    {
+      "check": "coco_category_mapping",
+      "status": "failed",
+      "annotations_expected": 1,
+      "annotations_actual": 1,
+      "category_mapping_valid": false,
+      "bbox_valid": true
+    },
+    {
+      "check": "superuser_dependency_accepts_admin_role",
+      "status": "failed",
+      "exception": "AttributeError",
+      "detail": "'User' object has no attribute 'is_superuser'"
+    },
+    {
+      "check": "password_hash_and_verify",
+      "status": "passed",
+      "scope": "In-memory synthetic password, no account writes"
+    },
+    {
+      "check": "sha256_hash_helper",
+      "status": "passed",
+      "scope": "Hash helper only; not end-to-end upload deduplication"
+    },
+    {
+      "check": "expired_jwt_rejected",
+      "status": "passed",
+      "http_status": 401
+    },
+    {
+      "check": "on_disk_app_process_time_header",
+      "status": "passed",
+      "http_status": 200,
+      "scope": "Current source TestClient, not already running server"
+    },
+    {
+      "check": "image_serving_routes_registered",
+      "status": "failed",
+      "routes": []
+    },
+    {
+      "check": "backend_python_syntax",
+      "status": "failed",
+      "errors": [
+        {
+          "file": "..\\backend\\backend\\services\\smarteye_import_service.py",
+          "line": 48,
+          "error": "invalid syntax"
+        }
+      ]
+    }
+  ],
+  "existing_pytest_storage": {
+    "command": "python -m pytest backend/backend/tests/test_storage.py --rootdir <owned-temp> --basetemp <owned-temp>/pytest-temp -q --tb=short",
+    "passed": 2,
+    "failed": 5,
+    "failures": {
+      "test_save_file_local": "save_file passed an obsolete content_hash argument",
+      "test_get_file_local": "get_file method absent",
+      "test_get_public_url_local": "get_public_url method absent",
+      "test_save_large_file": "save_file passed an obsolete content_hash argument",
+      "test_nested_directory_creation": "save_file passed an obsolete content_hash argument"
+    }
+  },
+  "zero_copy_collection": {
+    "command": "python -m pytest tests/test_zero_copy_import.py --collect-only -q --tb=short",
+    "exit_code": 1,
+    "error": "ImportError: cannot import name SourceType from models",
+    "database_fixtures_executed": false
+  },
+  "frontend_build": {
+    "command": "npm run build",
+    "exit_code": 1,
+    "errors": [
+      "DashboardPage.tsx:12 TS6133 getAssets unused",
+      "DashboardPage.tsx:56 TS2339 Project.total_assets absent",
+      "DetectionQuery.tsx:14 TS6133 Statistic unused",
+      "DetectionQuery.tsx:18 TS6133 Dayjs unused",
+      "DetectionQuery.tsx:181 TS6133 record unused"
+    ]
+  },
+  "artifacts": {
+    "postman_json_parsed": true,
+    "postman_requests": 24,
+    "docker_build_and_run_tested": false
+  },
+  "original_item_audit": [
+    {
+      "id": "O001",
+      "group": "数据库和部署",
+      "original_checked": false,
+      "text": "测试数据库连接",
+      "status": "已验证",
+      "note": "只读SQL连接成功；当前配置的业务库为postgres。"
+    },
+    {
+      "id": "O002",
+      "group": "数据库和部署",
+      "original_checked": false,
+      "text": "运行数据库迁移",
+      "status": "有问题",
+      "note": "现库alembic_version为004，但5张ORM表缺失；不能重跑删表迁移当作修复。"
+    },
+    {
+      "id": "O003",
+      "group": "数据库和部署",
+      "original_checked": false,
+      "text": "初始化默认数据（租户、管理员）",
+      "status": "部分",
+      "note": "已有管理员、tenant_id和3个用户；初始化脚本的幂等性、全新库初始化未测试。"
+    },
+    {
+      "id": "O004",
+      "group": "数据库和部署",
+      "original_checked": false,
+      "text": "测试所有API端点",
+      "status": "有问题",
+      "note": "OpenAPI有46个操作，本次仅29次请求；SmartEye任务500，写操作未全测。"
+    },
+    {
+      "id": "O005",
+      "group": "数据库和部署",
+      "original_checked": false,
+      "text": "验证JWT认证流程",
+      "status": "已验证",
+      "note": "登录/当前用户200；错密码、缺失/无效/过期Token均401。仅基本流程，角色和全路由覆盖另有问题。"
+    },
+    {
+      "id": "O006",
+      "group": "测试",
+      "original_checked": false,
+      "text": "编写用户认证测试",
+      "status": "部分",
+      "note": "已有脚本；需要隔离数据、可靠断言与完整流程。"
+    },
+    {
+      "id": "O007",
+      "group": "测试",
+      "original_checked": false,
+      "text": "编写项目管理测试",
+      "status": "部分",
+      "note": "已有脚本；需要隔离数据、可靠断言与完整流程。"
+    },
+    {
+      "id": "O008",
+      "group": "测试",
+      "original_checked": false,
+      "text": "编写资产管理测试",
+      "status": "有问题",
+      "note": "现有存储7项测试2通过5失败，旧接口与当前实现不一致；上传整链路未测。"
+    },
+    {
+      "id": "O009",
+      "group": "测试",
+      "original_checked": false,
+      "text": "编写标注管理测试",
+      "status": "有问题",
+      "note": "已有脚本可把404记为通过，当前只测空列表；需绘框、版本、认证和审核测试。"
+    },
+    {
+      "id": "O010",
+      "group": "测试",
+      "original_checked": false,
+      "text": "集成测试",
+      "status": "有问题",
+      "note": "零拷贝测试因SourceType导入失败无法收集；完整拉取到导出没有验收。"
+    },
+    {
+      "id": "O011",
+      "group": "文档",
+      "original_checked": false,
+      "text": "补充API使用示例",
+      "status": "已实现未验收",
+      "note": "历史API_GUIDE、API_DEVELOPMENT_GUIDE和Postman已有示例，未逐例执行。"
+    },
+    {
+      "id": "O012",
+      "group": "文档",
+      "original_checked": false,
+      "text": "添加错误码说明",
+      "status": "部分",
+      "note": "规范已有部分400/404描述；401/403/422/500及业务错误结构需统一。"
+    },
+    {
+      "id": "O013",
+      "group": "文档",
+      "original_checked": false,
+      "text": "编写数据库设计文档",
+      "status": "部分",
+      "note": "设计文件已存在，表/主键/删除规则需要与现库和修复方案对齐。"
+    },
+    {
+      "id": "O014",
+      "group": "文档",
+      "original_checked": false,
+      "text": "添加架构图",
+      "status": "已实现未验收",
+      "note": "设计文档已有架构图，但仍含旧Vue/多租户等描述。"
+    },
+    {
+      "id": "O015",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "设计模型服务架构",
+      "status": "部分",
+      "note": "实现方案已有适配器与Worker设计；当前仅有端点配置，无实际模型服务调用。"
+    },
+    {
+      "id": "O016",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "实现GPU资源管理",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O017",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "YOLO模型接入",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O018",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "描述模型接入",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O019",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "向量模型接入",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O020",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "DINOv3模型接入",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O021",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "模型推理API",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O022",
+      "group": "SmartEye集成",
+      "original_checked": false,
+      "text": "批量推理支持",
+      "status": "未完成",
+      "note": "只有设计、配置或模拟；这组实际上是模型能力，排P3/P4。"
+    },
+    {
+      "id": "O023",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "设计审核流程",
+      "status": "部分",
+      "note": "文档已定义自动核验、人工分流、抽检与预算；代码尚未实现。"
+    },
+    {
+      "id": "O024",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "多轮大模型研判",
+      "status": "未完成",
+      "note": "没有自动模型核验链路，排P3。"
+    },
+    {
+      "id": "O025",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "Rerank机制",
+      "status": "未完成",
+      "note": "没有自动模型核验链路，排P3。"
+    },
+    {
+      "id": "O026",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "多模态Embedding",
+      "status": "未完成",
+      "note": "没有自动模型核验链路，排P3。"
+    },
+    {
+      "id": "O027",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "审核规则引擎",
+      "status": "未完成",
+      "note": "没有自动模型核验链路，排P3。"
+    },
+    {
+      "id": "O028",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "审核结果记录",
+      "status": "部分",
+      "note": "有人工review_status等字段；缺模型轮次、策略版本、证据和有效审核人记录。"
+    },
+    {
+      "id": "O029",
+      "group": "自动审核系统",
+      "original_checked": false,
+      "text": "审核质量评估",
+      "status": "未完成",
+      "note": "没有自动模型核验链路，排P3。"
+    },
+    {
+      "id": "O030",
+      "group": "数据分析",
+      "original_checked": false,
+      "text": "标注质量分析API",
+      "status": "未完成",
+      "note": "没有对应完整分析能力，基础统计不等同于质量/效率分析。"
+    },
+    {
+      "id": "O031",
+      "group": "数据分析",
+      "original_checked": false,
+      "text": "标注效率统计API",
+      "status": "未完成",
+      "note": "没有对应完整分析能力，基础统计不等同于质量/效率分析。"
+    },
+    {
+      "id": "O032",
+      "group": "数据分析",
+      "original_checked": false,
+      "text": "项目进度追踪API",
+      "status": "部分",
+      "note": "项目/全局统计返回200，当前测试项目无资产；状态口径、保存后计数和真实数据准确性待测。"
+    },
+    {
+      "id": "O033",
+      "group": "数据分析",
+      "original_checked": false,
+      "text": "数据分布分析API",
+      "status": "部分",
+      "note": "有任务类型/来源/状态计数；无类别、设备、质量或数据集划分的完整分布分析。"
+    },
+    {
+      "id": "O034",
+      "group": "数据分析",
+      "original_checked": false,
+      "text": "可视化数据导出",
+      "status": "部分",
+      "note": "JSON/CSV空项目导出200；图表/报表导出和真实数据交付未实现。"
+    },
+    {
+      "id": "O035",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "分块上传实现",
+      "status": "暂缓",
+      "note": "未实现；普通图片上传与大小限制先完成，按实际大文件需要再做。"
+    },
+    {
+      "id": "O036",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "断点续传支持",
+      "status": "暂缓",
+      "note": "未实现；不阻塞首版小批图片流程。"
+    },
+    {
+      "id": "O037",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "图片压缩和格式转换",
+      "status": "未完成",
+      "note": "主项目没有有效处理链；迁移原SmartEye工具时复用已有实现。"
+    },
+    {
+      "id": "O038",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "文件哈希去重",
+      "status": "有问题",
+      "note": "SHA-256 helper通过；上传先落盘再查重，缺数据库唯一约束、并发去重和共享引用验收。"
+    },
+    {
+      "id": "O039",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "云存储集成（阿里云OSS/AWS S3）",
+      "status": "暂缓",
+      "note": "保留长期项；用户当前目标是本地后接EOS。EOSStorage只有S3适配骨架，真实协议待核对。"
+    },
+    {
+      "id": "O040",
+      "group": "文件管理",
+      "original_checked": false,
+      "text": "文件预览优化",
+      "status": "有问题",
+      "note": "主应用未注册图片读取路由；前端直接拼blob_path为URL，尚未打通安全预览。"
+    },
+    {
+      "id": "O041",
+      "group": "任务管理",
+      "original_checked": false,
+      "text": "任务创建和分配",
+      "status": "部分",
+      "note": "有SmartEye/训练任务代码；下载是假数据、训练路由未注册，缺真实执行与人工任务分配。"
+    },
+    {
+      "id": "O042",
+      "group": "任务管理",
+      "original_checked": false,
+      "text": "任务队列管理",
+      "status": "未完成",
+      "note": "现有内存任务/模拟不构成可靠任务系统，排P1/P4。"
+    },
+    {
+      "id": "O043",
+      "group": "任务管理",
+      "original_checked": false,
+      "text": "任务进度追踪",
+      "status": "有问题",
+      "note": "SmartEye任务读取500；内存/模拟进度不能证明真实任务状态。"
+    },
+    {
+      "id": "O044",
+      "group": "任务管理",
+      "original_checked": false,
+      "text": "任务优先级设置",
+      "status": "暂缓",
+      "note": "未实现；先做持久任务、取消和重试。"
+    },
+    {
+      "id": "O045",
+      "group": "任务管理",
+      "original_checked": false,
+      "text": "任务通知系统",
+      "status": "暂缓",
+      "note": "未实现；第一版先保证页面状态和失败原因可查。"
+    },
+    {
+      "id": "O046",
+      "group": "协作功能",
+      "original_checked": false,
+      "text": "多人协作标注",
+      "status": "未完成",
+      "note": "单租户不等于单用户；先做任务分工与同图版本保护（P2），实时同图协作后排。"
+    },
+    {
+      "id": "O047",
+      "group": "协作功能",
+      "original_checked": false,
+      "text": "标注冲突检测和解决",
+      "status": "未完成",
+      "note": "单租户仍需防止人工与迟到模型结果互相覆盖，排P2/P3。"
+    },
+    {
+      "id": "O048",
+      "group": "协作功能",
+      "original_checked": false,
+      "text": "标注历史版本控制",
+      "status": "有问题",
+      "note": "目前原记录version递增、创建时始终is_latest=True；不是可回溯版本或冻结数据集，排P2。"
+    },
+    {
+      "id": "O049",
+      "group": "协作功能",
+      "original_checked": false,
+      "text": "评论和反馈系统",
+      "status": "暂缓",
+      "note": "保留长期事项；先完成单人检测标注与版本保护。"
+    },
+    {
+      "id": "O050",
+      "group": "协作功能",
+      "original_checked": false,
+      "text": "@提及通知",
+      "status": "暂缓",
+      "note": "保留长期事项；先完成单人检测标注与版本保护。"
+    },
+    {
+      "id": "O051",
+      "group": "权限管理",
+      "original_checked": false,
+      "text": "细粒度权限控制",
+      "status": "暂缓",
+      "note": "细分权限暂缓；当前标注未认证、管理员属性错误必须在P0先修。"
+    },
+    {
+      "id": "O052",
+      "group": "权限管理",
+      "original_checked": false,
+      "text": "角色管理CRUD",
+      "status": "暂缓",
+      "note": "第一版不扩展权限体系；基本认证、角色检查和审计另列P0/P2。"
+    },
+    {
+      "id": "O053",
+      "group": "权限管理",
+      "original_checked": false,
+      "text": "权限组功能",
+      "status": "暂缓",
+      "note": "第一版不扩展权限体系；基本认证、角色检查和审计另列P0/P2。"
+    },
+    {
+      "id": "O054",
+      "group": "权限管理",
+      "original_checked": false,
+      "text": "操作审计日志",
+      "status": "未完成",
+      "note": "HTTP日志只记请求，缺持久化操作者、操作前后值和业务事件记录，排P2。"
+    },
+    {
+      "id": "O055",
+      "group": "权限管理",
+      "original_checked": false,
+      "text": "权限继承",
+      "status": "暂缓",
+      "note": "第一版不扩展权限体系；基本认证、角色检查和审计另列P0/P2。"
+    },
+    {
+      "id": "O056",
+      "group": "导入导出",
+      "original_checked": false,
+      "text": "COCO格式支持",
+      "status": "有问题",
+      "note": "空项目HTTP200；合成两框只输出一个零框，category_id=2无对应类别。需统一标注格式后重写映射。"
+    },
+    {
+      "id": "O057",
+      "group": "导入导出",
+      "original_checked": false,
+      "text": "YOLO格式支持",
+      "status": "未完成",
+      "note": "当前导出format=yolo返回400；未注册的training_routes里只有TODO和示例路径。"
+    },
+    {
+      "id": "O058",
+      "group": "导入导出",
+      "original_checked": false,
+      "text": "Pascal VOC格式支持",
+      "status": "暂缓",
+      "note": "未实现；先完成YOLO/COCO，目标训练框架需要时再排。"
+    },
+    {
+      "id": "O059",
+      "group": "导入导出",
+      "original_checked": false,
+      "text": "自定义格式配置",
+      "status": "未完成",
+      "note": "已有长期需求，尚无模板配置、标签筛选或固定类别映射，排P2/P4。"
+    },
+    {
+      "id": "O060",
+      "group": "导入导出",
+      "original_checked": false,
+      "text": "批量导出优化",
+      "status": "未完成",
+      "note": "当前一次性查询/拼接；无数据包、数据集快照、流式/后台大批导出验收。"
+    },
+    {
+      "id": "O061",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "添加完整的类型注解",
+      "status": "有问题",
+      "note": "已有部分Python/TS类型，前端5处编译错误及主键契约错配，P0先修。"
+    },
+    {
+      "id": "O062",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "配置Black代码格式化",
+      "status": "暂缓",
+      "note": "先修已失败的构建与测试；避免同时引入多套工具。"
+    },
+    {
+      "id": "O063",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "配置isort导入排序",
+      "status": "暂缓",
+      "note": "先修已失败的构建与测试；避免同时引入多套工具。"
+    },
+    {
+      "id": "O064",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "配置Flake8代码检查",
+      "status": "暂缓",
+      "note": "先修已失败的构建与测试；避免同时引入多套工具。"
+    },
+    {
+      "id": "O065",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "配置mypy类型检查",
+      "status": "暂缓",
+      "note": "先修已失败的构建与测试；避免同时引入多套工具。"
+    },
+    {
+      "id": "O066",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "添加pre-commit hooks",
+      "status": "暂缓",
+      "note": "先修已失败的构建与测试；避免同时引入多套工具。"
+    },
+    {
+      "id": "O067",
+      "group": "代码质量",
+      "original_checked": false,
+      "text": "代码覆盖率报告",
+      "status": "未完成",
+      "note": "没有可信报告，旧报告百分比无覆盖率产物支持；先修测试再生成。"
+    },
+    {
+      "id": "O068",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "数据库查询优化",
+      "status": "未完成",
+      "note": "配置或代码存在不代表实际优化已验收。"
+    },
+    {
+      "id": "O069",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "添加适当的索引",
+      "status": "部分",
+      "note": "只读查到现库各表索引；ORM声明与现库不完全一致，未做代表性数据EXPLAIN和负载测试。"
+    },
+    {
+      "id": "O070",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "实现Redis缓存",
+      "status": "未完成",
+      "note": "只存在配置，无调用链；先测瓶颈再确定是否需要。"
+    },
+    {
+      "id": "O071",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "异步任务队列（Celery）",
+      "status": "未完成",
+      "note": "只存在配置；当前asyncio.create_task复用请求DB会话，缺持久执行。P1实现可靠后台任务，框架再按需选择。"
+    },
+    {
+      "id": "O072",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "数据库连接池优化",
+      "status": "已实现未验收",
+      "note": "已有pool_size=20/max_overflow=10等配置；未做连接压力、泄漏或故障恢复测试。"
+    },
+    {
+      "id": "O073",
+      "group": "性能优化",
+      "original_checked": false,
+      "text": "API响应时间监控",
+      "status": "有问题",
+      "note": "源码TestClient有X-Process-Time，但运行中29次请求均没有此头；需核对生效版本，再验证监控。"
+    },
+    {
+      "id": "O074",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "SQL注入防护审计",
+      "status": "未完成",
+      "note": "基础ORM/JWT存在不代表安全审计完成。"
+    },
+    {
+      "id": "O075",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "XSS防护加固",
+      "status": "未完成",
+      "note": "基础ORM/JWT存在不代表安全审计完成。"
+    },
+    {
+      "id": "O076",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "CSRF保护",
+      "status": "暂缓",
+      "note": "当前使用Authorization Bearer；未实现Cookie认证CSRF机制，切到Cookie方案时再评估。"
+    },
+    {
+      "id": "O077",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "速率限制实现",
+      "status": "未完成",
+      "note": "基础ORM/JWT存在不代表安全审计完成。"
+    },
+    {
+      "id": "O078",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "敏感数据脱敏",
+      "status": "有问题",
+      "note": "默认数据库密码/JWT密钥硬编码，部分诊断代码打印连接URL；本次证据已省略凭据，代码仍需修。"
+    },
+    {
+      "id": "O079",
+      "group": "安全加固",
+      "original_checked": false,
+      "text": "安全审计日志",
+      "status": "未完成",
+      "note": "基础ORM/JWT存在不代表安全审计完成。"
+    },
+    {
+      "id": "O080",
+      "group": "监控和日志",
+      "original_checked": false,
+      "text": "集成Sentry错误追踪",
+      "status": "暂缓",
+      "note": "先保证错误日志和基本耗时可用，再按部署需要接平台。"
+    },
+    {
+      "id": "O081",
+      "group": "监控和日志",
+      "original_checked": false,
+      "text": "集成Prometheus监控",
+      "status": "暂缓",
+      "note": "先保证错误日志和基本耗时可用，再按部署需要接平台。"
+    },
+    {
+      "id": "O082",
+      "group": "监控和日志",
+      "original_checked": false,
+      "text": "日志聚合（ELK Stack）",
+      "status": "暂缓",
+      "note": "先保证错误日志和基本耗时可用，再按部署需要接平台。"
+    },
+    {
+      "id": "O083",
+      "group": "监控和日志",
+      "original_checked": false,
+      "text": "性能指标收集",
+      "status": "部分",
+      "note": "有耗时日志与源码响应头；没有持久指标/聚合/监控平台，运行中头也未生效。"
+    },
+    {
+      "id": "O084",
+      "group": "监控和日志",
+      "original_checked": false,
+      "text": "告警规则配置",
+      "status": "暂缓",
+      "note": "先保证错误日志和基本耗时可用，再按部署需要接平台。"
+    },
+    {
+      "id": "O085",
+      "group": "智能功能",
+      "original_checked": false,
+      "text": "主动学习",
+      "status": "未完成",
+      "note": "需求已有主动选样和人工纠错反馈；尚无有效闭环，排P3/P4。"
+    },
+    {
+      "id": "O086",
+      "group": "智能功能",
+      "original_checked": false,
+      "text": "模型反馈循环",
+      "status": "未完成",
+      "note": "无修正结果驱动选样、重算和训练的版本化链路，排P3/P4。"
+    },
+    {
+      "id": "O087",
+      "group": "智能功能",
+      "original_checked": false,
+      "text": "数据增强",
+      "status": "暂缓",
+      "note": "保留长期规划；主动选样与反馈按P3数据质量需求逐步实现。"
+    },
+    {
+      "id": "O088",
+      "group": "智能功能",
+      "original_checked": false,
+      "text": "异常检测",
+      "status": "暂缓",
+      "note": "保留长期规划；主动选样与反馈按P3数据质量需求逐步实现。"
+    },
+    {
+      "id": "O089",
+      "group": "智能功能",
+      "original_checked": false,
+      "text": "智能推荐",
+      "status": "暂缓",
+      "note": "保留长期规划；主动选样与反馈按P3数据质量需求逐步实现。"
+    },
+    {
+      "id": "O090",
+      "group": "API增强",
+      "original_checked": false,
+      "text": "GraphQL支持",
+      "status": "暂缓",
+      "note": "不阻塞第一版；保留候选，出现明确调用需求再实施。"
+    },
+    {
+      "id": "O091",
+      "group": "API增强",
+      "original_checked": false,
+      "text": "WebSocket实时通信",
+      "status": "暂缓",
+      "note": "不阻塞第一版；保留候选，出现明确调用需求再实施。"
+    },
+    {
+      "id": "O092",
+      "group": "API增强",
+      "original_checked": false,
+      "text": "API版本控制",
+      "status": "暂缓",
+      "note": "不阻塞第一版；保留候选，出现明确调用需求再实施。"
+    },
+    {
+      "id": "O093",
+      "group": "API增强",
+      "original_checked": false,
+      "text": "API文档国际化",
+      "status": "暂缓",
+      "note": "不阻塞第一版；保留候选，出现明确调用需求再实施。"
+    },
+    {
+      "id": "O094",
+      "group": "API增强",
+      "original_checked": false,
+      "text": "SDK开发（Python/JavaScript）",
+      "status": "暂缓",
+      "note": "不阻塞第一版；保留候选，出现明确调用需求再实施。"
+    },
+    {
+      "id": "O095",
+      "group": "运维增强",
+      "original_checked": false,
+      "text": "Kubernetes部署支持",
+      "status": "未完成",
+      "note": "只有K8s设置/模型字段；无有效清单、Job执行及资源释放验收，训练接入排P4。"
+    },
+    {
+      "id": "O096",
+      "group": "运维增强",
+      "original_checked": false,
+      "text": "CI/CD流水线",
+      "status": "暂缓",
+      "note": "真实部署目标和训练环境明确后按需实施。"
+    },
+    {
+      "id": "O097",
+      "group": "运维增强",
+      "original_checked": false,
+      "text": "自动化测试",
+      "status": "有问题",
+      "note": "已有脚本和pytest，存储5失败、零拷贝收集失败，未形成可重复CI；先P0修基线。"
+    },
+    {
+      "id": "O098",
+      "group": "运维增强",
+      "original_checked": false,
+      "text": "灰度发布",
+      "status": "暂缓",
+      "note": "真实部署目标和训练环境明确后按需实施。"
+    },
+    {
+      "id": "O099",
+      "group": "运维增强",
+      "original_checked": false,
+      "text": "监控大盘",
+      "status": "暂缓",
+      "note": "真实部署目标和训练环境明确后按需实施。"
+    },
+    {
+      "id": "O100",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "项目结构搭建",
+      "status": "有问题",
+      "note": "主应用可导入；多层backend、旧Vue并存，额外嵌套Python文件有语法错误；前端无法构建。"
+    },
+    {
+      "id": "O101",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "数据库模型设计",
+      "status": "有问题",
+      "note": "核心表存在，但SmartEye、训练和模型5张ORM表不存在。"
+    },
+    {
+      "id": "O102",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "Pydantic Schemas",
+      "status": "有问题",
+      "note": "主响应id与前端不同，SmartEye ImportRequest仍用int项目ID；缺有效框/类别结构约束。"
+    },
+    {
+      "id": "O103",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "JWT认证系统",
+      "status": "有问题",
+      "note": "基本流程通过；User没有is_superuser，管理员依赖实测AttributeError；标注路由缺认证，密钥硬编码。"
+    },
+    {
+      "id": "O104",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "基础CRUD API",
+      "status": "有问题",
+      "note": "读取部分通过；写操作未全验收，标注/删除/共享图片与前端字段已发现问题。"
+    },
+    {
+      "id": "O105",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "Docker配置",
+      "status": "有问题",
+      "note": "文件存在但未构建运行；主requirements未声明aiofiles/boto3，Compose的DATABASE_URL/JWT_SECRET_KEY与实际设置来源不一致。"
+    },
+    {
+      "id": "O106",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "文档编写",
+      "status": "部分",
+      "note": "已整理文档和索引；旧设计、错误码及功能描述需继续同步，文档存在不等于功能通过。"
+    },
+    {
+      "id": "O107",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "启动脚本",
+      "status": "已实现未验收",
+      "note": "文件存在，当前服务的目录和D:/anaconda/python.exe已确认；未用脚本做干净环境启动。"
+    },
+    {
+      "id": "O108",
+      "group": "原“已完成”",
+      "original_checked": true,
+      "text": "Postman集合",
+      "status": "已实现未验收",
+      "note": "JSON解析通过，共24条请求；没有逐项运行与产物验收。"
+    },
+    {
+      "id": "O109",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M0**: 基础框架搭建（✅ 已完成）",
+      "status": "有问题",
+      "note": "原文字称已完成，但前端构建/契约/测试基线不通过；本清单P0未完成。"
+    },
+    {
+      "id": "O110",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M1**: 核心功能实现（进行中）",
+      "status": "未完成",
+      "note": "对应P0/P2，需完成真实图片到标注/导出完整流程。"
+    },
+    {
+      "id": "O111",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M2**: SmartEye集成（计划中）",
+      "status": "未完成",
+      "note": "对应P1，六类原功能和独立调度仍未内置。"
+    },
+    {
+      "id": "O112",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M3**: 自动审核系统（计划中）",
+      "status": "未完成",
+      "note": "对应P3，待真实模型协议、审核证据与校准验收。"
+    },
+    {
+      "id": "O113",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M4**: 高级功能开发（计划中）",
+      "status": "暂缓",
+      "note": "按P4/P5分解，真实训练/EOS优先，通用扩展按需排期。"
+    },
+    {
+      "id": "O114",
+      "group": "原里程碑",
+      "original_checked": false,
+      "text": "**M5**: 生产就绪（目标）",
+      "status": "暂缓",
+      "note": "用户暂跳过生产对接；当前不具备宣称生产就绪的证据。"
+    }
+  ],
+  "status_counts": {
+    "已验证": 2,
+    "有问题": 21,
+    "部分": 15,
+    "已实现未验收": 5,
+    "未完成": 36,
+    "暂缓": 35
+  },
+  "corrections": [
+    {
+      "field": "api.results[].x_process_time_present and O083 note",
+      "reason": "The original check converted case-insensitive HTTP headers to a plain dict and used a case-sensitive lookup. The recorded false values do not prove absence or a runtime/source mismatch.",
+      "verified_after_fix": "Runtime header confirmed by a case-insensitive httpx.Headers lookup; see p0-verification-2026-10-13.json."
+    }
+  ]
+}

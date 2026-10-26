@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-13",
+  "features": ["明确旧到新类别映射，同步最新标注", "切换图片前自动保存"],
+  "backend": {
+    "command": "P0_POSTGRES_INTEGRATION=1 P1_POSTGRES_INTEGRATION=1 P2_POSTGRES_INTEGRATION=1 P2_LOADER_PYTHON=.backups/loader-env/Scripts/python.exe .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings --show-capture=no",
+    "passed": 142,
+    "warnings": 409,
+    "seconds": 78.42,
+    "postgres_tests_enabled": 4,
+    "real_cpu_loader_tests_enabled": 6,
+    "new_label_sync_tests": 5,
+    "concurrent_label_sync_and_stale_write_postgres": "passed with autoflush=False and timeout guard",
+    "pip_check": "No broken requirements found",
+    "migration": "none required; remains 007"
+  },
+  "frontend": {
+    "build": "tsc -b and both Vite entries passed",
+    "lint": "exit 0 with warnings; no unrelated cleanup",
+    "detection_editor_node_tests": 5,
+    "browser_scripts": {
+      "scripts/verify_label_rename_ui.cjs": 3,
+      "scripts/verify_autosave_navigation.cjs": 6,
+      "scripts/verify_annotation_interactions.cjs": 25,
+      "scripts/verify_unified_ui.cjs": 23
+    },
+    "autosave_cases": ["save once before navigation", "500 keeps original image and draft", "409 keeps original image and draft", "unchanged navigation creates no version", "last-box deletion requires negative confirmation", "confirmed negative saves before navigation"],
+    "browser_write_scope": "project and annotation writes intercepted; actual uploaded images read",
+    "real_ui": "test-img project mapping person; first image v4 pending with two person boxes; no console errors",
+    "screenshots": ["output/playwright/label-sync-project-final.png", "output/playwright/label-sync-workspace-final.png"]
+  },
+  "live_sync": {
+    "verified_at": "2026-10-13T14:27:33.725033+00:00",
+    "project": "test-img",
+    "project_id": "e251de70-5c16-46f4-9cd9-d90a2262539e",
+    "endpoint": "PUT /api/projects/e251de70-5c16-46f4-9cd9-d90a2262539e",
+    "mapping": {"人": "person"},
+    "updated_images": 2,
+    "updated_boxes": 5,
+    "latest_versions": [2, 4],
+    "review_status": "pending",
+    "assets": 6,
+    "annotation_rows_before": 4,
+    "annotation_rows_after": 6,
+    "frozen_snapshots": 2,
+    "geometry_and_metadata_preserved": true,
+    "historical_annotation_data_and_reviews_preserved": true,
+    "original_and_snapshot_hashes_unchanged": true,
+    "other_projects_unchanged": true,
+    "temporary_databases": [],
+    "private_backup": "backend/backend/.backups/label-sync-runtime/before.json",
+    "main_backend_restarted": true,
+    "live_health_project_and_annotations_requests": "200"
+  },
+  "limits": [
+    "类别更改生成待审核版本，需要重新审核；历史版本和已有冻结包保留原类别",
+    "刷新或关闭标签页不保证自动保存，离开工作台仍提示未保存修改",
+    "触屏多指、跨浏览器和真实多用户手工联调未执行；并发行为由独立PostgreSQL测试覆盖",
+    "预标注服务未部署；没有调用外部SmartEye拉取或付费AI",
+    "现有lint警告及共享包879KB构建提示保留"
+  ]
+}

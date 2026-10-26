@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-19",
+  "feature": "Upload-only detection overlays for configured services and trained YOLO/RF-DETR checkpoints",
+  "entry": "http://192.168.1.90:3000/model-preview",
+  "checks": {
+    "backend_tests": 78,
+    "frontend_build": "passed",
+    "frontend_lint": "passed; existing warnings only",
+    "lan_browser": ["Detection-only model selection", "Multi-image multipart upload", "Confidence, NMS and checkpoint parameters", "Scaled detection overlays and confidence", "Small-image label scaling", "Original image toggle", "Empty results", "Refresh recovery", "Failed start preserves selected files", "390px layout", "Actual service and checkpoint result images"],
+    "real_service": {"model": "YOLOv26 Fire", "result": "completed", "initial_transient_upstream_500": "retry succeeded"},
+    "real_checkpoint": {
+      "server": "绍兴a100",
+      "path": "/ai/chen/training/runs/rfdetr-20261016-225905/053025f1-a981-43f2-a5cd-57f116045d09/train/checkpoint_best_ema.pth",
+      "kind": "rfdetr_2xlarge",
+      "class_names": ["fire", "smoke", "star"],
+      "device": "cpu",
+      "result": "completed; remote stopped confirmed"
+    },
+    "owned_test_cleanup": "Three preview records/private images and two ownership-verified stopped containers/directories removed",
+    "business_data": "Preexisting library/assets/annotations/collections/validation set/run IDs unchanged",
+    "existing_training": "Running; original start timestamp unchanged; restart count 0"
+  },
+  "boundaries": {"images_per_batch": 20, "batch_bytes": 104857600, "no_truth_metrics": true, "no_caption_classification_or_annotations": true, "no_library_insertion": true},
+  "limits": ["Synthetic image used for actual inference; no model accuracy evaluation", "No real YOLO checkpoint or GPU checkpoint inference in this turn", "No ZIP or video input"],
+  "evidence": ["output/model-preview-backend.txt", "output/model-preview-build.txt", "output/model-preview-lint.txt", "output/model-preview-ui.txt", "output/model-preview-live-ui.txt", "output/model-preview-live-results.txt", "output/model-preview-cleanup.txt"]
+}

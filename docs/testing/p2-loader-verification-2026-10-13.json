@@ -1,0 +1,283 @@
+{
+  "date": "2026-10-13",
+  "scope": "P2-03 common real dataset-loader acceptance",
+  "tests": {
+    "passed": 130,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 387,
+    "seconds": 85.55,
+    "postgres_tests": 4,
+    "real_loader_tests": 6,
+    "pip_check": "No broken requirements found",
+    "command": "P0_POSTGRES_INTEGRATION=1 P1_POSTGRES_INTEGRATION=1 P2_POSTGRES_INTEGRATION=1 P2_LOADER_PYTHON=<isolated-python> .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings --show-capture=no"
+  },
+  "failures_before_fix": [
+    "YOLO current package missing mandatory val key",
+    "YOLO frozen package path dot resolves against unrelated working directory"
+  ],
+  "changes": [
+    "Omit path to anchor root to data.yaml directory",
+    "Always include train/val/test; absent splits are empty lists",
+    "Never copy train images to validation/test",
+    "Immutable legacy snapshots retain original YAML; new format requires new freeze"
+  ],
+  "synthetic_loader_reads": [
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "all",
+          "images": 3,
+          "boxes": 3
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    },
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "test",
+          "images": 1,
+          "boxes": 1
+        },
+        {
+          "split": "train",
+          "images": 1,
+          "boxes": 2
+        },
+        {
+          "split": "val",
+          "images": 1,
+          "boxes": 0
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    },
+    {
+      "format": "coco",
+      "sdk": "pycocotools",
+      "sdk_version": "2.0.11",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "all",
+          "images": 3,
+          "boxes": 3
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    },
+    {
+      "format": "coco",
+      "sdk": "pycocotools",
+      "sdk_version": "2.0.11",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "test",
+          "images": 1,
+          "boxes": 1
+        },
+        {
+          "split": "train",
+          "images": 1,
+          "boxes": 2
+        },
+        {
+          "split": "val",
+          "images": 1,
+          "boxes": 0
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    },
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "train",
+          "images": 3,
+          "boxes": 3
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    },
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "test",
+          "images": 3,
+          "boxes": 3
+        }
+      ],
+      "labels": [
+        "人",
+        "猫"
+      ],
+      "negative_images": 1,
+      "model_or_training_run": false
+    }
+  ],
+  "live_loader_reads": [
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "all",
+          "images": 2,
+          "boxes": 5
+        }
+      ],
+      "labels": [
+        "人"
+      ],
+      "negative_images": 0,
+      "model_or_training_run": false
+    },
+    {
+      "format": "coco",
+      "sdk": "pycocotools",
+      "sdk_version": "2.0.11",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "all",
+          "images": 2,
+          "boxes": 5
+        }
+      ],
+      "labels": [
+        "人"
+      ],
+      "negative_images": 0,
+      "model_or_training_run": false
+    },
+    {
+      "format": "yolo",
+      "sdk": "ultralytics",
+      "sdk_version": "8.4.176",
+      "torchvision_version": "0.21.0",
+      "splits": [
+        {
+          "split": "train",
+          "images": 2,
+          "boxes": 5
+        }
+      ],
+      "labels": [
+        "人"
+      ],
+      "negative_images": 0,
+      "model_or_training_run": false
+    }
+  ],
+  "runtime": {
+    "cases": [
+      {
+        "case": "live-yolo",
+        "images": 2
+      },
+      {
+        "case": "live-coco",
+        "images": 2
+      },
+      {
+        "case": "frozen-yolo",
+        "id": "38ffa339-6c6e-444a-b5c3-74fd96cc48a4",
+        "images": 2
+      }
+    ],
+    "core_rows_unchanged": true,
+    "old_frozen_hashes_unchanged": true,
+    "new_frozen_snapshot_id": "38ffa339-6c6e-444a-b5c3-74fd96cc48a4",
+    "new_frozen_split": "train-only; validation/test empty",
+    "approved_only": true
+  },
+  "environment": {
+    "api_runtime_dependencies_unchanged": true,
+    "loader_sdk_python": "backend/backend/.backups/loader-env/Scripts/python.exe",
+    "uses_existing_system_cpu_torch": true,
+    "torch": "2.6.0+cpu",
+    "torchvision": "0.21.0+cpu",
+    "optional_render_font_download_disabled": true,
+    "real_dataset_loaders_unmodified": true,
+    "model_download": false,
+    "training": false
+  },
+  "sources": [
+    "https://docs.ultralytics.com/datasets/detect/",
+    "https://github.com/ultralytics/ultralytics/blob/main/ultralytics/data/utils.py",
+    "https://github.com/cocodataset/cocoapi"
+  ],
+  "limitations": [
+    "Acceptance is for listed SDK versions; user training scripts not run",
+    "Real new frozen snapshot is train-only with no validation or independent test images",
+    "Old frozen snapshots deliberately keep legacy config and may fail current loader until a new freeze is created",
+    "P2-04 parent-image grouping and crop/cross-frame leakage calibration unfinished",
+    "P3 inference service URL/contract not supplied; automatic preannotation not connected",
+    "No performance, GPU training, model accuracy, EOS or Docker acceptance"
+  ],
+  "final_checks": [
+    {
+      "url": "http://localhost:3000/assets",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:8000/health",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/smarteye/tasks",
+      "status": 200
+    },
+    {
+      "url": "http://127.0.0.1:8000/api/export/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/snapshots",
+      "status": 200
+    }
+  ],
+  "temporary_test_databases_remaining": 0,
+  "core_rows_rechecked_unchanged": true
+}

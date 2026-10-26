@@ -1,0 +1,19 @@
+{
+  "date":"2026-10-18",
+  "features":["Independent LLM matching review","Agreement auto approval including negative agreement","Disagreement/uncertainty/failure manual queue","Formatted platform JSON display and editors"],
+  "scope":{"migration":false,"schema_revision":"022","queue":"Existing ProjectWorkJob/Item; one job per query","prompt":"chat_prompts.match_review plus per-batch editable instructions"},
+  "tests":{
+    "red":["output/match-ai-red.txt","output/match-ai-export-red.txt","output/match-ai-json-ui-red.txt"],
+    "backend":"220 passed; output/match-ai-final-tests.txt; worker, authentication, stale label/manual review/model/image/reference/scope/cancellation, retry, export gating and existing regression suites",
+    "browser":"output/match-ai-json-ui.txt; all-project queue, failure/retry/polling, negative agreement, manual filter/resolve, formatted evidence/config/check details, mapping editor and editable prompt, mobile 390px",
+    "actual_qwen":"output/match-ai-live-api.txt; 3 owned colour images, correct/correct approved, incorrect/incorrect approved, correct/incorrect pending manual, disagreement excluded from train.jsonl",
+    "actual_browser":"output/match-ai-live-browser.txt; real saved outcomes/evidence, 2 approved and 1 manual, zero browser writes",
+    "build":"output/match-ai-json-build.txt",
+    "lint":"44 existing warnings; output/match-ai-json-lint.txt"
+  },
+  "json_displays":["training final configuration and JSON-string checks","automation config/evidence/result","project split distributions/frozen evidence","annotation version history","matching AI evidence","structured model output"],
+  "json_editors":["model mapping","automation mapping","validation mapping"],
+  "preservation":{"business_rows":true,"business_model_configuration":true,"crop_file_hashes":true,"existing_running_training":1,"remote_training_operations":false},
+  "cleanup":"Owned temporary project, three generated images and one finished review job removed; private backup/auth under backend/backend/.backups/match-ai-review",
+  "limits":["Batch starts after user selects a model and clicks review; later human labels need another batch","Single backend worker, existing cancellation/retry limits apply","At most 1000 queries and 5000 relationships per batch","Manual queue display/filter is per current query page","Real model check used synthetic colours, not a production accuracy benchmark","Existing frozen datasets remain unchanged"]
+}

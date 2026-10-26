@@ -1,0 +1,41 @@
+async page => {
+  await page.unrouteAll();
+  const requests = [], errors = [], checks = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route(/^http:\/\/localhost:3000\/api\//, async route => {
+    const request = route.request(); requests.push({ path: new URL(request.url()).pathname, method: request.method() });
+    if (request.method() !== 'GET') return route.fulfill({ status: 405, json: { detail: '真实页面验收禁止写入' } });
+    return route.continue();
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('http://localhost:3000/models');
+  const row = page.getByRole('row').filter({ hasText: 'Qwen3.8-27B' });
+  await row.getByRole('button', { name: '编辑', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '编辑模型', exact: true });
+  const caption = editor.getByRole('textbox', { name: '描述核心提示词', exact: true });
+  const review = editor.getByRole('textbox', { name: '审核核心提示词', exact: true });
+  if (!(await caption.inputValue()).includes('可见') || !(await review.inputValue()).includes('completeness')) throw Error('Default instructions missing from real model');
+  await review.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'output/playwright/prompt-editor-live-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await review.scrollIntoViewIfNeeded();
+  if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw Error('Mobile overflow');
+  await page.screenshot({ path: 'output/playwright/prompt-editor-live-mobile.png' });
+  await editor.getByRole('button', { name: /取\s*消/, exact: true }).click();
+  checks.push('real model default instructions render on desktop/mobile; cancel without save');
+  await page.goto('http://localhost:3000/assets');
+  await page.getByRole('combobox', { name: '筛选图片集', exact: true }).click();
+  await page.locator('.ant-select-dropdown:visible .ant-select-item-option').first().click();
+  await page.getByRole('button', { name: '图片集设置', exact: true }).click();
+  const sceneEditor = page.getByRole('dialog', { name: '图片集入库与场景设置', exact: true });
+  const scene = sceneEditor.getByRole('textbox', { name: '场景分类提示词', exact: true });
+  if (!(await scene.inputValue()).includes('场景分类')) throw Error('Legacy collection default instruction missing');
+  await scene.scrollIntoViewIfNeeded();
+  const bounds = await sceneEditor.boundingBox();
+  if (!bounds || bounds.y < 0 || bounds.y + bounds.height > 844) throw Error('Scene editor exceeds mobile viewport');
+  await page.screenshot({ path: 'output/playwright/prompt-scene-live-mobile.png' });
+  await sceneEditor.getByRole('button', { name: /取\s*消/, exact: true }).click();
+  checks.push('real existing collection expands default scene instruction without rewriting saved settings');
+  if (requests.some(request => request.method !== 'GET') || errors.length) throw Error('Unexpected write/runtime error');
+  return { checks, readRequests: requests.length, writes: 0, runtimeErrors: errors, scope: 'Real local APIs and saved data, GET only, no inference/training/config writes.' };
+}

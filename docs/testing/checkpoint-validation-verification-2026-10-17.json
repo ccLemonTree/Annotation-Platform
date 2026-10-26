@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-17",
+  "feature": "直接验证YOLO / RF-DETR训练权重",
+  "backend": {
+    "full_passed": 587,
+    "full_skipped": 73,
+    "full_scope": "完整回归后补充两个专项用例及临时输入清理检查，最终专项另行运行",
+    "final_checkpoint_focused_passed": 10,
+    "isolated_postgres_gpu_lock_passed": 1,
+    "checks": ["权重与旧服务请求互斥、管理员/租户权限", "冻结权重SHA与镜像digest", "取消拒绝迟到结果、停止失败保留资源并禁止重试", "重启停止旧轮次且不自动重跑", "训练与验证GPU预留事务互斥", "批量只加载一次、类别映射", "原图哈希/尺寸与传输包校验", "停止只清理归属目录的临时输入并保留结果"]
+  },
+  "frontend": {
+    "build_exit_code": 0,
+    "lint_exit_code": 0,
+    "existing_lint_warnings": 44,
+    "existing_build_warning": "大于500kB包体",
+    "validation_regression_groups": 10,
+    "checkpoint_mocked_groups": 3,
+    "checks": ["已结束训练产物与原服务器/类别提交，无model_id", "手动权重/GPU选择及失败保留输入", "停止未确认禁止重试", "390px表单与长权重溯源无横向溢出"],
+    "browser_expected_errors": "主动模拟创建400时产生HTTP控制台错误及既有Ant Design静态message上下文提示，无pageerror",
+    "live_scope": "真实服务器与训练只读API；只用一个验证集列表夹具打开表单，所有写入禁止，无业务任务创建",
+    "screenshots_visually_checked": ["output/playwright/checkpoint-live-desktop.png", "output/playwright/checkpoint-live-mobile.png"]
+  },
+  "real_inference": {
+    "server": "绍兴a100",
+    "model": "RFDETR2XLarge",
+    "device": "cpu",
+    "image": "aisfh5.com:9091/ai/jashan_train:yolo-rfdetr",
+    "image_digest": "sha256:a5c8ea4b39d5b21e7ba1996edd33d19d66cb0c2fd88021b32aa89b305f1eda6d",
+    "weight_sha256": "a95e4a46fed8d0227b58bab2ac7a1014ced8ed9e886ac77255af599765685a42",
+    "source_unchanged": "原权重复制前/副本/复制后SHA相同，未挂载原训练目录",
+    "sample": "合成64x48图片，threshold=0.99，返回空boxes",
+    "container_exit_code": 0,
+    "gpu_device_requests": null,
+    "stopped_and_owned_test_files_cleaned": true,
+    "scope": "权重加载与预测链路验证，不是模型准确率评测；用户示例Medium路径与图片在该A100不存在，本轮未验证该文件；YOLO仅官方API核对和适配器测试"
+  },
+  "local_activation": {
+    "backend_launcher_pid_at_verification": 4244,
+    "backend_listener_pid_at_verification": 71344,
+    "migration": "无需迁移，保持019",
+    "health_and_api": "验证集、任务、训练任务、服务器和OpenAPI均正常",
+    "business_data": "基线表哈希和训练GPU hold一致，原训练仍running，无业务验证任务创建"
+  },
+  "evidence": ["output/checkpoint-full-backend.txt", "output/checkpoint-final-focused.txt", "output/checkpoint-postgres.txt", "output/checkpoint-build.txt", "output/checkpoint-lint.txt", "output/checkpoint-browser-regression.txt", "output/checkpoint-ui.txt", "output/checkpoint-live.txt"],
+  "limits": ["未用真实YOLO权重推理", "未运行完整独立真值集的准确率评测", "GPU模式的互斥逻辑和PG竞争已验证，真实推理本轮仅CPU", "单后端消费者；多实例需增加执行租约", "停止保留配置、预测、日志和已退出容器，后续维护按归属清理"]
+}

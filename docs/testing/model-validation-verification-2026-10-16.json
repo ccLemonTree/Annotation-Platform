@@ -1,0 +1,90 @@
+{
+  "date": "2026-10-16",
+  "timezone": "Asia/Shanghai",
+  "feature": "检测模型验证集",
+  "page": "/validation",
+  "api_prefix": "/api/validation",
+  "implemented": [
+    "项目人工审核标注或冻结val/test真值快照，AI单独自动通过不纳入",
+    "真值版本、类别、原图哈希与模型修订固定，原项目删除后保留验证集",
+    "模型管理检测服务、推理置信度/工作点/IoU/提示/类别映射参数",
+    "持久任务、取消/重试、重启恢复与旧attempt/权限/模型变更保护",
+    "Precision/Recall/F1、101点AP50/AP50:95、分类别指标与混淆矩阵",
+    "负样本误检、逐图错误过滤、认证原图与真值/预测叠框",
+    "报告覆盖率、JSON下载、同一批明细计算报告指标、GET不写业务数据",
+    "共享原图不复制，在线/离线存储维护保护验证集引用"
+  ],
+  "verification": {
+    "backend_full": {
+      "passed": 472,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "warnings": 1334,
+      "seconds": 403.31,
+      "junit": "backend/backend/.backups/model-validation/full-tests.xml",
+      "isolated_postgres_flags": [
+        "P0_POSTGRES_INTEGRATION",
+        "P1_POSTGRES_INTEGRATION",
+        "P2_POSTGRES_INTEGRATION",
+        "P3_POSTGRES_INTEGRATION",
+        "P2_DATASET_POSTGRES_INTEGRATION",
+        "P0_STORAGE_CLEANUP_POSTGRES",
+        "SEMANTICS_POSTGRES_INTEGRATION"
+      ],
+      "real_loader_environment": "P2_LOADER_PYTHON=backend/backend/.backups/loader-env/Scripts/python.exe"
+    },
+    "metrics_focused": {
+      "passed": 68,
+      "independent_reference": "pycocotools 2.0.11 in isolated loader interpreter",
+      "reference_datasets": 39,
+      "absolute_ap_tolerance": 1e-12,
+      "coverage": ["完美预测", "空集/无真值类别", "漏检", "重复误检", "类别混淆", "负样本误检", "分数/IoU边界", "同分排序", "每图每类maxDet100", "随机及precision-envelope对照"]
+    },
+    "postgres_and_schema_focused": {
+      "passed": 9,
+      "coverage": ["主路由单/api前缀", "016结构与ORM一致", "旧表记录保留", "已有同名表拒绝且无部分升级", "真实锁SKIP LOCKED", "取消不采纳迟到结果", "重试结果不被旧attempt覆盖", "验证快照保护已无图片库/项目引用的原图"]
+    },
+    "browser_fixture": {
+      "script": "scripts/verify_validation.cjs",
+      "passed_groups": 10,
+      "intercepted_writes": 6,
+      "real_business_writes": 0,
+      "coverage": ["全部项目分页", "null和0/仅coverage指标区分", "部分结果与错误", "认证叠框及URL释放", "筛选/下载/读取失败", "当前与冻结来源和人工审核错误", "任务参数和无效映射", "慢请求轮询/取消确认/重试", "迟到详情隔离", "普通用户只读及390px报告"]
+    },
+    "browser_live": {
+      "script": "scripts/verify_validation_live.cjs",
+      "passed_groups": 4,
+      "api_statuses": {"validation_sets": 200, "validation_runs": 200, "project_snapshots": 200},
+      "business_writes": 0,
+      "page_errors": 0,
+      "screenshots": ["output/playwright/validation-live.png", "output/playwright/validation-live-narrow.png"],
+      "visual_inspection": "桌面与390px截图已检查，移除重复标题；表格内部横向滚动，无页面横向溢出"
+    },
+    "frontend_build": {"exit_code": 0, "scope": "TypeScript及主平台/SmartEye双入口", "large_chunk_warning": true},
+    "frontend_lint": {"exit_code": 0, "errors": 0, "warnings_remain": true, "new_components_effect_reset_advisories": 3}
+  },
+  "database_and_data": {
+    "migration": "015 -> 016",
+    "new_tables": ["validation_sets", "validation_runs", "validation_items"],
+    "original_tables_in_backup": 39,
+    "changed_business_tables": [],
+    "expected_change": "Alembic版本；指纹核对排除用户正常登录时间字段",
+    "original_files": 4676,
+    "original_file_sha256_unchanged": true,
+    "new_table_row_counts_after_verification": {"validation_sets": 0, "validation_runs": 0, "validation_items": 0},
+    "private_backup": "backend/backend/.backups/model-validation/database.json",
+    "verification_record": "backend/backend/.backups/model-validation/verification.json"
+  },
+  "runtime_at_verification": {"frontend": "http://localhost:3000", "backend": "http://127.0.0.1:8000", "backend_launcher_pid": 50044, "backend_listener_pid": 62840, "restart_requires_fresh_ownership_check": true},
+  "boundaries": [
+    "未调用真实训练模型对用户验证集执行效果验收，不产生真实准确率结论，也未自动启动全库任务",
+    "检测任务首版；无分类/分割验证、权重上传或训练执行",
+    "每集最多5000张；未做5000张真实推理压力或多实例租约验收",
+    "项目来源未证明独立于训练数据，冻结val/test仍需训练记录/来源/近重复校准",
+    "AP每图每类maxDet100，无area/crowd专用规则；AP只使用实际服务返回且通过推理门槛的框",
+    "报告指标与明细一致，运行中的任务头状态可能因并发更新短暂滞后",
+    "外部服务原地替换权重但未更新平台配置时无法证明权重未变",
+    "SAM3等接口不接收NMS字段，按已有模型适配器协议执行"
+  ]
+}

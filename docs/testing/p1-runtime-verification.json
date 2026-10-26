@@ -1,0 +1,72 @@
+[
+  {
+    "path": "/health",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/platform-list",
+    "status": 200,
+    "process_time": true,
+    "configured_platforms": 99
+  },
+  {
+    "path": "/api/smarteye/tasks",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/smart-search/platforms",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/status",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/ai-image/history",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/tool-tasks",
+    "status": 200,
+    "process_time": true
+  },
+  {
+    "path": "/api/smarteye/tasks",
+    "method": "GET",
+    "authenticated": false,
+    "status": 401
+  },
+  {
+    "path": "/api/smarteye/tasks/nonexistent-p1-check",
+    "method": "GET",
+    "authenticated": true,
+    "status": 404
+  },
+  {
+    "path": "/api/smarteye/download",
+    "method": "POST",
+    "authenticated": true,
+    "status": 400
+  },
+  {
+    "path": "/api/smarteye/download",
+    "method": "POST",
+    "authenticated": false,
+    "status": 401
+  },
+  {
+    "path": "/openapi.json",
+    "status": 200,
+    "unique_smarteye_operation_ids": 6
+  }
+]

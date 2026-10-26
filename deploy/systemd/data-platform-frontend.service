@@ -1,0 +1,16 @@
+[Unit]
+Description=Data platform frontend development server
+After=data-platform-backend.service
+Wants=data-platform-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/ai/chen/code/workspace/数据管理平台/frontend
+Environment=PLATFORM_API_TARGET=http://127.0.0.1:18000
+ExecStart=/usr/bin/npm run dev
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

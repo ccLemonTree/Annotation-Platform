@@ -1,0 +1,104 @@
+{
+  "date": "2026-10-14",
+  "scope": "项目管理与图片管理导航简化",
+  "implementation": {
+    "library_route": "/assets",
+    "project_route": "/projects/:projectId/images",
+    "legacy_project_query_redirect": true,
+    "project_picker": "当前项目内抽屉选图，已使用图片禁选；失败保留选择，成功/取消保持项目地址",
+    "library_association": "留在图片库，显示目标项目及明确的查看入口",
+    "new_project": "创建成功直接进入新项目图片页",
+    "annotation_return": "返回原项目，显示项目名称",
+    "backend_changes": false,
+    "schema_changes": false,
+    "migration": false
+  },
+  "frontend": {
+    "build": "TypeScript and both Vite entries passed",
+    "editor_unit_tests": 5,
+    "lint": {
+      "exit_code": 0,
+      "warning_note": "现有及新增effect状态更新警告仍在；未进行无关重构"
+    },
+    "browser_checks": 107,
+    "browser_scripts": [
+      {
+        "path": "scripts/verify_project_navigation.cjs",
+        "checks": 13
+      },
+      {
+        "path": "scripts/verify_project_creation_navigation.cjs",
+        "checks": 2
+      },
+      {
+        "path": "scripts/verify_image_library_ui.cjs",
+        "checks": 7
+      },
+      {
+        "path": "scripts/verify_image_collections_ui.cjs",
+        "checks": 4
+      },
+      {
+        "path": "scripts/verify_autosave_navigation.cjs",
+        "checks": 6
+      },
+      {
+        "path": "scripts/verify_annotation_interactions.cjs",
+        "checks": 25
+      },
+      {
+        "path": "scripts/verify_unified_ui.cjs",
+        "checks": 23
+      },
+      {
+        "path": "scripts/verify_unified_ui_interactions.cjs",
+        "checks": 27
+      }
+    ],
+    "browser_writes": "创建/上传/关联/归类/标注写入全部拦截；真实项目和原图只读",
+    "screenshots": [
+      {
+        "path": "output/playwright/navigation-project-final.png",
+        "scope": "真实test-img六张图片，预览全部加载后截图"
+      },
+      {
+        "path": "output/playwright/navigation-picker-mobile.png",
+        "scope": "拦截构造的新图片及引用，用于选择流程验收"
+      }
+    ],
+    "test_fixture_corrections": "新建项目必填名称的实际无障碍名称带星号；测试定位已按快照修正",
+    "expected_console_errors": "关联/保存500及409由测试夹具主动返回；仍有原静态message主题和Tailwind运行时告警",
+    "bundle_warning": "559.08KB主包及895.25KB共享包仍有大小提示"
+  },
+  "runtime": {
+    "requests": 10,
+    "all_passed": true,
+    "original_hash_verified": true,
+    "backend_restart": false,
+    "final_page": "http://localhost:3000/projects/e251de70-5c16-46f4-9cd9-d90a2262539e/images",
+    "test_img_references": 6,
+    "previews_loaded": 6
+  },
+  "data_protection": {
+    "current_baseline": {
+      "projects": 19,
+      "assets": 12,
+      "images": 6,
+      "annotations": 6,
+      "annotation_events": 19,
+      "export_snapshots": 2,
+      "image_collections": 1,
+      "image_collection_members": 6,
+      "smarteye_jobs": 0,
+      "smarteye_files": 0
+    },
+    "current_records_and_originals_and_snapshots_hashes_unchanged": true,
+    "navigation_test_projects": 0,
+    "private_comparison": "backend/backend/.backups/navigation-runtime/before.json",
+    "historical_drift": "10月13日旧基线只有6个项目引用；本次开始时为12个，保留现状，没有回退用户后续操作"
+  },
+  "limits": [
+    "本轮只改前端，未重跑10月13日150项全后端回归；运行只读API检查10项通过",
+    "未验收真实上游、自动模型、EOS、生产部署或跨浏览器触控"
+  ]
+}

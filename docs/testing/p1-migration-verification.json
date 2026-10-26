@@ -1,0 +1,46 @@
+{
+  "revision": "006",
+  "retained_business_rows": {
+    "alarm_types": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "annotations": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "assets": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "datasets": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "import_batches": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platforms": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects": {
+      "count": 18,
+      "sha256": "c2c04786bd00b9a4498775d20932c3cdcbfa40ee95b3b8509a80ae0b1c72fdf5"
+    },
+    "tenants": {
+      "count": 1,
+      "sha256": "3bb6bdd15abb9c586f866c3a9a20525004c4121832d6461e1ceba6b6c96a9890"
+    },
+    "users": {
+      "count": 3,
+      "sha256": "0506639262dc43fce25833732139bebb5739d38991f7991a28061641aae36066"
+    }
+  },
+  "source_platforms": 99,
+  "source_alarm_types": 401,
+  "old_rows_unchanged": true,
+  "source_database_readonly": true,
+  "backup_created": true
+}

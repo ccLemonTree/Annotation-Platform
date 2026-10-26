@@ -1,0 +1,23 @@
+.model-preview-page { display: grid; gap: 16px; min-width: 0; }
+.model-preview-page .ant-form input.model-preview-picker { display: none; }
+.model-preview-layout { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.model-preview-layout > .ant-card { min-width: 0; }
+.model-preview-thresholds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.model-preview-thresholds .ant-input-number { width: 100%; }
+.model-preview-drop.ant-btn { width: 100%; height: auto; min-height: 72px; white-space: normal; border-style: dashed; margin-bottom: 8px; }
+.model-preview-files { list-style: none; margin: 0 0 16px; padding: 0; max-height: 180px; overflow-y: auto; }
+.model-preview-files li { display: flex; justify-content: space-between; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.model-preview-files .ant-btn { flex-shrink: 0; }
+.model-preview-note { margin-top: 16px; }
+.model-preview-history { width: 100%; margin-bottom: 16px; }
+.model-preview-summary { display: grid; gap: 12px; margin-bottom: 12px; }
+.model-preview-gallery { display: flex; gap: 8px; overflow-x: auto; padding: 12px 0; }
+.model-preview-gallery .ant-btn { display: grid; height: auto; gap: 4px; text-align: left; padding: 8px 12px; max-width: 240px; flex-shrink: 0; }
+.model-preview-gallery .ant-btn > span { overflow: hidden; text-overflow: ellipsis; }
+.model-preview-gallery small { color: var(--ui-muted); }
+.model-preview-gallery .is-selected { border-color: var(--ui-primary); background: var(--ui-primary-soft); }
+.model-preview-image { position: relative; line-height: 0; margin: 8px 0 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); overflow: hidden; }
+.model-preview-image img { display: block; width: 100%; height: auto; }
+.model-preview-loading { position: absolute; inset: 0; display: grid; place-items: center; }
+.model-preview-image svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+@media (max-width: 1050px) { .model-preview-layout { grid-template-columns: minmax(0, 1fr); } }

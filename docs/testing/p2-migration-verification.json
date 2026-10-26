@@ -1,0 +1,55 @@
+{
+  "revision": "007",
+  "old_rows_unchanged": true,
+  "retained_business_rows": {
+    "alarm_types": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "annotations": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "assets": {
+      "count": 6,
+      "sha256": "1701ca78bf66d6201ede88c5be698c8304f363ac66aceeaa73ddb7252b956dc0"
+    },
+    "datasets": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "import_batches": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platforms": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "projects": {
+      "count": 19,
+      "sha256": "62c4cf42b566f9d5d28555fab0584ec244658f8348338dad06befffe40ff2d11"
+    },
+    "smarteye_files": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "smarteye_jobs": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "smarteye_schedules": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tenants": {
+      "count": 1,
+      "sha256": "3bb6bdd15abb9c586f866c3a9a20525004c4121832d6461e1ceba6b6c96a9890"
+    },
+    "users": {
+      "count": 3,
+      "sha256": "d543adfb347cb0fb312ff308737f72d949083a1620a0451f27ee3d46aca1a4f5"
+    }
+  },
+  "private_backup_created": true
+}

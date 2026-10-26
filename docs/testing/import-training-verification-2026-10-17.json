@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-17",
+  "feature": "YOLO图库标注复用、训练产物下载、任务记录删除和日志优化",
+  "accepted_scope": [
+    "YOLO ZIP只入图库，不绑定项目；添加到任意检测项目时可明确选择带入标注",
+    "图库来源与项目副本独立，项目修改不影响其他项目，已有标注不覆盖",
+    "管理员可在导入时确认信任来源，带入项目后直接用于训练/验证；默认待审核",
+    "删除仅移除非活动训练记录，保留全部服务器文件与容器"
+  ],
+  "backend": {
+    "full_passed": 618,
+    "full_skipped": 75,
+    "library_and_related_focused_passed": 49,
+    "focused_skipped": 1,
+    "final_new_feature_focused_passed": 28,
+    "image_batch_helper": "排序、1000张分批、失败停止及仅重试剩余项通过",
+    "additive_postgres_migration_passed": 1,
+    "real_http_postgres_resume_passed": 1,
+    "checks": ["归一化坐标和类别顺序", "负样本、缺失TXT、非法框、重复路径及类别歧义", "图库来源/两个项目副本独立", "普通关联不带标注，明确选择才复制", "原有标注冲突保留", "信任导入负样本直接创建验证集和导出训练包", "管理员权限和租户隔离", "活动任务/GPU hold拒绝删除", "产物目录约束和传输SHA校验/临时副本清理", "终端回写/颜色控制符清理和输出流合并"],
+    "migration_chain_fix": "012原来引用当前ORM表；冻结为012静态结构，避免从旧版本升级时提前创建020字段。新020迁移及真实HTTP续传均用独立临时数据库验证。",
+    "skip_note": "完整回归中的可选集成检查未统一开启；额外明确运行了020隔离PG和真实HTTP续传。Windows符号链接创建权限不可用的专项跳过，路径穿越断言已执行。"
+  },
+  "frontend": {
+    "build_exit_code": 0,
+    "lint_exit_code": 0,
+    "existing_lint_warnings": 44,
+    "existing_build_warning": "大于500kB包体",
+    "mocked_browser_groups": 6,
+    "mocked_scope": "真实组件和分片校验、浏览器文件下载；全部API拦截，无业务导入或删除",
+    "live_scope": "真实图片/训练/日志读取、图库导入表单桌面和390px，所有非GET禁止；无业务写入",
+    "live_writes": 0,
+    "runtime_errors": [],
+    "screenshots_visually_checked": ["output/playwright/yolo-import-live-mobile.png", "output/playwright/training-logs-live-desktop.png", "output/playwright/yolo-project-picker-desktop.png"],
+    "motion_scope": "最终交互检查使用默认动效。切换减少动效的验收会话遇到既有下拉prepare定位异常，本次未修改共享动效规范。"
+  },
+  "real_remote": {
+    "server": "绍兴a100",
+    "run_id": "053025f1-a981-43f2-a5cd-57f116045d09",
+    "weight_download": {
+      "artifact": "checkpoint_best_ema.pth",
+      "bytes": 507931474,
+      "sha256": "a95e4a46fed8d0227b58bab2ac7a1014ced8ed9e886ac77255af599765685a42",
+      "staged_copy_cleaned": true,
+      "scope": "实际ssh-manager SFTP、大小/SHA验证及文件响应发送；未保留本机权重副本"
+    },
+    "live_http_download": "实际认证HTTP下载metrics.csv成功，响应大小和服务器校验一致",
+    "logs": {"lines": 200, "raw_control_characters": 1050, "normalized_control_characters": 0},
+    "training_start_stop_commands": 0
+  },
+  "activation": {
+    "revision": "020",
+    "backed_up_tables": 37,
+    "preserved_business_table_hashes": 36,
+    "comparison": "020新增列归一为旧结构；训练监控状态/时间/检查结果、用户登录时间不参与哈希，其余业务字段、任务ID、配置、数据源和GPU hold保留。20:49:46出现正常login请求，仅用户1的last_login_at/updated_at变化，未回退用户登录。",
+    "training": "原1个running及6个终态任务全部保留，运行训练未停止",
+    "backend_launcher_pid_at_verification": 63216,
+    "backend_listener_pid_at_verification": 70772,
+    "private_backup": "backend/backend/.backups/import-training-runtime"
+  },
+  "evidence": ["output/import-training-full-final.txt", "output/import-library-focused.txt", "output/import-training-final-focused.txt", "output/import-training-postgres.txt", "output/import-training-http-postgres.txt", "output/import-training-build.txt", "output/import-training-lint.txt", "output/import-training-browser-final.txt", "output/import-training-live-browser.txt", "output/import-training-live-api.txt", "output/import-training-remote-weight.txt"],
+  "limits": ["未导入/删除真实业务数据，写入验证使用隔离数据库和API夹具", "未做10GiB ZIP或超大权重压力测试", "未验收下载期间断网/浏览器崩溃；进程被强杀时可能残留私有暂存", "仅YOLO检测框，不含分割/姿态", "信任标注不证明训练与验证集独立"]
+}

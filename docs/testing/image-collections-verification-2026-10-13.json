@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-13",
+  "scope": "命名图片集、上传归类、按名称筛选和SmartEye平台归类",
+  "backend": {
+    "passed": 150,
+    "warnings": 443,
+    "seconds": 86.60,
+    "postgres_tests_enabled": 4,
+    "cpu_loader_tests_enabled": 6,
+    "new_tests": 4,
+    "coverage": ["1013/1014命名和空白校验", "重复内容在不同集内均可筛选且只一份原图", "已有图归类不改变项目标注", "越权与认证", "平台A/B归类与迟到取消保护", "009回填和并发幂等分类", "SmartEye原工作流/裁剪/ZIP及审核导出回归"],
+    "pip_check": "No broken requirements found"
+  },
+  "frontend": {
+    "build": "TypeScript and both Vite entries passed",
+    "named_collection_browser_checks": 4,
+    "unified_ui_checks": 23,
+    "browser_script": "scripts/verify_image_collections_ui.cjs",
+    "upload_fix": "独立图片上传显式覆盖客户端JSON头；验证multipart边界、files的文件名和PNG类型、collection_name字段",
+    "browser_write_scope": "上传及加入图片集写入全部拦截；读取真实6张图片和项目记录",
+    "screenshots": ["output/playwright/image-collections-desktop.png", "output/playwright/image-collections-mobile.png"],
+    "remaining_warnings": ["现有lint告警", "约550KB主包和881KB共享包大小提示", "SmartEye原Tailwind运行时提示"]
+  },
+  "migration": {
+    "revision": "009",
+    "verified_at": "2026-10-13T15:52:15.042420+00:00",
+    "images": 6,
+    "collections": 1,
+    "members": 6,
+    "historical_collection": "历史图片",
+    "business_records_preserved": true,
+    "originals_and_snapshots_sha256_unchanged": true,
+    "temporary_databases": [],
+    "private_backup": "backend/backend/.backups/image-collections-runtime/before.json",
+    "post_browser_business_data_unchanged": true
+  },
+  "runtime": {"main_backend_restarted": true, "requests": 10, "all_passed": true},
+  "defaults": {
+    "independent_upload": "上海日期MMDD，或显式collection_name",
+    "platform_downloads": "真实平台名称；多平台分别归类",
+    "ai_results": "AI生图",
+    "ai_materials": "SmartEye素材",
+    "missing_platform": "SmartEye（未提供平台）"
+  },
+  "limits": [
+    "图片集更名/删除及层级目录未新增",
+    "旧图片保守归到历史图片，未猜测来源",
+    "文件名/来源/首次批次仍保留第一次入库信息，图片集归属可多份",
+    "未调用真实外部平台或付费AI，EOS和生产Docker未验收",
+    "原独立SmartEye仓库历史图片仍待单独迁移"
+  ]
+}

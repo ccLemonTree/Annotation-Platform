@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-19",
+  "decision": "图片集按文件夹删除，清除独占图片，共享图片保留",
+  "backend_tests": {"passed":57,"evidence":"output/collection-delete-tests.txt","scope":["图片集删除与预览","租户/鉴权","其他集与项目引用保护","预览后新增引用","活动上传和场景分类保护","原有入库/归集/合并/分片上传/YOLO导入"]},
+  "build": {"passed":true,"evidence":"output/collection-delete-build.txt","existing_large_bundle_warning":true},
+  "lint": {"exit_code":0,"existing_warnings":44,"new_warnings":0,"evidence":"output/collection-delete-lint.txt"},
+  "browser_mock": {"groups":4,"passed":true,"business_writes":0,"evidence":"output/collection-delete-ui.txt"},
+  "live_api": {"database":"PostgreSQL","owned_fixture_images":3,"deleted_exclusive":1,"kept_shared":2,"other_collection_and_project_annotation_preserved":true,"owned_fixture_cleaned":true,"existing_image_collection_asset_annotation_snapshot_ids_unchanged":true,"evidence":"output/collection-delete-live-api.txt"},
+  "live_browser": {"read_only":true,"business_writes":0,"page_errors":0,"evidence":"output/collection-delete-live-browser.txt"},
+  "screenshots": ["output/playwright/collection-delete-confirm-mobile.png","output/playwright/collection-delete-live-preview.png"],
+  "runtime": {"api_listener_pid":85680,"frontend_pid":35980,"lan":"http://192.168.1.90:3000/","lan_status":200},
+  "limits": ["不删除现有业务图片集；仅自建夹具执行真实删除","保留原始文件，遵循既有存储保留策略","无数据库迁移，无训练配置/执行变更"]
+}

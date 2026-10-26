@@ -1,0 +1,82 @@
+[
+  {
+    "path": "app.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/__init__.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/ai_image.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/alarm_data_crawler.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/alarm_type_crawler.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/capture_image_crawler.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/config.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/db_cache.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/db_utils.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/image_dedup.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/ledger_image_downloader.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/ledger_watch_downloader.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/login_utils.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/platform_data_checker.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/platform_enum.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/reject_image_crawler.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/search_down.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/smart_search.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/tool_tasks.py",
+    "formal_equal_normalized": true
+  },
+  {
+    "path": "api/utils.py",
+    "formal_equal_normalized": true
+  }
+]

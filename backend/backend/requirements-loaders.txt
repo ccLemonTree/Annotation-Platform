@@ -1,0 +1,3 @@
+# Acceptance-only SDKs; do not install in the running API environment.
+ultralytics==8.4.176
+pycocotools==2.0.11

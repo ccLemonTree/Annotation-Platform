@@ -1,0 +1,291 @@
+[
+  {
+    "path": "/api/smarteye/ai-image/assets/<task_id>/<path:relative_name>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/history",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/history/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/import-existing",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/import-urls",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/progress/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/reuse/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/reuse/<task_id>/<item_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/upload",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ai-image/upload-folder",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/alarmType",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/download",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/download-images",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/download-zip/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/download/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/progress/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/<sched_id>",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/configure",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/status",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/scheduler/stop",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/stop/<task_id>",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-image/update-devices",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs/<job_id>",
+    "methods": [
+      "PUT"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs/<job_id>",
+    "methods": [
+      "DELETE"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs/<job_id>/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger-watch/jobs/<job_id>/stop",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/ledger/device/log",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/platform-list",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/platforms",
+    "methods": [
+      "GET",
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/progress/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/smart-search/download-zip/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/smart-search/platforms",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/smart-search/progress/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/smart-search/start",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/smart-search/sync-platforms",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tasks",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tasks/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tasks/<task_id>/cancel",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tasks/<task_id>/retry",
+    "methods": [
+      "POST"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tool-tasks",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tool-tasks/<task_id>",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tool-tasks/<task_id>/download",
+    "methods": [
+      "GET"
+    ]
+  },
+  {
+    "path": "/api/smarteye/tool-tasks/create",
+    "methods": [
+      "POST"
+    ]
+  }
+]

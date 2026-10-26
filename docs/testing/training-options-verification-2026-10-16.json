@@ -1,0 +1,85 @@
+{
+  "api": [
+    {
+      "path": "/api/training/defaults?kind=yolo26&server_id=default",
+      "status": 200,
+      "defaults": {
+        "model_path": "",
+        "output_root": "/ai/chen/training/runs/20261016-161926"
+      }
+    },
+    {
+      "path": "/api/training/runs",
+      "status": 200,
+      "defaults": null
+    },
+    {
+      "path": "/api/projects?page_size=1",
+      "status": 200,
+      "defaults": null
+    },
+    {
+      "path": "/api/images?page_size=1",
+      "status": 200,
+      "defaults": null
+    },
+    {
+      "dataset": "data.yaml",
+      "status": 200,
+      "metadata": {
+        "labels": [
+          "fire",
+          "smoke",
+          "star"
+        ],
+        "format": "yolo",
+        "splits": {
+          "train": 96598,
+          "val": 5231
+        },
+        "config_file": "/ai/chen/training/datasets/middle/data.yaml"
+      }
+    },
+    {
+      "dataset": "yolo-data.yaml",
+      "status": 200,
+      "metadata": {
+        "labels": [
+          "fire",
+          "smoke",
+          "star"
+        ],
+        "format": "yolo",
+        "splits": {
+          "train": 96598,
+          "val": 5231
+        },
+        "config_file": "/ai/chen/training/datasets/middle/yolo-data.yaml"
+      }
+    }
+  ],
+  "formal_training": false,
+  "focused_tests": 50,
+  "regression_tests": 142,
+  "cpu_loader_checks": 4,
+  "backend_pid": 58396,
+  "health": 200,
+  "business_counts": {
+    "training_runs": 0,
+    "training_gpu_holds": 0
+  },
+  "ui": {
+    "real_labels": [
+      "fire",
+      "smoke",
+      "star"
+    ],
+    "selected_labels": [
+      "smoke"
+    ],
+    "timestamp_output_visible": true,
+    "screenshot": "output/playwright/training-label-options.jpg"
+  },
+  "source_configs_unchanged": true,
+  "remote_temporary_probe_removed": true
+}

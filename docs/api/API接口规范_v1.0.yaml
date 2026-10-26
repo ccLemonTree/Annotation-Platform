@@ -1,0 +1,1503 @@
+openapi: 3.0.3
+info:
+  title: 数据管理平台 API
+  description: |
+    数据管理平台统一API规范，包含：
+    - SmartEye数据拉取功能
+    - 标注项目管理
+    - 资源导入与管理
+    - 标注与审核
+    - 训练任务管理
+
+    ## 认证方式
+    使用 Bearer Token 认证：
+    ```
+    Authorization: Bearer <token>
+    ```
+
+    ## 基础URL
+    - 开发环境：http://localhost:8000
+    - 生产环境：https://api.data-platform.com
+
+  version: 1.0.0
+  contact:
+    name: 数据管理平台团队
+    email: dev@example.com
+
+servers:
+  - url: http://localhost:8000
+    description: 本地开发环境
+  - url: https://api.data-platform.com
+    description: 生产环境
+
+tags:
+  - name: SmartEye
+    description: SmartEye数据拉取功能
+  - name: Platforms
+    description: 平台管理
+  - name: Projects
+    description: 标注项目管理
+  - name: Import
+    description: 数据导入
+  - name: Assets
+    description: 资源管理
+  - name: Annotations
+    description: 标注管理
+  - name: Review
+    description: 审核管理
+  - name: Training
+    description: 训练任务管理
+  - name: Storage
+    description: 存储服务
+
+paths:
+  # ==================== SmartEye API ====================
+
+  /api/smarteye/tasks:
+    get:
+      tags:
+        - SmartEye
+      summary: 获取SmartEye任务列表
+      description: 分页查询SmartEye下载任务列表，支持按状态筛选
+      parameters:
+        - name: page
+          in: query
+          description: 页码（从1开始）
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          description: 每页数量
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: status
+          in: query
+          description: 任务状态筛选
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+      responses:
+        '200':
+          description: 成功返回任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                    example: 1
+                  page_size:
+                    type: integer
+                    example: 20
+                  total:
+                    type: integer
+                    example: 100
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SmartEyeTaskSummary'
+
+    post:
+      tags:
+        - SmartEye
+      summary: 创建SmartEye下载任务
+      description: 创建一个新的SmartEye数据下载任务，任务将在后台异步执行
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSmartEyeTaskRequest'
+      responses:
+        '201':
+          description: 任务创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  status:
+                    type: string
+                    example: "pending"
+                  message:
+                    type: string
+                    example: "任务已创建，正在后台执行"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/smarteye/tasks/{task_id}:
+    get:
+      tags:
+        - SmartEye
+      summary: 获取任务详情和进度
+      description: 查询指定SmartEye任务的详细信息和实时进度
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功返回任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmartEyeTaskDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/smarteye/tasks/{task_id}/downloads:
+    get:
+      tags:
+        - SmartEye
+      summary: 获取任务下载的图片列表
+      description: 分页查询指定任务已下载的图片记录
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: 成功返回下载记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SmartEyeDownloadRecord'
+
+  /api/smarteye/tasks/{task_id}/download-zip:
+    get:
+      tags:
+        - SmartEye
+      summary: 下载任务图片ZIP包
+      description: 将指定任务的所有图片打包为ZIP并下载（保持原SmartEye功能）
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 返回ZIP文件
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ==================== 平台管理 API ====================
+
+  /api/platforms:
+    get:
+      tags:
+        - Platforms
+      summary: 获取平台列表
+      description: 获取所有配置的子平台列表及其告警类型
+      responses:
+        '200':
+          description: 成功返回平台列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Platform'
+
+  /api/platforms/{platform_id}/alarm-types:
+    get:
+      tags:
+        - Platforms
+      summary: 获取平台告警类型
+      description: 获取指定平台的所有告警类型配置
+      parameters:
+        - name: platform_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功返回告警类型列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AlarmType'
+
+  # ==================== 项目管理 API ====================
+
+  /api/projects:
+    get:
+      tags:
+        - Projects
+      summary: 获取标注项目列表
+      description: 分页查询当前租户下的所有标注项目
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: 成功返回项目列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectSummary'
+
+    post:
+      tags:
+        - Projects
+      summary: 创建标注项目
+      description: 创建一个新的标注项目
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: 项目创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+
+  /api/projects/{project_id}:
+    get:
+      tags:
+        - Projects
+      summary: 获取项目详情
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '200':
+          description: 成功返回项目详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Projects
+      summary: 更新项目信息
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetail'
+
+    delete:
+      tags:
+        - Projects
+      summary: 删除项目
+      description: 删除项目及其所有关联数据（谨慎操作）
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '204':
+          description: 删除成功
+
+  # ==================== 数据导入 API ====================
+
+  /api/projects/{project_id}/import/from-smarteye:
+    post:
+      tags:
+        - Import
+      summary: 从SmartEye导入图片
+      description: |
+        从已完成的SmartEye任务导入图片到标注项目
+        **核心优势**：零拷贝，直接引用SmartEye已下载的文件，秒级完成
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - smarteye_task_id
+              properties:
+                smarteye_task_id:
+                  type: string
+                  format: uuid
+                  description: SmartEye任务ID
+                filters:
+                  type: object
+                  description: 可选筛选条件
+                  properties:
+                    target_type:
+                      type: string
+                      description: 告警类型筛选
+                      example: "红衣人"
+                    device_id:
+                      type: string
+                      description: 设备ID筛选
+                    date_range:
+                      type: object
+                      properties:
+                        start:
+                          type: string
+                          format: date-time
+                        end:
+                          type: string
+                          format: date-time
+      responses:
+        '200':
+          description: 导入成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  imported_count:
+                    type: integer
+                    example: 450
+                  skipped_count:
+                    type: integer
+                    example: 50
+                    description: 已存在的图片数量
+                  message:
+                    type: string
+                    example: "成功导入 450 张图片"
+                  asset_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+
+  /api/projects/{project_id}/import/from-platform:
+    post:
+      tags:
+        - Import
+      summary: 从平台直接导入
+      description: 直接调用爬虫从子平台拉取图片（新下载）
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - platform_id
+                - start_time
+                - end_time
+              properties:
+                platform_id:
+                  type: string
+                  format: uuid
+                start_time:
+                  type: string
+                  format: date-time
+                  example: "2024-01-01T00:00:00Z"
+                end_time:
+                  type: string
+                  format: date-time
+                  example: "2024-01-31T23:59:59Z"
+                device_id:
+                  type: string
+                  description: 可选，设备ID筛选
+                alarm_type:
+                  type: string
+                  description: 可选，告警类型筛选
+      responses:
+        '202':
+          description: 导入任务已创建，正在后台执行
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  import_batch_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    example: "pending"
+                  message:
+                    type: string
+
+  /api/projects/{project_id}/import/upload:
+    post:
+      tags:
+        - Import
+      summary: 上传文件导入
+      description: 通过文件上传方式导入图片
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploaded_count:
+                    type: integer
+                  asset_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+
+  /api/projects/{project_id}/import/smarteye-tasks:
+    get:
+      tags:
+        - Import
+      summary: 获取可导入的SmartEye任务列表
+      description: 查询可用于导入的SmartEye任务（状态为completed且有下载记录）
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '200':
+          description: 成功返回可导入任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AvailableSmartEyeTask'
+
+  # ==================== 资源管理 API ====================
+
+  /api/projects/{project_id}/assets:
+    get:
+      tags:
+        - Assets
+      summary: 获取项目资源列表
+      description: 分页查询项目中的所有图片资源，支持多维度筛选
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: annotation_status
+          in: query
+          description: 标注状态筛选
+          schema:
+            type: string
+            enum: [pending, annotated, reviewed, approved, rejected]
+        - name: source_type
+          in: query
+          description: 来源类型筛选
+          schema:
+            type: string
+            enum: [smarteye, upload, api]
+        - name: date_range_start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: date_range_end
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: 成功返回资源列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  total:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AssetSummary'
+
+  /api/projects/{project_id}/assets/{asset_id}:
+    get:
+      tags:
+        - Assets
+      summary: 获取资源详情
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功返回资源详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetDetail'
+
+  # ==================== 标注管理 API ====================
+
+  /api/projects/{project_id}/assets/{asset_id}/annotations:
+    get:
+      tags:
+        - Annotations
+      summary: 获取资源的所有标注
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功返回标注列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Annotation'
+
+    post:
+      tags:
+        - Annotations
+      summary: 创建标注
+      description: 为资源添加矩形框标注
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnnotationRequest'
+      responses:
+        '201':
+          description: 标注创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Annotation'
+
+  /api/projects/{project_id}/assets/{asset_id}/annotations/{annotation_id}:
+    put:
+      tags:
+        - Annotations
+      summary: 更新标注
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: annotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAnnotationRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Annotation'
+
+    delete:
+      tags:
+        - Annotations
+      summary: 删除标注
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: annotation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: 删除成功
+
+  # ==================== 审核管理 API ====================
+
+  /api/projects/{project_id}/assets/{asset_id}/review:
+    post:
+      tags:
+        - Review
+      summary: 提交资源审核
+      description: |
+        提交资源进行自动审核或人工复核
+        - 自动审核：调用Qwen等模型进行判断
+        - 人工复核：标记为待人工审核
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - review_type
+              properties:
+                review_type:
+                  type: string
+                  enum: [auto, manual]
+                  description: 审核类型
+                reviewer_notes:
+                  type: string
+                  description: 复核员备注（人工复核时使用）
+      responses:
+        '200':
+          description: 审核完成
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewResult'
+
+  /api/projects/{project_id}/review/batch:
+    post:
+      tags:
+        - Review
+      summary: 批量审核
+      description: 批量提交多个资源进行审核
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - asset_ids
+                - review_type
+              properties:
+                asset_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  maxItems: 100
+                review_type:
+                  type: string
+                  enum: [auto, manual]
+      responses:
+        '202':
+          description: 批量审核任务已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  total_count:
+                    type: integer
+                  status:
+                    type: string
+                    example: "processing"
+
+  # ==================== 训练管理 API ====================
+
+  /api/projects/{project_id}/training/export-dataset:
+    post:
+      tags:
+        - Training
+      summary: 导出训练数据集
+      description: 将已审核通过的标注数据导出为训练数据集（YOLO格式）
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - format
+              properties:
+                format:
+                  type: string
+                  enum: [yolo, coco, voc]
+                  description: 数据集格式
+                split_ratio:
+                  type: object
+                  description: 训练/验证/测试集划分比例
+                  properties:
+                    train:
+                      type: number
+                      example: 0.8
+                    val:
+                      type: number
+                      example: 0.1
+                    test:
+                      type: number
+                      example: 0.1
+                filters:
+                  type: object
+                  description: 数据筛选条件
+                  properties:
+                    min_confidence:
+                      type: number
+                      example: 0.8
+                    review_status:
+                      type: array
+                      items:
+                        type: string
+                        enum: [approved]
+      responses:
+        '200':
+          description: 数据集导出成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dataset_id:
+                    type: string
+                    format: uuid
+                  download_url:
+                    type: string
+                    description: 数据集下载URL
+                  statistics:
+                    type: object
+                    properties:
+                      total_images:
+                        type: integer
+                      total_annotations:
+                        type: integer
+                      train_count:
+                        type: integer
+                      val_count:
+                        type: integer
+                      test_count:
+                        type: integer
+
+  /api/projects/{project_id}/training/jobs:
+    get:
+      tags:
+        - Training
+      summary: 获取训练任务列表
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      responses:
+        '200':
+          description: 成功返回训练任务列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TrainingJob'
+
+    post:
+      tags:
+        - Training
+      summary: 创建训练任务
+      description: 创建新的模型训练任务（提交到K8s）
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTrainingJobRequest'
+      responses:
+        '201':
+          description: 训练任务创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingJob'
+
+  # ==================== 存储服务 API ====================
+
+  /api/storage/files/{path}:
+    get:
+      tags:
+        - Storage
+      summary: 访问存储文件
+      description: |
+        通过API代理访问存储的文件（本地存储使用）
+        EOS存储会返回预签名URL重定向
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 文件相对路径，如 "smarteye/task_001/abc.jpg"
+      responses:
+        '200':
+          description: 返回文件内容
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '302':
+          description: 重定向到EOS预签名URL
+        '404':
+          description: 文件不存在
+
+# ==================== 组件定义 ====================
+
+components:
+  parameters:
+    ProjectIdParam:
+      name: project_id
+      in: path
+      required: true
+      description: 项目ID
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: 未授权
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    # ========== 通用模型 ==========
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "resource_not_found"
+        message:
+          type: string
+          example: "指定的资源不存在"
+        details:
+          type: object
+          additionalProperties: true
+
+    # ========== SmartEye相关模型 ==========
+
+    CreateSmartEyeTaskRequest:
+      type: object
+      required:
+        - task_name
+        - platform_id
+        - query_params
+      properties:
+        task_name:
+          type: string
+          example: "2024年1月红衣人数据"
+          maxLength: 200
+        platform_id:
+          type: string
+          format: uuid
+          description: 平台ID
+        query_params:
+          type: object
+          description: 查询条件
+          required:
+            - start_time
+            - end_time
+          properties:
+            start_time:
+              type: string
+              format: date-time
+              example: "2024-01-01T00:00:00Z"
+            end_time:
+              type: string
+              format: date-time
+              example: "2024-01-31T23:59:59Z"
+            device_id:
+              type: string
+              description: 可选，设备ID
+            alarm_type:
+              type: string
+              description: 可选，告警类型
+
+    SmartEyeTaskSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_name:
+          type: string
+        platform:
+          type: string
+          description: 平台名称
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        total_count:
+          type: integer
+        downloaded_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    SmartEyeTaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/SmartEyeTaskSummary'
+        - type: object
+          properties:
+            platform_id:
+              type: string
+              format: uuid
+            query_params:
+              type: object
+            failed_count:
+              type: integer
+            storage_prefix:
+              type: string
+              example: "smarteye/2024-01-01/task_abc/"
+            started_at:
+              type: string
+              format: date-time
+            error_message:
+              type: string
+
+    SmartEyeDownloadRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        device_name:
+          type: string
+        device_id:
+          type: string
+        target_type:
+          type: string
+          description: 告警类型
+        timestamp:
+          type: string
+          format: date-time
+        file_size:
+          type: integer
+          description: 文件大小（字节）
+        thumbnail_url:
+          type: string
+          description: 缩略图URL
+
+    AvailableSmartEyeTask:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_name:
+          type: string
+        platform:
+          type: string
+        downloaded_count:
+          type: integer
+        query_params:
+          type: object
+        completed_at:
+          type: string
+          format: date-time
+
+    # ========== 平台相关模型 ==========
+
+    Platform:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        platform_name:
+          type: string
+          example: "平台A"
+        plat_id:
+          type: string
+          example: "plat_001"
+        api_endpoint:
+          type: string
+          format: uri
+        enabled:
+          type: boolean
+        alarm_types_count:
+          type: integer
+
+    AlarmType:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        alarm_name:
+          type: string
+          example: "红衣人"
+        alarm_code:
+          type: string
+          example: "RED_CLOTH"
+
+    # ========== 项目相关模型 ==========
+
+    CreateProjectRequest:
+      type: object
+      required:
+        - name
+        - target_class
+      properties:
+        name:
+          type: string
+          example: "红衣人检测项目"
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        target_class:
+          type: string
+          example: "红衣人"
+          description: 目标类别
+
+    UpdateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        target_class:
+          type: string
+
+    ProjectSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        target_class:
+          type: string
+        asset_count:
+          type: integer
+          description: 资源总数
+        annotated_count:
+          type: integer
+          description: 已标注数量
+        created_at:
+          type: string
+          format: date-time
+
+    ProjectDetail:
+      allOf:
+        - $ref: '#/components/schemas/ProjectSummary'
+        - type: object
+          properties:
+            description:
+              type: string
+            tenant_id:
+              type: string
+              format: uuid
+            statistics:
+              type: object
+              properties:
+                pending:
+                  type: integer
+                annotated:
+                  type: integer
+                reviewed:
+                  type: integer
+                approved:
+                  type: integer
+                rejected:
+                  type: integer
+
+    # ========== 资源相关模型 ==========
+
+    AssetSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        thumbnail_url:
+          type: string
+          description: 缩略图URL
+        width:
+          type: integer
+        height:
+          type: integer
+        source_type:
+          type: string
+          enum: [smarteye, upload, api]
+        annotation_status:
+          type: string
+          enum: [pending, annotated, reviewed, approved, rejected]
+        review_status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AssetDetail:
+      allOf:
+        - $ref: '#/components/schemas/AssetSummary'
+        - type: object
+          properties:
+            original_url:
+              type: string
+              description: 原图URL
+            file_size:
+              type: integer
+            format:
+              type: string
+              example: "JPEG"
+            source_id:
+              type: string
+              description: 来源ID（SmartEye任务ID等）
+            annotations:
+              type: array
+              items:
+                $ref: '#/components/schemas/Annotation'
+
+    # ========== 标注相关模型 ==========
+
+    CreateAnnotationRequest:
+      type: object
+      required:
+        - bbox
+        - label
+      properties:
+        bbox:
+          $ref: '#/components/schemas/BoundingBox'
+        label:
+          type: string
+          example: "红衣人"
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 置信度（模型生成的标注使用）
+        annotator_type:
+          type: string
+          enum: [manual, model, auto]
+          default: manual
+
+    UpdateAnnotationRequest:
+      type: object
+      properties:
+        bbox:
+          $ref: '#/components/schemas/BoundingBox'
+        label:
+          type: string
+        confidence:
+          type: number
+
+    Annotation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        asset_id:
+          type: string
+          format: uuid
+        bbox:
+          $ref: '#/components/schemas/BoundingBox'
+        label:
+          type: string
+        confidence:
+          type: number
+        annotator_type:
+          type: string
+          enum: [manual, model, auto]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    BoundingBox:
+      type: object
+      required:
+        - x
+        - y
+        - width
+        - height
+      properties:
+        x:
+          type: number
+          description: 左上角X坐标（相对坐标，0-1）
+          example: 0.1
+        y:
+          type: number
+          description: 左上角Y坐标（相对坐标，0-1）
+          example: 0.2
+        width:
+          type: number
+          description: 宽度（相对宽度，0-1）
+          example: 0.3
+        height:
+          type: number
+          description: 高度（相对高度，0-1）
+          example: 0.4
+
+    # ========== 审核相关模型 ==========
+
+    ReviewResult:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        review_type:
+          type: string
+          enum: [auto, manual]
+        result:
+          type: string
+          enum: [approved, rejected, needs_revision]
+        confidence:
+          type: number
+          description: 自动审核置信度
+        reason:
+          type: string
+          description: 判断理由
+        reviewer:
+          type: string
+          description: 复核员ID（人工复核）
+        reviewed_at:
+          type: string
+          format: date-time
+
+    # ========== 训练相关模型 ==========
+
+    CreateTrainingJobRequest:
+      type: object
+      required:
+        - dataset_id
+        - model_type
+      properties:
+        dataset_id:
+          type: string
+          format: uuid
+        model_type:
+          type: string
+          enum: [yolo-v8, yolo-v11]
+        training_params:
+          type: object
+          properties:
+            epochs:
+              type: integer
+              default: 100
+            batch_size:
+              type: integer
+              default: 16
+            image_size:
+              type: integer
+              default: 640
+            learning_rate:
+              type: number
+              default: 0.01
+
+    TrainingJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        dataset_id:
+          type: string
+          format: uuid
+        model_type:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        metrics:
+          type: object
+          description: 训练指标
+          properties:
+            map50:
+              type: number
+            map:
+              type: number
+            precision:
+              type: number
+            recall:
+              type: number
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []

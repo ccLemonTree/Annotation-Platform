@@ -1,0 +1,16 @@
+{
+  "date":"2026-10-18",
+  "features":["Swift/WeMM uses platform annotation snapshots","Saved query judgments visible and reviewable without image annotations","Conflicting positive/negative training judgments rejected"],
+  "validation":{
+    "backend":"130 passed; output/platform-training-review-tests.txt",
+    "red":["output/platform-swift-red.txt","output/match-review-red.txt"],
+    "browser":"4 groups; output/platform-training-review-browser.txt; approval/rejection/conflict retry/390px, WeMM freeze/create/edit, SFT description instruction",
+    "real_api":"Owned 3-image fixture: 2 existing relationships approved, zero image annotations, 1 InfoNCE row frozen, fixed snapshot task remains draft, no GPU holds; ZIP SHA256 and packaged image decode verified",
+    "real_browser":"output/platform-training-review-live-browser.txt; 2 saved judgments shown approved, draft editor restores actual 1-sample snapshot; GET only, GPU/server metadata intercepted to avoid SSH",
+    "build":"output/platform-review-build.txt",
+    "lint":"44 existing warnings; output/platform-training-review-lint.txt"
+  },
+  "preservation":{"business_rows":true,"crop_hashes":true,"revision":"022","running_training_retained":1,"remote_training_operations":false},
+  "cleanup":"Owned project, 3 generated images, 1 snapshot ZIP and 1 draft task removed; private evidence under backend/backend/.backups/platform-training-review",
+  "limits":["No GPU training or server transfer executed","No automatic train/validation split","Matching review counts/filter apply to current page of up to 20 queries","Manually judged pending relationships remain exportable; rejected and unknown excluded","Frozen snapshots remain immutable after later judgment/review changes"]
+}

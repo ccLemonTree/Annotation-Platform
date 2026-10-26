@@ -1,0 +1,23 @@
+{
+  "date":"2026-10-18",
+  "problem":"Crop deletion API existed but annotation/preparation/results lacked visible deletion actions",
+  "change":"Shared confirmed crop deletion in preparation, description list, matching results and project images; current Asset source_type added to matching response",
+  "retention":"Remove project crop Asset and annotations; preserve source images, other projects, frozen datasets and physical files",
+  "verification":{
+    "red_ui":"output/crop-delete-red.txt",
+    "red_api_source":"output/crop-delete-source-red.txt",
+    "existing_delete_baseline":"1 passed; output/crop-delete-backend-baseline.txt",
+    "focused_tests":"41 passed; output/crop-delete-tests.txt",
+    "browser":"5 checks, 0 page errors; output/crop-delete-browser1.txt",
+    "multimodal_browser_regression":"14 checks, 0 page errors; output/crop-delete-multimodal-regression.txt",
+    "build":"passed; output/crop-delete-build.txt",
+    "lint":"exit 0; 44 existing warnings; output/crop-delete-lint.txt",
+    "real_browser":"output/crop-delete-live-browser.txt; only owned temporary crop deleted; target404/source200, total1, no stale matching hits",
+    "real_database":"annotation removal, count updates, borrowed file hash preservation and owned fixture cleanup verified",
+    "business_snapshot":"existing rows and crop file hashes preserved; private backup in backend/backend/.backups/crop-delete",
+    "schema_revision":"022, unchanged",
+    "existing_running_training":1,
+    "remote_training_start_stop":false
+  },
+  "limits":["Single crop deletion, no new batch action","Physical files and old Milvus vectors retained by existing policy; deleted assets are excluded from matching and exports"]
+}

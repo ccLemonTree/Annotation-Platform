@@ -1,0 +1,90 @@
+{
+  "date": "2026-10-16",
+  "selected_design": "A 钴蓝工程台",
+  "verification": {
+    "checks": [
+      "cobalt tokens, grouped navigation, entrance animation and reduced-motion fallback",
+      "/ at 1440px",
+      "/ at 768px",
+      "/ at 390px",
+      "/projects at 1440px",
+      "/projects at 768px",
+      "/projects at 390px",
+      "/assets at 1440px",
+      "/assets at 768px",
+      "/assets at 390px",
+      "/annotations at 1440px",
+      "/annotations at 768px",
+      "/annotations at 390px",
+      "/models at 1440px",
+      "/models at 768px",
+      "/models at 390px",
+      "/validation at 1440px",
+      "/validation at 768px",
+      "/validation at 390px",
+      "/training at 1440px",
+      "/training at 768px",
+      "/training at 390px",
+      "/gpu-resources at 1440px",
+      "/gpu-resources at 768px",
+      "/gpu-resources at 390px",
+      "/gpu-terminal at 1440px",
+      "/gpu-terminal at 768px",
+      "/gpu-terminal at 390px",
+      "/automation at 1440px",
+      "/automation at 768px",
+      "/automation at 390px",
+      "/image-semantics at 1440px",
+      "/image-semantics at 768px",
+      "/image-semantics at 390px",
+      "/analytics at 1440px",
+      "/analytics at 768px",
+      "/analytics at 390px",
+      "/storage-maintenance at 1440px",
+      "/storage-maintenance at 768px",
+      "/storage-maintenance at 390px",
+      "project form is editable; dark modal and Escape close",
+      "mobile drawer navigates and closes",
+      "annotation canvas keeps identity, has no ancestor animation and fits viewport",
+      "SmartEye 检测查询",
+      "SmartEye 台账查询",
+      "SmartEye 台账下载",
+      "SmartEye 智搜下载",
+      "SmartEye AI 生图",
+      "SmartEye 工具任务"
+    ],
+    "blockedWrites": [],
+    "runtimeErrors": [],
+    "scope": "All API calls intercepted. No backend writes, inference, training, remote GPU or upstream platform requests."
+  },
+  "focused_final": {
+    "secondary": {
+      "background": "rgb(25, 36, 56)",
+      "color": "rgb(232, 238, 249)"
+    },
+    "mobileDrawer": "opens, visible and Escape closes",
+    "motionEvents": [
+      "animationstart",
+      "animationend"
+    ],
+    "scope": "Existing API fixtures retained; no business writes"
+  },
+  "build": {
+    "exit_code": 0,
+    "note": "Existing >500kB bundle warnings remain"
+  },
+  "lint": {
+    "exit_code": 0,
+    "warnings": 44,
+    "errors": 0
+  },
+  "detection_editor_tests": {
+    "passed": 5,
+    "failed": 0
+  },
+  "limitations": [
+    "Browser API fixtures used; some administrative pages deliberately exercised existing error states.",
+    "No real training, inference, downloads, SSH connection or backend writes.",
+    "No full-platform WCAG or production deployment acceptance."
+  ]
+}

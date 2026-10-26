@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-26",
+  "feature": "检测工作台按最新标注审核状态筛选",
+  "backend": {
+    "passed": 27,
+    "command": "python -m pytest tests/test_asset_navigation.py tests/test_annotation_scope.py tests/test_project_label_removal.py tests/test_p2_annotations.py tests/test_annotation_pagination.py -q --disable-warnings --tb=short",
+    "new_cases_failed_before_fix": 2,
+    "coverage": [
+      "最新版本审核状态",
+      "标签交集",
+      "分页/全选/邻居一致",
+      "队列外锚点",
+      "空结果",
+      "裁剪范围",
+      "审核后退出队列",
+      "无参数兼容",
+      "非法状态422"
+    ]
+  },
+  "browser": {
+    "new_filter_checks": 8,
+    "existing_navigation_checks": 18,
+    "all_api_mutations_mocked": true,
+    "business_writes": 0,
+    "scripts": [
+      "scripts/verify_workspace_review_filter.cjs",
+      "scripts/verify_workspace_navigation.cjs"
+    ],
+    "outputs": [
+      "output/workspace-review-filter-ui.txt",
+      "output/workspace-review-navigation-regression.txt"
+    ],
+    "screenshots": [
+      "output/playwright/workspace-review-filter-desktop.png",
+      "output/playwright/workspace-review-filter-mobile.png"
+    ]
+  },
+  "frontend": {
+    "build": "passed",
+    "targeted_lint": "passed with 5 pre-existing workspace warnings"
+  },
+  "live": {
+    "project_id": "79f9b4de-d798-4a43-88f0-2a05b19c65e3",
+    "project": "电瓶车进电梯检测",
+    "read_only": true,
+    "pending": 1264,
+    "approved": 8066,
+    "rejected": 0,
+    "latest_annotation_counts_match": true,
+    "bike_intersection": {
+      "pending": 275,
+      "approved": 11,
+      "rejected": 0
+    },
+    "outside_pending_anchor_and_neighbor_status": "passed",
+    "postgres_timezone_anchor_regression": "reproduced 500 before database-side comparison, passed after fix",
+    "frontend_proxy_capability_header": "1",
+    "invalid_status": 422,
+    "unauthenticated_status": 401,
+    "output": "output/workspace-review-filter-live.json"
+  },
+  "runtime": {
+    "local_backend_reloaded": true,
+    "active_jobs_before_reload": 0,
+    "business_fingerprint_before": "backend/backend/.backups/workspace-review-filter/before.json",
+    "business_fingerprint_after": "backend/backend/.backups/workspace-review-filter/after.json",
+    "migration": false,
+    "new_dependencies": false,
+    "business_unchanged": true,
+    "health_status": 200
+  },
+  "limits": [
+    "未在业务数据上实际点击审核或保存；写入流程由隔离浏览器及后端用例验证",
+    "未做跨浏览器或多人手工联调"
+  ]
+}

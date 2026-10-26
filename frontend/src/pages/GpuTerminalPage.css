@@ -1,0 +1,15 @@
+.gpu-terminal-surface {
+  height: 65vh;
+  min-height: 360px;
+  max-height: 900px;
+  min-width: 0;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid #273449;
+  border-radius: 10px;
+  background: #111827;
+}
+.gpu-terminal-viewport, .gpu-terminal-surface .xterm { height: 100%; }
+@media (max-width: 600px) {
+  .gpu-terminal-surface { padding: 8px; min-height: 320px; }
+}

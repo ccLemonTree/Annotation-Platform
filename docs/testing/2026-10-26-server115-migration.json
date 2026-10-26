@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-26",
+  "server": "192.168.1.115",
+  "project_root": "/ai/chen/code/workspace/数据管理平台",
+  "url": "http://192.168.1.115:3000",
+  "database_reused_without_import": true,
+  "storage": {
+    "files": 18399,
+    "bytes": 11898973209,
+    "sha256_all_match": true
+  },
+  "source_sha256_files": 3367,
+  "backend_tests": {
+    "passed": 27,
+    "seconds": 90.97,
+    "isolated": true
+  },
+  "frontend_build": "passed on server",
+  "pip_check": "passed",
+  "vite_config_lint": "0 warnings, 0 errors",
+  "ssh_bridge_self_check": true,
+  "ssh_connectivity": [
+    {
+      "server": "绍兴a100",
+      "ok": true
+    },
+    {
+      "server": "绍兴移动k8s",
+      "ok": true
+    },
+    {
+      "server": "嘉兴移动k8s",
+      "ok": true
+    }
+  ],
+  "live_api": {
+    "read_only": true,
+    "credential_decryption_count": 1,
+    "jwt_and_database_password_preserved": true,
+    "states": {
+      "pending": 1264,
+      "approved": 8066,
+      "rejected": 0
+    },
+    "backend_health": 200,
+    "authenticated_identity": 200,
+    "asset_content_sha256_matches": true,
+    "frozen_snapshot_download": 200,
+    "/api/projects": 200,
+    "/api/model-services": 200,
+    "/api/gpu-resources/servers": 200,
+    "/api/training/runs": 200,
+    "/api/model-deployments/targets": 200,
+    "unauthenticated_api": 401
+  },
+  "business_fingerprints_unchanged": true,
+  "runtime": {
+    "backend": "127.0.0.1:18000",
+    "frontend": "0.0.0.0:3000",
+    "systemd_services": [
+      "data-platform-backend.service",
+      "data-platform-frontend.service"
+    ],
+    "enabled": true,
+    "local_platform_listeners_stopped": true
+  },
+  "browser": {
+    "real_lan_login_page": "passed",
+    "authenticated_reads": "verified by real API; browser login submission not performed"
+  },
+  "backup": "/ai/chen/code/workspace/数据管理平台/.runtime/migration/postgres-before.dump",
+  "business_mutations": false,
+  "limits": [
+    "未提交真实登录表单、标注或审核；未触发训练、下发、镜像更新",
+    "Windows原目录保留回退副本，后续以115为准",
+    "当前使用Vite开发服务，无新增域名或HTTPS配置"
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "date": "2026-10-14",
+  "scope": "标注与审核布局修复及按标注项目组织",
+  "implementation": {
+    "entry": "/annotations",
+    "project_detail": "/annotations?project_id=<UUID>",
+    "overview": "项目卡片，分页显示图片/待标注/已标注/已通过数量",
+    "detail": "只查询当前项目最新标注；以预览/文件名/框数/版本/状态/更新时间替代长ID列",
+    "review": "取消原JSON审核弹窗和列表快捷通过/驳回，保留画框工作台可视审核及原审核API",
+    "return_context": "from=review携带项目、状态与分页；切图后返回原标注项目；项目图片入口返回仍保持原路径",
+    "backend_changed": false,
+    "migration": false,
+    "new_dependencies": false
+  },
+  "verification": {
+    "build": "TypeScript and both Vite entries passed",
+    "lint_exit_code": 0,
+    "editor_unit_tests": 5,
+    "browser_checks": 83,
+    "scripts": [
+      {
+        "path": "scripts/verify_project_review_ui.cjs",
+        "checks": 7
+      },
+      {
+        "path": "scripts/verify_project_review_edges.cjs",
+        "checks": 6
+      },
+      {
+        "path": "scripts/verify_project_review_actions.cjs",
+        "checks": 3
+      },
+      {
+        "path": "scripts/verify_project_navigation.cjs",
+        "checks": 13
+      },
+      {
+        "path": "scripts/verify_autosave_navigation.cjs",
+        "checks": 6
+      },
+      {
+        "path": "scripts/verify_annotation_interactions.cjs",
+        "checks": 25
+      },
+      {
+        "path": "scripts/verify_unified_ui.cjs",
+        "checks": 23
+      }
+    ],
+    "read_only_api_requests": 10,
+    "all_runtime_requests_passed": true,
+    "current_test_img_images": 6,
+    "current_latest_annotations": 5,
+    "regression_red": "改动前新用例等待标注项目入口超时，旧全局UUID列表无法通过",
+    "fixtures": "通过/驳回/保存/关联写入全部拦截；读取失败、空列表、分页和旧请求迟到用拦截夹具验证",
+    "fixture_adjustments": "原断言固定2个最新标注已过期，改为当前API返回数量；相邻切图选择可用按钮；驳回的Ant Design无障碍名称含空格",
+    "screenshots": [
+      "output/playwright/review-before.png",
+      "output/playwright/review-projects-final.png",
+      "output/playwright/review-project-detail-final.png",
+      "output/playwright/project-review-mobile.png",
+      "output/playwright/review-projects-mobile.png"
+    ]
+  },
+  "data_protection": {
+    "current_counts": {
+      "projects": 19,
+      "assets": 12,
+      "images": 6,
+      "annotations": 9,
+      "annotation_events": 22,
+      "export_snapshots": 2,
+      "image_collections": 1,
+      "image_collection_members": 6
+    },
+    "original_images_and_frozen_snapshots_sha256_unchanged": true,
+    "image_library_and_collections_and_smarteye_records_unchanged": true,
+    "annotation_rows_equal_to_start": false,
+    "concurrent_changes": "检查期间test-img新增3张图片的标注，最新标注从2到5，版本总行从6到9；projects/assets/annotations/events随之更新。未覆盖、撤销这些更新，也不声称整个业务库完全不变。",
+    "private_evidence": "backend/backend/.backups/project-review-runtime/before.json、after.json、result.json及api-result.json"
+  },
+  "limits": [
+    "本轮未改后端且未重跑150项全后端回归",
+    "真实模型自动标注、EOS、生产Docker未测试",
+    "保留现有lint effect/旧代码警告及560.51KB主包、895.26KB共享包提示",
+    "项目详情仍仅显示已标注图片，未标注图片由同项目的项目图片入口进入",
+    "图片信息按当前标注页读取资产详情，没有加载项目全部图片"
+  ]
+}

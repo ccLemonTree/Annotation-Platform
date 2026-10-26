@@ -1,0 +1,55 @@
+.smarteye-app { height: 100dvh; display: flex; flex-direction: column; background: var(--ui-background); color: var(--ui-text); }
+.smarteye-body { flex: 1; min-height: 0; }
+.smarteye-layout { height: 100%; display: flex; flex-direction: column; }
+.smarteye-navigation { flex-shrink: 0; background: var(--ui-surface); }
+.smarteye-navigation .ant-menu { padding: 0 12px; }
+.smarteye-navigation .ant-menu-horizontal { line-height: 48px; }
+.smarteye-content { min-height: 0; }
+.smarteye-content h1 { font-size: 22px; font-weight: 600; letter-spacing: normal; }
+.smarteye-content h2 { font-size: 16px; font-weight: 600; letter-spacing: normal; }
+.smarteye-content .tracking-wide, .smarteye-content .tracking-wider, .smarteye-content .tracking-tight { letter-spacing: normal; }
+.smarteye-content .shadow-sm, .smarteye-content button { box-shadow: none; }
+.smarteye-content .rounded-xl, .smarteye-content .rounded-2xl { border-radius: var(--ui-radius); }
+.smarteye-content .border-slate-300 { border-color: var(--ui-border); }
+.smarteye-content .text-slate-400 { color: var(--ui-muted); }
+:is(.smarteye-content, .smarteye-legacy-form) input:not(.ant-select-input):not([type='checkbox']):not([type='radio']):not([type='file']), :is(.smarteye-content, .smarteye-legacy-form) select, :is(.smarteye-content, .smarteye-legacy-form) textarea {
+  color-scheme: dark; background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); min-height: 36px; font-size: 14px; padding-top: 7px; padding-bottom: 7px;
+}
+:is(.smarteye-content, .smarteye-legacy-form) input[type='checkbox'], :is(.smarteye-content, .smarteye-legacy-form) input[type='radio'] { accent-color: var(--ui-primary); }
+.smarteye-content button { border-radius: var(--ui-radius); transition: background-color var(--ui-motion-fast), border-color var(--ui-motion-fast), color var(--ui-motion-fast), transform var(--ui-motion-fast); }
+.smarteye-content button:not(:disabled):active { transform: translateY(1px); }
+.smarteye-content button:disabled { opacity: .5; cursor: not-allowed; }
+.smarteye-content :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
+.smarteye-content button.bg-primary { min-height: 36px; background: var(--ui-action); color: white; }
+.smarteye-content button.bg-primary:hover:not(:disabled) { background: var(--ui-action-hover); }
+.smarteye-content button.bg-white { background: var(--ui-surface-raised); color: var(--ui-text); border-color: var(--ui-border); }
+.smarteye-content button.bg-white:hover:not(:disabled) { background: var(--ui-primary-soft); }
+.smarteye-content th { font-weight: 600; text-transform: none; font-size: 13px; letter-spacing: normal; padding: 14px 16px; background: var(--ui-surface-raised); }
+.smarteye-app .smarteye-content :is(.text-slate-400, .text-slate-500, .text-slate-600, .dark\:text-slate-300, .dark\:text-slate-400) { color: var(--ui-muted); }
+.smarteye-content > * { animation: ui-enter var(--ui-motion-enter) var(--ui-motion-ease); }
+.smarteye-content td { padding: 14px 16px; font-variant-numeric: tabular-nums; }
+.smarteye-content table { white-space: nowrap; }
+.smarteye-content .max-w-7xl { max-width: none; }
+.smarteye-destination { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); flex-shrink: 0; }
+.smarteye-destination-fields { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; flex: 1; min-width: 0; }
+.smarteye-destination-fields > label { font-weight: 600; }
+.smarteye-destination-fields .ant-select { width: 180px; }
+.smarteye-destination-note { color: var(--ui-muted); font-size: 12px; line-height: 1.7; margin: 0; }
+.smarteye-destination > .ant-alert { flex-basis: 100%; }
+.smarteye-task-id { font-size: 11px; color: var(--ui-muted); overflow-wrap: anywhere; margin-top: 4px; }
+@media (max-width: 768px) {
+  .smarteye-destination { padding: 12px; }
+  .smarteye-destination-fields .ant-select { width: 160px; }
+  .smarteye-destination-note { flex-basis: 100%; }
+  .smarteye-content .px-6, .smarteye-content .p-6 { padding-left: 16px; padding-right: 16px; }
+  .smarteye-content .grid-cols-12 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .smarteye-content .grid-cols-12 > * { grid-column: span 2 / span 2; min-width: 0; }
+  .smarteye-content .min-w-\[320px\] { min-width: 0; }
+  .smarteye-content .flex.items-center.justify-between { flex-wrap: wrap; gap: 12px; }
+}
+.smarteye-legacy-form .ant-modal-body { max-height: 70dvh; overflow-y: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .smarteye-content > * { animation: none; }
+  .smarteye-content button:not(:disabled):active { transform: none; }
+}
+

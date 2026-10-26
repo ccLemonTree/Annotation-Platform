@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-20",
+  "scope": "所有平台训练器按已保存指标分析；最多3个更早完成任务对比",
+  "backend": {"passed": 87, "command": "pytest tests/test_training_analysis.py tests/test_training_runs.py tests/test_model_services.py tests/test_match_review.py -q", "evidence": "output/training-analysis-regression.txt"},
+  "frontend": {"build": "passed", "lint": "passed with existing warnings; no TrainingAnalysis warnings", "evidence": ["output/training-analysis-build.txt", "output/training-analysis-lint.txt"]},
+  "migration": "PostgreSQL 022 -> 023 verified; exact existing schema validated; reports retained",
+  "live": {
+    "task": "detr1016烟火训练7",
+    "task_id": "053025f1-a981-43f2-a5cd-57f116045d09",
+    "status": "completed",
+    "metric_count": 68,
+    "metric_rows": 4494,
+    "metric_sha256": "5ce9c61c13728b5854a06d5e09198c413ca2890626ef22fb4d77e629aa4774d4",
+    "classes": ["fire", "smoke", "star"],
+    "model": "Qwen3.8-27B",
+    "generation_http": 200,
+    "history_http": 200,
+    "detail_http": 200,
+    "evidence_http": 200,
+    "report_id": "ffeb3505-8359-4408-a948-302e43f62027",
+    "earlier_completed_tasks": 0,
+    "evidence": ["output/training-analysis-live-api.txt", "output/training-analysis-live-report.json"]
+  },
+  "browser": {
+    "live": ["真实报告打开与重新打开", "曲线渲染", "提示词可编辑", "390px抽屉适配", "写入保护拦截，未触发训练操作"],
+    "isolated_comparison": ["选择历史模型", "显示原始指标与差值", "发送编辑后的提示词", "大模型失败保留证据", "重试保存", "重新打开已保存报告"],
+    "evidence": ["output/training-analysis-live-ui.txt", "output/training-analysis-comparison-ui.txt", "output/playwright/training-analysis-live.png", "output/playwright/training-analysis-mobile.png", "output/playwright/training-analysis-comparison.png"]
+  },
+  "limits": ["本次真实环境没有更早成功任务，历史对比使用隔离数据验证", "未重新运行训练、权重推理或独立测试集", "其余训练器用格式样例回归，未启动GPU训练", "TensorBoard二进制不解析，缺少JSON/CSV时明确提示", "读取及模型上下文上限见接口文档"]
+}

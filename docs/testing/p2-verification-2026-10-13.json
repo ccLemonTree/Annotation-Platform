@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-13",
+  "scope": "P2 detection workbench, version review and packaged exports",
+  "tests": {
+    "passed": 124,
+    "failed": 0,
+    "skipped": 0,
+    "postgres_tests": 4,
+    "source_smarteye_regressions": 14,
+    "command": "P0_POSTGRES_INTEGRATION=1 P1_POSTGRES_INTEGRATION=1 P2_POSTGRES_INTEGRATION=1 .venv/Scripts/python.exe -m pytest -q --tb=short --disable-warnings --show-capture=no",
+    "pip_check": "No broken requirements found",
+    "seconds": 49.36,
+    "warnings": 345
+  },
+  "frontend": {
+    "build": "passed",
+    "lint_exit_code": 0,
+    "lint_warnings_remain": true,
+    "large_bundle_warning": true,
+    "browser_url": "http://localhost:3000/annotate/01ba049a-bc58-4749-848e-c3ce35979269",
+    "browser_console_final_errors": 0,
+    "browser_flows": [
+      "real authenticated image and two person boxes",
+      "drawing/moving/numeric geometry edits/deleting a temporary box",
+      "save/reload and approve/edit resets review",
+      "history readonly",
+      "route navigation refusal preserves unsaved coordinates",
+      "current YOLO and COCO downloads",
+      "freeze/download and bytes unchanged after v2 to v3 edit"
+    ],
+    "screenshots": [
+      "output/playwright/p2-workspace-final.png",
+      "output/playwright/p2-export-final.png"
+    ]
+  },
+  "migration_file": "p2-migration-verification.json",
+  "runtime_file": "p2-runtime-verification.json",
+  "downloaded_artifacts_file": "p2-browser-export-verification.json",
+  "checks": [
+    "coordinates and classes validated before save",
+    "append-only updates plus required base_version and unique latest/version indexes",
+    "single and batch counts share asset locks, historical writes/reviews rejected",
+    "deleted versions are not reused and manual asset status cannot fake approval",
+    "five concurrent first writes and five concurrent updates produce one success and four conflicts",
+    "five concurrent approvals count one reviewed image",
+    "current statistics exclude old approved versions",
+    "non-empty multi-class/multi-box and negative samples; partial class selection retains images",
+    "same input filenames use UUID package paths",
+    "actual image hash/dimensions and every YOLO/COCO coordinate checked",
+    "explicit freeze splits and stable category/version manifest",
+    "content hash and conservative phash/RGB near-duplicate leakage guard",
+    "device/quality metadata unknowns are explicit",
+    "ZIP CPU processing occurs outside the request event loop",
+    "original test-img six images unchanged; only one image manually annotated"
+  ],
+  "limits": [
+    "Actual user training loader/scripts not supplied or executed",
+    "Only one user image has a human demo annotation; remaining five pending, no full-scene accuracy acceptance",
+    "Current real frozen snapshot has one train image, no representative validation/test set",
+    "Near-duplicate guard is heuristic; arbitrary crop and cross-frame parent grouping/calibration remain incomplete",
+    "Near-duplicate thresholds are fixed now; platform configuration and O(n squared) scale optimization deferred",
+    "Device/quality data not fabricated; metadata providers and quality scoring belong to later phases",
+    "Automatic model labeling/review, real SmartEye upstream, EOS, Docker, training not verified",
+    "Orphan originals/export ZIP physical cleanup not implemented; new-database bootstrap still not accepted"
+  ],
+  "final_source_runtime_rechecked": true,
+  "static_verification": {
+    "backend_python_syntax_files": 129,
+    "document_links": 86,
+    "evidence_json": "valid",
+    "private_browser_state_ignored": true,
+    "environment_check_exit_code": 1,
+    "expected_unfinished_training_tables": [
+      "models",
+      "training_metrics",
+      "training_tasks"
+    ]
+  }
+}

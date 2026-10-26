@@ -1,0 +1,35 @@
+{
+  "date":"2026-10-18",
+  "change":"Plain descriptions without embeddings; project-private crops and crop-only annotation scope",
+  "backend":{
+    "full":{"passed":642,"skipped":77,"evidence":"output/private-crops-full.txt"},
+    "latest_focused":{"passed":76,"evidence":"output/private-crops-focused-final2.txt"},
+    "isolated_postgres":{"passed":12,"evidence":"output/private-crops-pg.txt"},
+    "covered":["private crop creation and full-frame derivatives","no-detection originals excluded","annotation queue, neighbors, writes, review listing and JSON export scope","description JSONL without indexing","new validation sets use crop scope","legacy library crops hidden and unattachable","migration preserves IDs, hashes, annotations and history"]
+  },
+  "frontend":{
+    "build":"passed; output/private-crops-build-final.txt",
+    "lint":"exit 0; 44 existing warnings; output/private-crops-lint-final.txt",
+    "mocked_browser":{"checks":13,"page_errors":0,"evidence":"output/private-crops-browser-final.txt"},
+    "real_browser":{"widths":[1440,390],"write_requests":0,"page_errors":0,"images_decoded":true,"evidence":"output/private-crops-live-browser-final.txt"}
+  },
+  "activation":{
+    "revision":"022",
+    "legacy_crop_assets_detached":13,
+    "crop_file_hashes_preserved":13,
+    "business_annotations_preserved":4674,
+    "project_scope":{"private_crop_queue":13,"source_originals":7,"visible_library_crops":0},
+    "backup":"backend/backend/.backups/private-crops/before.json (private; do not publish)",
+    "unchanged_business_rows_verified":true,
+    "remote_training_start_stop":false
+  },
+  "live_api":{
+    "evidence":"output/private-crops-live-api.txt",
+    "plain_description_saved_without_vectors":true,
+    "original_annotation_and_neighbors_guard":409,
+    "zip_contains_only_crops":true,
+    "temporary_project_cleaned":true,
+    "business_files_untouched":true
+  },
+  "limits":["No new model quality benchmark or scale testing","Legacy library crop rows retained hidden for history; files and annotations are not deleted","Existing frozen exports and validation sets remain immutable"]
+}

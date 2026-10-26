@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-24",
+  "scope": "Independent model distribution page, local releases, server version ledger, multi-target model and image updates, per-environment K8s Ansible preload",
+  "migration": {
+    "revision": "025",
+    "applied_to_local_database": true,
+    "business_full_row_fingerprints_unchanged": true,
+    "active_jobs_before_reload": 0,
+    "active_jobs_after_reload": 0
+  },
+  "backend": {
+    "command": ".venv/Scripts/python.exe -m pytest tests/test_distribution_center.py tests/test_image_preload.py tests/test_image_updates.py tests/test_model_deployment.py tests/test_model_output.py tests/test_training_transfer.py tests/test_training_outputs.py tests/test_training_runs.py tests/test_gpu_mcp_integration.py -q --disable-warnings --tb=short",
+    "working_directory": "backend/backend",
+    "passed": 196,
+    "skipped": 3,
+    "warnings": 221,
+    "seconds": 32.80,
+    "remote_python36_grammar": "3 executors passed",
+    "node_bridge_syntax": "passed"
+  },
+  "frontend": {
+    "build": "passed",
+    "targeted_lint": "passed",
+    "existing_build_warning": "chunks larger than 500 kB",
+    "browser_script": "scripts/verify_distribution_center_ui.cjs",
+    "browser": {
+      "passed": true,
+      "archived": true,
+      "multi_model": 2,
+      "multi_image": 2,
+      "partial_failure": true,
+      "manual_activation": true,
+      "cancel_no_write": true,
+      "target_create_edit": true,
+      "k8s_image_form": true,
+      "k8s_preload_flow": true,
+      "mobile_width": 390,
+      "admin_guard": true,
+      "real_business_writes": 0,
+      "remote_writes": 0
+    },
+    "screenshots": [
+      "output/playwright/distribution-center-desktop.png",
+      "output/playwright/distribution-center-mobile.png"
+    ]
+  },
+  "local_http_after_reload": {
+    "health": 200,
+    "frontend": 200,
+    "unauthenticated_targets": 401,
+    "authenticated_records": 200,
+    "authenticated_releases": 200,
+    "authenticated_targets": 200,
+    "authenticated_sources": 200,
+    "ssh_server_count": 46,
+    "new_feature_records_releases_targets": 0,
+    "credentials_exposed": false,
+    "http_writes": 0,
+    "remote_writes": 0
+  },
+  "live_image_inventory_readonly": [
+    {"server": "杭州移动小模型", "services": ["nexusai", "triton-server"], "instances_ready": 2, "compose": "1.29.2 config hashes matched"},
+    {"server": "丽水gpu2", "services": ["nexusai-worker1", "nexusai-worker2"], "instances_ready": 2, "compose": true},
+    {"server": "绍兴移动算法1", "services": ["wemm-vllm"], "instances_ready": 1, "compose": false},
+    {"server": "绍兴移动k8s", "workload": "ai/StatefulSet/nexusai-triton-prod", "container": "nexusai", "instances_ready": 80, "rollout_complete": true}
+  ],
+  "k8s_preload_readonly": {
+    "script": "scripts/verify_distribution_preload_readonly.py",
+    "environments": [
+      {
+        "server": "嘉兴移动k8s",
+        "playbook": "/opt/jx_k8s/ansible/preload-ai-images.yml",
+        "inventory": "/opt/jx_k8s/ansible/hosts-nexusai-preload-20261020194004.json",
+        "live_nodes_covered": 88,
+        "playbook_sha256": "5cafcc717fcb24841e91b19f4f7180e663e92ca7fe769111a97999dd1337828c",
+        "generated_playbook_syntax_check": "passed on actual controller"
+      },
+      {
+        "server": "绍兴移动k8s",
+        "playbook": "/opt/sx_k8s/ansible/preload-ai-images.yml",
+        "inventory": "/opt/sx_k8s/ansible/logs/preload-nexusai-v20261020194004-20261020T114542Z/inventory.json",
+        "live_nodes_covered": 165,
+        "playbook_sha256": "53301c2929312b2c4f3250947158f335666a3fb8ba722d0c34fad1fab57aa65f",
+        "generated_playbook_syntax_check": "passed on actual controller"
+      }
+    ],
+    "ansible_tasks_executed": false,
+    "remote_writes": 0
+  },
+  "limits": [
+    "No production model upload, image pull/distribution, workload update or service restart was performed",
+    "The browser used isolated API fixtures; actual full archive transfer and production activation require acceptance with a selected model and target",
+    "Readiness, model registration and image-ID checks do not replace business-sample inference acceptance",
+    "One backend process owns jobs; unfinished actions require manual reconciliation after restart",
+    "K8s imagePullPolicy Never requires caches to be populated on new nodes and old images to remain cached for recovery"
+  ]
+}

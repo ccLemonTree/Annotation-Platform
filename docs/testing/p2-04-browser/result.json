@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "fixture_only": true,
+  "backend_requests_forwarded": 0,
+  "checks": [
+    "project entry",
+    "manual preview blocks invalid freeze",
+    "suggestion enables freeze despite ID order",
+    "budget/threshold changes invalidate preview",
+    "source edit invalidates preview",
+    "freeze policy and splits payload",
+    "legacy downloads before/after edit",
+    "no annotation fallback warning"
+  ],
+  "intercepted_api_requests": 30,
+  "unexpected": [],
+  "browser_errors": []
+}

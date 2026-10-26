@@ -1,0 +1,18 @@
+.json-view {
+  margin: 12px 0;
+  padding: 16px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-background);
+  color: var(--ui-text);
+  font: 13px/1.7 Consolas, 'Cascadia Code', monospace;
+  white-space: pre;
+  tab-size: 2;
+}
+.json-view code { font: inherit; }
+.json-input { font-family: Consolas, 'Cascadia Code', monospace; line-height: 1.7; tab-size: 2; }

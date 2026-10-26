@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-13",
+  "architecture": "独立images图片目录 + assets项目使用记录；标注与审核按项目独立，原图共享",
+  "backend": {
+    "full_suite_passed": 146,
+    "warnings": 429,
+    "seconds": 85.29,
+    "postgres_enabled_tests": 4,
+    "real_cpu_loader_enabled_tests": 6,
+    "image_library_tests": 4,
+    "subsequent_utc_serialization_and_asset_contract_regression": {"passed": 43, "warnings": 149, "seconds": 13.90},
+    "coverage": ["不选项目上传", "目录内哈希去重", "名称/来源/批次/时间筛选", "字面百分号搜索", "跨租户拒绝", "同图多项目且标注独立", "重复添加幂等", "使用中删除409", "项目删除保留图片", "旧项目上传兼容", "PostgreSQL旧结构008回填", "并发关联计数只增一次", "取消/旧attempt拒绝迟到下载", "原审核/导出/冻结及SDK回归"],
+    "pip_check": "No broken requirements found"
+  },
+  "frontend": {
+    "build": "TypeScript and main + SmartEye Vite entries passed",
+    "new_browser_checks": 7,
+    "unified_ui_regression_checks": 23,
+    "browser_script": "scripts/verify_image_library_ui.cjs",
+    "scope": "真实目录/项目/图片读取；上传及添加项目写入全部浏览器拦截，不新增业务测试记录",
+    "checks": ["默认独立目录", "不选项目筛选", "明确多选添加项目", "上传没有project_id参数", "旧项目6条标注入口保留", "项目可继续从目录选择其他批次", "390px控件布局无页面溢出"],
+    "screenshots": ["output/playwright/image-library-desktop.png", "output/playwright/image-library-mobile.png"],
+    "warnings": ["现有lint警告", "main约547KB、共享包约879KB构建提示", "SmartEye原Tailwind运行时提示"]
+  },
+  "migration": {
+    "verified_at": "2026-10-13T14:51:19.968895+00:00",
+    "revision": "008",
+    "images": 6,
+    "projects": 19,
+    "project_references": 6,
+    "annotation_versions": 6,
+    "latest_annotated_images": 2,
+    "latest_boxes": 5,
+    "latest_class": "person",
+    "frozen_snapshots": 2,
+    "business_records_preserved": true,
+    "asset_ids_and_metadata_preserved": true,
+    "originals_and_snapshots_sha256_unchanged": true,
+    "all_project_references_have_image_id": true,
+    "temporary_databases": [],
+    "private_backup": "backend/backend/.backups/image-library-runtime/before.json",
+    "verification_note": "迁移成功后旧验收连接的prepared statement缓存失效，换新连接再次核对全部记录和文件哈希；无需回退业务迁移",
+    "post_browser_business_data_unchanged": true
+  },
+  "runtime": {
+    "main_backend_restarted": true,
+    "api_requests": 13,
+    "all_passed": true,
+    "scope": ["健康", "独立目录与筛选", "认证原图读取", "项目使用引用", "person最新标注", "去重概览及项目使用计数", "SmartEye任务", "未认证目录401"]
+  },
+  "limits": [
+    "同内容重复入库保留首次名称/来源/批次，SmartEye各任务另保留文件记录",
+    "删除目录引用暂保留物理文件，垃圾回收未实现",
+    "原独立SmartEye仓库的历史数据不属于008回填",
+    "本轮没有真实外部平台拉取或付费AI请求",
+    "EOS、生产Docker和自动预标注服务未部署/验收"
+  ]
+}
