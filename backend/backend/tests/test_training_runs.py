@@ -5,6 +5,7 @@ from uuid import UUID,uuid4
 import pytest
 from pydantic import ValidationError
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -438,7 +439,8 @@ async def test_start_recheck_holds_and_stop_release(client,auth_headers,monkeypa
     payload=spec().model_dump(mode='json')
     first=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     second=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
-    assert client.post('/api/training/runs/'+first['id']+'/start',headers=auth_headers).json()['status']=='running'
+    assert client.post('/api/training/runs/'+first['id']+'/start',headers=auth_headers).json()['status']=='starting'
+    await training_runs.process_start(UUID(first['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
     assert client.post('/api/training/runs/'+first['id']+'/start',headers=auth_headers).status_code==409
     assert client.post('/api/training/runs/'+second['id']+'/start',headers=auth_headers).status_code==409
     assert await test_db.scalar(select(func.count()).select_from(TrainingGpuHold))==1
@@ -462,7 +464,8 @@ async def test_ssh_uncertainty_retains_gpu_holds_and_never_relaunches(client,aut
         raise HTTPException(503,'SSH已断开')
     monkeypatch.setattr(training_runs,'remote',fake)
     row=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
-    assert client.post('/api/training/runs/'+row['id']+'/start',headers=auth_headers).status_code==503
+    assert client.post('/api/training/runs/'+row['id']+'/start',headers=auth_headers).status_code==202
+    await training_runs.process_start(UUID(row['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
     assert client.get('/api/training/runs/'+row['id'],headers=auth_headers).json()['status']=='unknown'
     assert await test_db.scalar(select(func.count()).select_from(TrainingGpuHold))==1
     client.post('/api/training/runs/'+row['id']+'/refresh',headers=auth_headers)
@@ -480,7 +483,9 @@ async def test_failed_precheck_releases_holds_without_staging(client,auth_header
     monkeypatch.setattr(training_runs,'remote',fake)
     row=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
     result=client.post('/api/training/runs/'+row['id']+'/start',headers=auth_headers)
-    assert result.status_code==409 and calls==['precheck']
+    assert result.status_code==202 and calls==[]
+    await training_runs.process_start(UUID(row['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
+    assert calls==['precheck']
     assert await test_db.scalar(select(func.count()).select_from(TrainingGpuHold))==0
     assert client.get('/api/training/runs/'+row['id'],headers=auth_headers).json()['status']=='draft'
 
@@ -517,4 +522,7 @@ async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch):
     monkeypatch.setattr(training_runs,'remote',remote)
     run=SimpleNamespace(source=dict(kind='snapshot',blob_path='fixture.zip',sha256=hashlib.sha256(raw).hexdigest()),
         server=dict(id='default',name=settings.GPU_SERVER_NAME),output_dir='/tmp/fixture')
+    async def progress(*args,**kwargs):pass
+    monkeypatch.setattr(training_runs,'startup_progress',progress)
+    monkeypatch.setattr(training_runs,'ensure_starting',progress)
     await training_runs.transfer_snapshot(None,run)

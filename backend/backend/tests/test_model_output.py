@@ -198,8 +198,10 @@ async def test_output_start_reserves_gpu_and_stop_releases_it(client,auth_header
     monkeypatch.setattr(training_runs,'remote',remote)
     url='/api/training/runs/'+job['id']
     result=client.post(url+'/start',headers=auth_headers)
-    assert result.status_code==200,result.text
-    assert result.json()['status']=='running' and actions==['precheck','stage','start']
+    assert result.status_code==202,result.text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    await training_runs.process_start(UUID(job['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
+    assert actions==['precheck','stage','start']
     assert await test_db.scalar(select(TrainingGpuHold.gpu_uuid))=='GPU-test-1'
     await test_db.rollback()
     assert client.post(url+'/start',headers=auth_headers).status_code==409
@@ -376,6 +378,7 @@ async def test_cross_server_lifecycle_and_transfer(test_db,test_engine,test_user
     monkeypatch.setattr(training_runs,'AsyncSessionLocal',async_sessionmaker(test_engine,expire_on_commit=False))
     monkeypatch.setattr(training_runs,'ROOT',tmp_path)
     await training_runs.launch(test_db,job,test_user)
+    await training_runs.prepare_start(test_db,job)
     assert actions==[('source','precheck'),('target','precheck'),('source','stage'),('target','stage'),('source','start')]
     assert job.status=='running' and job.inspection['output_phase']=='onnx'
     holds=set((await test_db.scalars(select(TrainingGpuHold.gpu_uuid))).all())

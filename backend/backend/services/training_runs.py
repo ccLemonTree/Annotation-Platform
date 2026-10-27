@@ -24,6 +24,7 @@ from schemas.training_run import default_output_root
 ROOT=Path(__file__).resolve().parents[1]
 ACTIVE=('starting','running','stopping','unknown')
 _worker=None
+_startups={}
 logger=logging.getLogger(__name__)
 
 
@@ -203,8 +204,29 @@ async def check(db,run):
     return result
 
 
+async def startup_progress(db,run,phase,message,state='running',**details):
+    await db.refresh(run)
+    if state=='running' and run.status!='starting':raise HTTPException(409,'任务已停止准备，不再继续启动')
+    previous=run.inspection.get('startup',{})
+    event=dict(phase=phase,message=message,time=datetime.now(timezone.utc).isoformat())
+    run.inspection={**run.inspection,'startup':{**previous,**details,'state':state,'phase':phase,
+        'events':(previous.get('events',[])+[event])[-40:],'updated_at':event['time']}}
+    await db.commit()
+    await db.refresh(run)
+    await db.commit()
+
+
+async def ensure_starting(db,run):
+    await db.refresh(run)
+    actor=await db.get(User,run.user_id,populate_existing=True)
+    if run.status!='starting' or actor is None or not actor.is_active or actor.role!='admin':
+        raise HTTPException(409,'任务已取消或管理员权限变化；停止启动')
+    await db.commit()
+
+
 async def transfer_snapshot(db,run):
     if run.source['kind']!='snapshot':return
+    await startup_progress(db,run,'archive','正在校验并暂存平台冻结包')
     folder=ROOT/'.backups/training-transfer';folder.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='run-',dir=folder) as temp:
         local=Path(temp)/'input.zip'
@@ -219,8 +241,13 @@ async def transfer_snapshot(db,run):
                 if digest.hexdigest()!=run.source['sha256']:raise HTTPException(409,'平台冻结包SHA256已变化，禁止训练')
             await asyncio.to_thread(copy)
         conn=await connection(db,run)
+        await ensure_starting(db,run)
+        size=local.stat().st_size
+        await startup_progress(db,run,'upload',f'正在传输冻结包（{size/1024**2:.1f} MiB）',archive_bytes=size)
         await asyncio.to_thread(bridge,'platform_training' if conn else run.server['name'],
             dict(connection=conn,upload=dict(localPath=str(local),remotePath=run.output_dir+'/input.zip')))
+        await ensure_starting(db,run)
+        await startup_progress(db,run,'unpack','传输完成，正在远端校验SHA256、解包及逐张核验')
         await remote(db,run,'unpack',snapshot_hash=run.source['sha256'])
 
 
@@ -243,38 +270,56 @@ async def launch(db,run,user):
     # Unique GPU UUID keys serialize competing starts, including different tenants/connections.
     for gpu in reserved_gpus(run):db.add(TrainingGpuHold(gpu_uuid=gpu,run_id=run.id))
     run.status='starting';run.error=None
+    steps=['precheck','stage']+(['archive','upload','unpack'] if run.source['kind']=='snapshot' else [])+['container']
+    now=datetime.now(timezone.utc).isoformat()
+    run.inspection={**run.inspection,'startup':dict(state='queued',phase='queued',steps=steps,submitted_at=now,updated_at=now,
+        events=[dict(phase='queued',message='启动已提交，等待后台准备',time=now)])}
     try:await db.commit()
     except IntegrityError:
         await db.rollback();raise HTTPException(409,'GPU已被其他平台训练任务占用') from None
+    await db.refresh(run)
+    return run
+
+
+async def prepare_start(db,run):
     try:
+        await ensure_starting(db,run)
+        await startup_progress(db,run,'precheck','正在重新检查镜像、数据、权重和GPU')
         checked=await check(db,run)
         if not checked['ok']:
-            run.status='draft';await release(db,run);await db.commit()
+            run.status='draft';run.error='预检查未通过，请查看检查结果；未启动容器';await release(db,run);await db.commit()
+            await startup_progress(db,run,'precheck',run.error,state='failed')
             raise HTTPException(409,'预检查未通过，请查看检查结果；未启动容器')
+        await ensure_starting(db,run)
+        await startup_progress(db,run,'stage','预检查通过，正在准备独立任务目录和配置')
         await remote(db,run,'stage',script=build_script(run.config))
+        await ensure_starting(db,run)
         await transfer_snapshot(db,run)
-        # Recheck actor and cancellation after a potentially slow dataset transfer.
-        await db.refresh(run)
-        actor=await db.get(User,user.id,populate_existing=True)
-        if run.status!='starting' or actor is None or not actor.is_active or actor.role!='admin':
-            raise HTTPException(409,'任务已取消或管理员权限变化；停止启动')
+        await ensure_starting(db,run)
+        await startup_progress(db,run,'container','输入准备完成，正在复核资源并创建、启动独立容器')
         result=await remote(db,run,'start')
         await db.refresh(run)
         if run.status!='starting':return run
         if result['status']=='blocked':
-            run.status='draft';run.inspection=result['inspection'];await release(db,run)
+            run.status='draft';run.inspection={**run.inspection,**result['inspection']};run.error='启动前资源复核未通过，请查看预检查结果';await release(db,run)
         else:run.status=result['status']
         if run.status=='canceled':await release(db,run)
         run.inspection={**run.inspection,'launched_image_digest':result.get('image_digest')}
         await db.commit()
+        state='complete' if run.status=='running' else 'canceled' if run.status=='canceled' else 'failed'
+        await startup_progress(db,run,'complete' if state=='complete' else 'container',
+            '容器已启动，可切换训练日志查看运行情况' if state=='complete' else run.error or '启动已停止，请核对任务',state=state)
     except HTTPException as error:
         await db.refresh(run)
-        if run.status in ACTIVE:
+        if run.status=='starting':
             run.status='unknown';run.error=str(error.detail);await db.commit()
+            await startup_progress(db,run,run.inspection.get('startup',{}).get('phase','precheck'),run.error,state='failed')
         raise
     except Exception:
         await db.rollback();await db.refresh(run)
-        if run.status in ACTIVE:run.status='unknown';run.error='准备或执行异常，请核对容器后停止释放占用';await db.commit()
+        if run.status=='starting':
+            run.status='unknown';run.error='准备或执行异常，请核对容器后停止释放占用';await db.commit()
+            await startup_progress(db,run,run.inspection.get('startup',{}).get('phase','precheck'),run.error,state='failed')
         raise HTTPException(503,'训练准备或执行异常；请核对任务，GPU占用暂时保留') from None
     await db.refresh(run)
     return run
@@ -282,6 +327,7 @@ async def launch(db,run,user):
 
 async def refresh(db,run):
     if run.status not in ACTIVE:return run
+    if run.status=='starting' and run.inspection.get('startup',{}).get('state') in ('queued','running'):return run
     advance_output=False
     try:
         result=await remote(db,run,'status')
@@ -294,6 +340,8 @@ async def refresh(db,run):
         run.error=result.get('error') or ('容器不存在或尚未启动，请点击停止核对并释放占用' if status in ('missing','created') else None)
         if run.status in ('completed','failed','canceled'):await release(db,run)
         run.inspection={**run.inspection,'runtime':result};await db.commit()
+        if run.status=='running' and run.inspection.get('startup',{}).get('state')=='interrupted':
+            await startup_progress(db,run,'complete','服务重启后已核对容器运行中',state='complete')
         advance_output=result.get('advance_output',False)
     except HTTPException as error:
         await db.refresh(run)
@@ -309,11 +357,17 @@ async def stop(db,run):
     run=await scoped(db,run.id,run.tenant_id,lock=True)
     if run.status=='draft':run.status='canceled';await db.commit();await db.refresh(run);return run
     if run.status not in ACTIVE:return run
+    if run.status=='starting' and run.inspection.get('startup',{}).get('state')=='queued':
+        run.status='canceled';run.error=None;await release(db,run);await db.commit()
+        await startup_progress(db,run,'queued','已取消排队，未启动远端准备',state='canceled')
+        return run
     run.status='stopping';await db.commit()
     try:
         result=await remote(db,run,'stop')
         if result['status']!='canceled':raise HTTPException(503,'未确认容器停止')
         await db.refresh(run);run.status='canceled';run.error=None;await release(db,run);await db.commit()
+        if run.inspection.get('startup',{}).get('state') in ('queued','running'):
+            await startup_progress(db,run,run.inspection['startup']['phase'],'管理员已停止准备',state='canceled')
     except HTTPException as error:
         await db.refresh(run);run.status='unknown';run.error=str(error.detail);await db.commit();raise
     await db.refresh(run)
@@ -328,6 +382,7 @@ async def monitor():
             for id in ids:
                 async with AsyncSessionLocal() as db:
                     run=await db.get(TrainingRun,id)
+                    if run and run.status=='starting' and run.inspection.get('startup',{}).get('state') in ('queued','running'):continue
                     if run and run.status in ('starting','stopping'):
                         age=(datetime.now(timezone.utc).replace(tzinfo=None)-run.updated_at.replace(tzinfo=None)).total_seconds()
                         if age<360:continue
@@ -339,7 +394,9 @@ async def monitor():
 
 async def start_worker():
     global _worker
-    if _worker is None:_worker=asyncio.create_task(monitor())
+    if _worker is None:
+        await recover_startups()
+        _worker=asyncio.create_task(workers())
 
 
 async def stop_worker():
@@ -349,3 +406,52 @@ async def stop_worker():
         try:await _worker
         except asyncio.CancelledError:pass
         _worker=None
+
+
+async def process_start(id,sessions=None):
+    async with (sessions or AsyncSessionLocal)() as db:
+        run=await db.scalar(select(TrainingRun).where(TrainingRun.id==id).with_for_update())
+        if run is None or run.status!='starting' or run.inspection.get('startup',{}).get('state')!='queued':return
+        run.inspection={**run.inspection,'startup':{**run.inspection['startup'],'state':'running'}}
+        await db.commit()
+        try:await prepare_start(db,run)
+        except HTTPException:logger.warning('Background training preparation stopped: %s',id)
+
+
+async def recover_startups(sessions=None):
+    async with (sessions or AsyncSessionLocal)() as db:
+        runs=(await db.scalars(select(TrainingRun).where(TrainingRun.status=='starting'))).all()
+        for run in runs:
+            if run.inspection.get('startup',{}).get('state')=='running':
+                run.status='unknown';run.error='后台服务重启，启动准备中断；请核对容器后停止，GPU占用保留，不会自动重复启动';await db.commit()
+                await startup_progress(db,run,run.inspection['startup']['phase'],run.error,state='interrupted')
+
+
+async def preparation_worker():
+    try:
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    runs=(await db.scalars(select(TrainingRun).where(TrainingRun.status=='starting'))).all()
+                    for run in runs:
+                        if run.id not in _startups and run.inspection.get('startup',{}).get('state')=='queued':
+                            task=asyncio.create_task(process_start(run.id));_startups[run.id]=task
+                            task.add_done_callback(lambda done,id=run.id:startup_finished(id,done))
+            except asyncio.CancelledError:raise
+            except Exception:logger.warning('Training startup queue unavailable; retrying')
+            await asyncio.sleep(2)
+    finally:
+        for task in list(_startups.values()):task.cancel()
+        await asyncio.gather(*list(_startups.values()),return_exceptions=True)
+        _startups.clear()
+
+
+def startup_finished(id,task):
+    _startups.pop(id,None)
+    if not task.cancelled() and task.exception():logger.error('Training startup worker failed: %s',id)
+
+
+async def workers():
+    # shortcut: 单后端进程；部署多实例前须以数据库租约替代进程内执行记录。
+    async with asyncio.TaskGroup() as group:
+        group.create_task(monitor());group.create_task(preparation_worker())

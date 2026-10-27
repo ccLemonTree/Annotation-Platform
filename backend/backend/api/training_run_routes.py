@@ -113,7 +113,7 @@ async def check(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depend
     return await training_runs.check(db,await training_runs.scoped(db,id,user.tenant_id))
 
 
-@router.post('/runs/{id}/start')
+@router.post('/runs/{id}/start',status_code=202)
 async def start(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
     return training_runs.summary(await training_runs.launch(db,await training_runs.scoped(db,id,user.tenant_id),user))
 

@@ -60,7 +60,8 @@ export interface TrainingRun {
   id: string; name: string; kind: string; status: string; config: TrainingInput;
   source: { kind: string; id?: string; sha256?: string; format?: string; path?: string; project_id?: string; labels?: string[]; run_id?:string;source_path?:string;model_kind?:string };
   server: { id: string; name: string }; output_dir: string; error?: string; created_at: string;
-  inspection: Partial<TrainingCheck> & { runtime?: unknown;output_phase?:'onnx'|'transferring'|'tensorrt' };
+  inspection: Partial<TrainingCheck> & { runtime?: unknown;output_phase?:'onnx'|'transferring'|'tensorrt';
+    startup?:{state:'queued'|'running'|'complete'|'failed'|'interrupted'|'canceled';phase:string;steps:string[];archive_bytes?:number;events:{phase:string;message:string;time:string}[]} };
 }
 export interface TrainingArtifact { path: string; bytes: number; role: string }
 export interface TrainingSnapshot {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { isAxiosError } from 'axios';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Col, Collapse, Descriptions, Drawer, Form, Input, InputNumber, Modal, Row, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography } from 'antd';
 import { getGpuResources } from '../api/gpuResources';
@@ -7,6 +8,7 @@ import { getProjects } from '../api/projects';
 import type { Project } from '../api/projects';
 import { createTrainingRun, updateTrainingRun, deleteTrainingRun, downloadTrainingArtifact, getTrainingArtifacts, getTrainingCatalog, getTrainingDefaults, getTrainingLogs, getTrainingRun, getTrainingRuns, getTrainingServers, getTrainingSnapshots, trainingAction } from '../api/training';
 import TrainingLogs from '../components/TrainingLogs';
+import TrainingStartup from '../components/TrainingStartup';
 import TrainingAnalysis from '../components/TrainingAnalysis';
 import TrainingPlatformData from '../components/TrainingPlatformData';
 import ModelOutputForm from '../components/ModelOutputForm';
@@ -64,6 +66,7 @@ export default function TrainingPage() {
   const [kind, setKind] = useState('yolo26'), [serverId, setServerId] = useState('default'), [gpus, setGpus] = useState<GpuResource[]>([]), [gpuLoading, setGpuLoading] = useState(false), [gpuError, setGpuError] = useState('');
   const [source, setSource] = useState('remote'), [snapshots, setSnapshots] = useState<TrainingSnapshot[]>([]), [snapshotLoading, setSnapshotLoading] = useState(false);
   const [selected, setSelected] = useState<TrainingRun>(), [detailTab, setDetailTab] = useState('overview'), [busy, setBusy] = useState(''), [detailError, setDetailError] = useState('');
+  const selectedId=selected?.id,selectedStatus=selected?.status;
   const [logs, setLogs] = useState(''), [files, setFiles] = useState<TrainingArtifact[]>([]), [truncated, setTruncated] = useState(false);
   const [confirm, setConfirm] = useState<'start' | 'stop' | 'delete'>();
   const [datasetLabels, setDatasetLabels] = useState<string[]>([]);
@@ -103,6 +106,19 @@ export default function TrainingPage() {
     void load(); const timer = setInterval(() => { void load(); }, 15000);
     return () => { controller.abort(); clearInterval(timer); };
   }, [page, reload]);
+  useEffect(()=>{
+    if(!selectedId||!selectedStatus||!active.includes(selectedStatus))return;
+    const id=selectedId;let alive=true,pending=false;
+    const load=async()=>{
+      if(pending||document.hidden)return;
+      pending=true;
+      try{const run=await getTrainingRun(id);if(alive)setSelected(previous=>previous?.id===id?run:previous);}
+      catch(cause){if(alive)setDetailError(errorText(cause));}
+      finally{pending=false;}
+    };
+    void load();const timer=setInterval(()=>void load(),selectedStatus==='starting'?3000:15000);
+    return()=>{alive=false;clearInterval(timer);};
+  },[selectedId,selectedStatus]);
   useEffect(() => {
     if (!open || !admin) return;
     const controller = new AbortController();
@@ -181,12 +197,16 @@ export default function TrainingPage() {
       if(value==='delete'){
         await deleteTrainingRun(selected.id);setSelected(undefined);setConfirm(undefined);setPage(1);setReload(n=>n+1);return;
       }
-      await trainingAction(selected.id, value);
+      const result=await trainingAction(selected.id, value);
+      if(value==='start'){
+        setSelected(result as TrainingRun);setConfirm(undefined);setDetailTab('startup');setReload(n=>n+1);return;
+      }
       setSelected(await getTrainingRun(selected.id)); setReload(n => n + 1);
       if (value === 'precheck') setDetailTab('checks');
       setConfirm(undefined);
     } catch (cause) {
-      setDetailError(errorText(cause));
+      if(value==='start'){setConfirm(undefined);setDetailTab('startup');}
+      setDetailError(value==='start'&&isAxiosError(cause)&&!cause.response?'启动提交结果尚未确认，请核对后台进度及运行状态，勿重复启动。':errorText(cause));
       try { setSelected(await getTrainingRun(selected.id)); } catch { /* Keep the current detail and the actionable error. */ }
     } finally { setBusy(''); }
   };
@@ -292,6 +312,7 @@ export default function TrainingPage() {
         {(detailError || selected.error) && <Alert type="error" showIcon title={detailError || selected.error} />}
         {selected.config.onnx_stage&&<Alert type="info" showIcon title={`导出阶段：${({onnx:'训练服务器导出ONNX',transferring:'校验并自动传输ONNX',tensorrt:'目标GPU服务器构建TensorRT'} as const)[selected.inspection.output_phase||'onnx']}`} description={`${selected.config.onnx_stage.server.name} → ${selected.server.name}；完成后在“模型产物”下载ONNX和engine。`}/>}
         <Tabs activeKey={detailTab} onChange={tab => { void readOutput(tab); }} items={[
+          { key:'startup',label:'启动进度',children:<TrainingStartup run={selected}/> },
           ...(!outputKinds.includes(selected.kind)?[{key:'analysis',label:'效果分析与对比',children:<TrainingAnalysis key={selected.id} run={selected} admin={admin}/>}]:[]),
           { key: 'overview', label: '任务与配置', children: <><Descriptions column={1} bordered size="small" items={[
             { key: 'id', label: '任务ID', children: selected.id }, { key: 'kind', label: '训练器', children: outputNames[selected.kind] || catalog[selected.kind]?.name || selected.kind },
