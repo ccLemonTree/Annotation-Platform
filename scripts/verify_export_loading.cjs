@@ -30,7 +30,7 @@ async page => {
         if(failure)return route.fulfill({status:409,json:{detail:'近重复图片跨数据划分，请放在同一划分；冲突图片：a.png、b.png'}});
         if (route.request().postDataJSON().selection.mode !== 'val_only') throw Error('Freeze lost validation-only mode');
         await held;
-        snapshots = [{ id: 'frozen', format: 'yolo', asset_count: 1, created_at: new Date().toISOString() }, ...snapshots];
+        snapshots = [{ id: 'frozen', format: 'yolo', asset_count: 1, created_at: new Date().toISOString() }, ...snapshots.filter(row=>row.id!=='frozen')];
         return route.fulfill({ json: snapshots[0] });
       }
       return route.fulfill({ json: snapshots });
