@@ -4,12 +4,12 @@ async page => {
   const source = await (await page.request.get(origin + '/src/components/ProjectExport.tsx')).text();
   const react = source.match(/["'](\/node_modules\/\.vite\/deps\/react\.js\?[^"']+)["']/)[1];
   const asset = { id: 'a', original_name: 'a.png' };
-  let release, releaseSummary, oldRequests = 0, summaryRequests = 0, downloads = 0;
+  let release, releaseSummary, oldRequests = 0, summaryRequests = 0, downloads = 0, failure=false, previewConflict=false,downloadFailure=false,abortFreeze=false;
   let snapshots = [{ id: 'existing', format: 'yolo', asset_count: 7, created_at: new Date().toISOString() }];
   const held = new Promise(resolve => release = resolve);
   const summaryHeld = new Promise(resolve => releaseSummary = resolve);
   await page.route('**/src/App.tsx*', route => route.fulfill({ contentType: 'application/javascript', body: `import React from '${react}';import Provider from '/src/ui/PlatformProvider.tsx';import Export from '/src/components/ProjectExport.tsx';export default function App(){return React.createElement(Provider,null,React.createElement(Export,{projectId:'fixture'}));}` }));
-  await page.route('**/api/**', async route => {
+  await page.route(origin+'/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (!path.startsWith('/api/')) return route.continue();
     if (path.endsWith('/summary')) {
@@ -23,6 +23,8 @@ async page => {
     }
     if (path.endsWith('/snapshots')) {
       if (route.request().method() === 'POST') {
+        if(abortFreeze)return route.abort('failed');
+        if(failure)return route.fulfill({status:409,json:{detail:'近重复图片跨数据划分，请放在同一划分；冲突图片：a.png、b.png'}});
         if (route.request().postDataJSON().selection.mode !== 'val_only') throw Error('Freeze lost validation-only mode');
         await held;
         snapshots = [{ id: 'frozen', format: 'yolo', asset_count: 1, created_at: new Date().toISOString() }, ...snapshots];
@@ -32,9 +34,10 @@ async page => {
     }
     if (path.endsWith('/splits/preview')) {
       if (route.request().postDataJSON().selection.mode !== 'val_only') throw Error('Preview lost validation-only mode');
-      return route.fulfill({ json: { images_by_split: { val: 1 }, labels_by_split: { val: { fire: 1 } }, excluded_asset_ids: [] } });
+      return route.fulfill({ json: { images_by_split: { val: 1 }, labels_by_split: { val: { fire: 1 } }, excluded_asset_ids: [],can_freeze:!previewConflict,...(previewConflict?{failure_reason:'近重复图片跨数据划分，请放在同一划分；冲突图片：a.png、b.png'}:{}) } });
     }
-    if (path.endsWith('/download')) { downloads++; return route.fulfill({ contentType: 'application/zip', body: 'fixture zip' }); }
+    if(path.endsWith('/packages'))return route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({detail:'图片哈希与资产不一致'})});
+    if (path.endsWith('/download')) { downloads++;if(downloadFailure)return route.fulfill({status:400,json:{detail:'冻结包读取失败'}}); return route.fulfill({ contentType: 'application/zip', body: 'fixture zip' }); }
     if (route.request().method() === 'DELETE') {
       if (path.endsWith('/existing')) return route.fulfill({ status: 409, json: { detail: '冻结版本已被训练任务或验证集引用' } });
       if (path.endsWith('/frozen')) { snapshots = snapshots.filter(row => row.id !== 'frozen'); return route.fulfill({ status: 204 }); }
@@ -66,14 +69,24 @@ async page => {
     if (downloads !== 1) throw Error('Freeze-only triggered a download');
     const existing = page.getByRole('button', { name: '下载 yolo · 7 张', exact: true });
     await page.getByRole('button', { name: '删除冻结版本 existing', exact: true }).click();
-    await page.getByRole('button', { name: /^删\s*除$/ }).click();
+    await page.getByRole('button', { name: /^删\s*除$/ }).last().click();
     await page.getByText('冻结版本已被训练任务或验证集引用', { exact: true }).waitFor();
     if (!await existing.isVisible()) throw Error('Referenced snapshot disappeared');
     const frozen = page.getByRole('button', { name: '下载 yolo · 1 张', exact: true });
     await page.getByRole('button', { name: '删除冻结版本 frozen', exact: true }).click();
-    await page.getByRole('button', { name: /^删\s*除$/ }).click();
+    await page.getByRole('button', { name: /^删\s*除$/ }).last().click();
     await frozen.waitFor({ state: 'hidden' });
-    return { checks: ['Summary loads labels without paginated asset or annotation requests', 'Review filter uses matching counts', 'Freeze elapsed seconds advance and clear on completion', 'Freeze cannot be submitted twice', 'Existing snapshot shows and downloads before labels load', 'Validation-only mode reaches preview and freeze', 'Referenced snapshot delete stays blocked', 'Confirmed deletion removes the row', 'Freeze-only does not download'], businessWrites: 0 };
+    await page.getByRole('button',{name:'预览当前划分',exact:true}).click();failure=true;await freeze.click();
+    await page.locator('.ant-alert-error').getByText(/近重复图片跨数据划分.*a.png.*b.png/).waitFor();
+    await page.getByRole('button',{name:/^下\s*载$/}).click();await page.locator('.ant-alert-error').getByText(/图片哈希与资产不一致/).waitFor();
+    failure=false;previewConflict=true;await page.getByRole('button',{name:'预览当前划分',exact:true}).click();
+    await page.locator('.ant-alert-error').getByText(/近重复图片跨数据划分.*a.png.*b.png/).waitFor();
+    if(!await freeze.isDisabled()||!await page.getByRole('button',{name:/^下\s*载$/}).isDisabled())throw Error('Failed split validation still allows export');
+    previewConflict=false;downloadFailure=true;await page.getByRole('button',{name:'预览当前划分',exact:true}).click();
+    await page.getByRole('button',{name:'冻结并下载',exact:true}).click();
+    await page.locator('.ant-alert-error').getByText(/冻结版本已创建（frozen）.*冻结包读取失败/).waitFor();
+    abortFreeze=true;await freeze.click();await page.locator('.ant-alert-error').getByText(/网络连接中断.*避免重复提交/).waitFor();
+    return { checks: ['Summary loads labels without paginated asset or annotation requests', 'Review filter uses matching counts', 'Freeze elapsed seconds advance and clear on completion', 'Freeze cannot be submitted twice', 'Existing snapshot shows and downloads before labels load', 'Validation-only mode reaches preview and freeze', 'Referenced snapshot delete stays blocked', 'Confirmed deletion removes the row', 'Freeze-only does not download','Freeze conflict reason and example filenames persist on the page','Blob JSON download errors show the server reason','Preview conflicts disable freeze and download','Download failure after freeze identifies the already-created snapshot','Network failure says the outcome is unknown and avoids duplicate submission'], businessWrites: 0 };
   } finally {
     release(); releaseSummary(); await page.goto('about:blank'); await page.unrouteAll({ behavior: 'ignoreErrors' });
   }

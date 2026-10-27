@@ -2,6 +2,7 @@
 import hashlib
 import asyncio
 import json
+import logging
 import tempfile
 import zipfile
 from hashlib import sha256
@@ -17,6 +18,13 @@ from services.annotations import detection_boxes
 from services.storage import get_storage
 from services.dataset_splits import SplitPolicy, split_report
 from services.annotation_scope import eligible_assets
+
+
+def split_failure_reason(report, rows):
+    error = report['errors'][0]
+    examples = [f'{asset.original_name}（{asset.id}）' for asset, _ in rows
+                if str(asset.id) in error.get('asset_ids', [])[:2]]
+    return error['message'] + ('；冲突图片：' + '、'.join(examples) if examples else '')
 
 
 def simple_split(rows, labels, mode, ratios, budgets):
@@ -108,14 +116,18 @@ async def training_package(db, project, format, selected=None, approved_only=Tru
         selection_result.update(mode=selection['mode'], ratios=ratios, budgets=selection['budgets'],
             check_duplicates=selection['check_duplicates'], phash_distance=selection['phash_distance'],
             color_distance=selection['color_distance'], require_source=selection['require_source'])
-        if selection['check_duplicates']:
-            check_policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
-                training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
-            selection_result['leakage_report'] = await preview_splits(db, project, selected, approved_only,
-                check_policy, selection_result['splits'])
         splits = selection_result['splits']
         excluded.extend(selection_result['excluded_asset_ids'])
         rows = [(asset, ann) for asset, ann in rows if str(asset.id) in splits]
+        if selection['check_duplicates']:
+            check_policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
+                training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
+            report = await inspect_splits(rows, labels, check_policy, splits)
+            selection_result['leakage_report'] = report
+            if report['errors']:
+                reason = split_failure_reason(report, rows)
+                logging.getLogger(__name__).warning('Export rejected before ZIP: project=%s code=%s reason=%s', project.id, report['errors'][0]['code'], reason)
+                raise HTTPException(409, reason)
     return await run_in_threadpool(lambda: asyncio.run(
         _build_package(project, rows, excluded, format, selected, approved_only, splits, policy, selection_result)))
 
@@ -123,6 +135,10 @@ async def training_package(db, project, format, selected=None, approved_only=Tru
 async def preview_splits(db, project, selected, approved_only, policy, splits=None, suggest=False):
     rows, excluded = await export_rows(db, project, approved_only, lock=False)
     labels = category_labels(project, rows, selected)
+    return dict(await inspect_splits(rows, labels, policy, splits, suggest), labels=labels, excluded_asset_ids=excluded)
+
+
+async def inspect_splits(rows, labels, policy, splits=None, suggest=False):
 
     async def fingerprint(asset):
         try:
@@ -149,8 +165,7 @@ async def preview_splits(db, project, selected, approved_only, policy, splits=No
     def inspect():
         with ThreadPoolExecutor(max_workers=4) as workers:
             fingerprints = dict(workers.map(lambda row: asyncio.run(fingerprint(row[0])), rows))
-        return dict(split_report(rows, labels, policy, splits, suggest, fingerprints),
-                    labels=labels, excluded_asset_ids=excluded)
+        return split_report(rows, labels, policy, splits, suggest, fingerprints)
 
     return await run_in_threadpool(inspect)
 
@@ -160,6 +175,13 @@ async def preview_simple_split(db, project, selected, approved_only, selection):
     labels = category_labels(project, rows, selected)
     result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'])
     result.update(labels=labels, excluded_asset_ids=excluded + result['excluded_asset_ids'], can_freeze=bool(result['splits']))
+    if selection['check_duplicates']:
+        policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
+            training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
+        chosen = [row for row in rows if str(row[0].id) in result['splits']]
+        report = await inspect_splits(chosen, labels, policy, result['splits'])
+        result.update(errors=report['errors'], warnings=report['warnings'], can_freeze=bool(result['splits']) and not report['errors'],
+            failure_reason=split_failure_reason(report, chosen) if report['errors'] else '')
     return result
 
 async def _build_package(project, rows, excluded, format, selected, approved_only, splits, policy=None, selection_result=None):
@@ -182,7 +204,7 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
     if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
         evidence = split_report(rows, labels, policy, splits)
         if evidence['errors']:
-            raise HTTPException(409, evidence['errors'][0]['message'])
+            raise HTTPException(409, split_failure_reason(evidence, rows))
     result = tempfile.SpooledTemporaryFile(max_size=8*1024*1024)
     paths = {}
     manifest = dict(project_id=str(project.id), format=format, labels=labels, approved_only=approved_only,
@@ -241,7 +263,7 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
             if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
                 evidence = split_report(rows, labels, policy, splits, fingerprints=fingerprints)
                 if evidence['errors']:
-                    raise HTTPException(409, evidence['errors'][0]['message'])
+                    raise HTTPException(409, split_failure_reason(evidence, rows))
                 manifest['split_evidence'] = evidence
             manifest['distribution'] = dict(boxes_by_label=dict(counts), images_by_split=dict(Counter(a['split'] for a in manifest['assets'])),
                 images_by_source=dict(Counter(a['source_type'] for a in manifest['assets'])), negative_images=sum(not a['annotation_data']['boxes'] for a in manifest['assets']))

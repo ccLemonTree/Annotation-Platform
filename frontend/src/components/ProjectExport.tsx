@@ -10,6 +10,19 @@ type Summary = { labels: string[]; all: { images: number; images_by_label: Recor
 
 const readable = (data: Record<string, unknown>) => Object.entries(data || {}).map(([key, value]) => `${key}: ${value}`).join(' · ');
 
+async function failureReason(failure: unknown, fallback: string) {
+  if (!isAxiosError(failure)) return fallback;
+  let data = failure.response?.data;
+  if (data instanceof Blob) {
+    try { data = JSON.parse(await data.text()); } catch { return fallback; }
+  }
+  if (typeof data?.detail === 'string') return data.detail;
+  if (typeof data?.message === 'string') return data.message;
+  if (failure.code === 'ECONNABORTED' || failure.code === 'ETIMEDOUT') return '请求等待超时，服务端可能仍在处理。请先重新打开窗口检查冻结版本，避免重复提交。';
+  if (!failure.response) return '网络连接中断，执行结果尚未确认。请先重新打开窗口检查冻结版本，避免重复提交。';
+  return fallback;
+}
+
 export default function ProjectExport({ projectId }: { projectId: string }) {
   const [notice, context] = message.useMessage();
   const [open, setOpen] = useState(false), [loaded, setLoaded] = useState(false), [busy, setBusy] = useState(false);
@@ -52,7 +65,7 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
     if (!selected.length) return notice.error('至少选择一个标签');
     setBusy(true); setError(''); setReport(null); setElapsed(0);
     try { setReport((await apiClient.post(`/api/export/projects/${projectId}/splits/preview`, request(), { timeout: 300000 })).data); }
-    catch { setError('划分预览失败，请检查标注和图片'); }
+    catch (failure) { setError(await failureReason(failure, '划分预览失败，请检查标注和图片')); }
     finally { setBusy(false); }
   };
   const downloadBlob = async (responseUrl: string, body: Record<string, unknown>) => {
@@ -62,18 +75,23 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
   const run = async (action: 'download' | 'freeze' | 'freeze-download') => {
     if (!selected.length) return notice.error('至少选择一个标签');
     setBusy(true); setError('');
+    let frozenId: string | undefined;
     try {
       const body = { format, ...request() };
       if (action === 'download') await downloadBlob(`/api/export/projects/${projectId}/packages`, body);
       else {
         const response = await apiClient.post(`/api/export/projects/${projectId}/snapshots`, body, { timeout: 600000 });
+        frozenId = response.data.id;
         if (action === 'freeze-download') {
           const downloadResponse = await apiClient.get(`/api/export/snapshots/${response.data.id}/download`, { responseType: 'blob', timeout: 600000 });
           const url = URL.createObjectURL(downloadResponse.data); const link = document.createElement('a'); link.href = url; link.download = `snapshot_${response.data.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
         }
         setSnapshots((await apiClient.get(`/api/export/projects/${projectId}/snapshots`, { params: { summary_only: true } })).data); notice.success('冻结版本已保存');
       }
-    } catch { setError('导出失败，请刷新后检查冻结列表'); }
+    } catch (failure) {
+      const reason = await failureReason(failure, '导出失败，请刷新后检查冻结列表');
+      setError(frozenId ? `冻结版本已创建（${frozenId}），但后续下载或列表刷新失败：${reason}` : reason);
+    }
     finally { setBusy(false); }
   };
   const setRatio = (key: Split, value: number | null) => setSelection(previous => ({ ...previous, ratios: { ...previous.ratios, [key]: value ?? 0 } }));
@@ -98,9 +116,9 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
         <Select mode="multiple" style={{ minWidth: 250 }} disabled={busy || !loaded} loading={!loaded && !error} value={selected} onChange={setSelected} options={labels.map(label => ({ label, value: label }))} placeholder={!loaded && !error ? '正在加载标签…' : '选择标签'} />
         <Checkbox checked={approved} disabled={busy} onChange={event => setApproved(event.target.checked)}>仅审核通过</Checkbox>
         <Button disabled={!loaded || busy} onClick={preview}>预览当前划分</Button>
-        <Button disabled={!loaded || busy || !report} onClick={() => run('download')}>下载</Button>
-        <Button type="primary" disabled={!loaded || busy || !report} onClick={() => run('freeze')}>仅冻结</Button>
-        <Button disabled={!loaded || busy || !report} onClick={() => run('freeze-download')}>冻结并下载</Button>
+        <Button disabled={!loaded || busy || !report || report.can_freeze === false} onClick={() => run('download')}>下载</Button>
+        <Button type="primary" disabled={!loaded || busy || !report || report.can_freeze === false} onClick={() => run('freeze')}>仅冻结</Button>
+        <Button disabled={!loaded || busy || !report || report.can_freeze === false} onClick={() => run('freeze-download')}>冻结并下载</Button>
       </Space>
       <Space wrap>
         <Select aria-label="划分方式" value={selection.mode} disabled={busy} onChange={(mode: Selection['mode']) => setSelection(previous => ({ ...previous, mode }))} options={[{ value: 'ratio', label: '按比例划分' }, { value: 'train_only', label: '仅训练集' }, { value: 'val_only', label: '仅验证集' }]} />
@@ -109,12 +127,13 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
       <p>当前范围 {eligible?.images ?? '加载中'} 张；仅训练集 / 仅验证集会将全部选中图片放入对应划分。每类预算仅限制训练图片，按图片计数。</p>
       <Table size="small" pagination={false} rowKey="label" dataSource={selected.map(label => ({ label, available: eligible?.images_by_label[label] ?? 0, budget: selection.budgets[label] ?? null }))} columns={[{ title: '标签', dataIndex: 'label' }, { title: '可用图片', dataIndex: 'available' }, { title: '训练预算', render: (_: unknown, row: { label: string; budget?: number | null }) => <InputNumber min={1} precision={0} disabled={busy || selection.mode === 'val_only'} placeholder="不限" value={row.budget ?? undefined} onChange={value => setSelection(previous => ({ ...previous, budgets: { ...previous.budgets, [row.label]: value ?? null } }))} /> }, { title: '训练', render: (_: unknown, row: { label: string }) => (report?.labels_by_split as Record<string, Record<string, number>> | undefined)?.train?.[row.label] ?? '-' }, { title: '验证', render: (_: unknown, row: { label: string }) => (report?.labels_by_split as Record<string, Record<string, number>> | undefined)?.val?.[row.label] ?? '-' }, { title: '测试', render: (_: unknown, row: { label: string }) => (report?.labels_by_split as Record<string, Record<string, number>> | undefined)?.test?.[row.label] ?? '-' }]} />
       {report && <Alert type="info" title={`划分结果：${readable(report.images_by_split as Record<string, unknown>)}；排除 ${((report.excluded_asset_ids as string[]) || []).length} 张`} />}
+      {typeof report?.failure_reason === 'string' && report.failure_reason && <Alert type="error" showIcon title={report.failure_reason} />}
       <details><summary>高级：相似图片防泄漏检查（默认关闭）</summary><Space wrap style={{ marginTop: 10 }}><Checkbox checked={selection.check_duplicates} disabled={busy} onChange={event => setSelection(previous => ({ ...previous, check_duplicates: event.target.checked }))}>启用来源分组、pHash、颜色阈值检查</Checkbox><label>pHash <InputNumber min={0} max={64} value={selection.phash_distance} disabled={busy || !selection.check_duplicates} onChange={value => setSelection(previous => ({ ...previous, phash_distance: value ?? 4 }))} /></label><label>颜色 <InputNumber min={0} max={255} value={selection.color_distance} disabled={busy || !selection.check_duplicates} onChange={value => setSelection(previous => ({ ...previous, color_distance: value ?? 20 }))} /></label><Checkbox checked={selection.require_source} disabled={busy || !selection.check_duplicates} onChange={event => setSelection(previous => ({ ...previous, require_source: event.target.checked }))}>来源缺失禁止冻结</Checkbox></Space></details>
       <h3>冻结版本</h3>
       {snapshotsLoading && <Space><Spin size="small" />正在加载冻结版本…</Space>}
       {snapshotsError && <Alert type="error" title={snapshotsError} />}
       {!snapshotsLoading && !snapshotsError && !snapshots.length && <p>暂无冻结版本</p>}
-      {snapshots.map(snapshot => <Space key={snapshot.id} style={{ display: 'flex', marginBottom: 8 }}><Button disabled={busy} onClick={() => apiClient.get(`/api/export/snapshots/${snapshot.id}/download`, { responseType: 'blob', timeout: 600000 }).then(response => { const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = `snapshot_${snapshot.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000); }).catch(() => notice.error('冻结版本下载失败，请重试'))}>下载 {snapshot.format} · {snapshot.asset_count} 张</Button><Tag>{new Date(snapshot.created_at).toLocaleString()}</Tag><Popconfirm title="删除此冻结版本？" description="删除冻结包和版本记录，原图与项目标注保留。被训练任务或验证集引用的版本不能删除。" okText="删除" cancelText="取消" onConfirm={() => removeSnapshot(snapshot.id)}><Button danger aria-label={`删除冻结版本 ${snapshot.id}`} disabled={busy}>删除</Button></Popconfirm></Space>)}
+      {snapshots.map(snapshot => <Space key={snapshot.id} style={{ display: 'flex', marginBottom: 8 }}><Button disabled={busy} onClick={() => apiClient.get(`/api/export/snapshots/${snapshot.id}/download`, { responseType: 'blob', timeout: 600000 }).then(response => { const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = `snapshot_${snapshot.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000); }).catch(async failure => setError(await failureReason(failure, '冻结版本下载失败，请重试')))}>下载 {snapshot.format} · {snapshot.asset_count} 张</Button><Tag>{new Date(snapshot.created_at).toLocaleString()}</Tag><Popconfirm title="删除此冻结版本？" description="删除冻结包和版本记录，原图与项目标注保留。被训练任务或验证集引用的版本不能删除。" okText="删除" cancelText="取消" onConfirm={() => removeSnapshot(snapshot.id)}><Button danger aria-label={`删除冻结版本 ${snapshot.id}`} disabled={busy}>删除</Button></Popconfirm></Space>)}
     </Modal>
   </>;
 }
