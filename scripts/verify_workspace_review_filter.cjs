@@ -31,12 +31,15 @@ async page=>{
         if(nextReadFailure){nextReadFailure=false;return route.fulfill({status:503,json:{detail:'fixture next read failed'}});}
         const i=matching.indexOf(asset),anchor=assets.indexOf(asset);
         return route.fulfill({headers,json:{position:i+1,total:matching.length,previous_id:i>=0?matching[i-1]?.id||null:matching.filter(a=>assets.indexOf(a)<anchor).at(-1)?.id||null,
-          next_id:i>=0?matching[i+1]?.id||null:matching.find(a=>assets.indexOf(a)>anchor)?.id||null,...(review?{matched:i>=0}:{})}});
+          next_id:i>=0?matching[i+1]?.id||null:matching.find(a=>assets.indexOf(a)>anchor)?.id||null,...(review||label?{matched:i>=0}:{})}});
       }
       return route.fulfill({json:asset});
     }
     if(path.endsWith('/events'))return route.fulfill({json:[]});
     if(path==='/api/annotations')return route.fulfill({json:{items:[records.find(row=>row.asset_id===url.searchParams.get('asset_id'))],total:1}});
+    if(path.startsWith('/api/annotations/')&&req.method()==='PUT'){
+      const row=records.find(row=>path.endsWith('/'+row.id));row.annotation_data=req.postDataJSON().annotation_data;row.version++;row.review_status='pending';return route.fulfill({json:row});
+    }
     if(path.endsWith('/review')){reviews++;if(reviewFailure)return route.fulfill({status:409,json:{detail:'版本冲突'}});const row=records.find(row=>path.includes(row.id));row.review_status=req.postDataJSON().approved?'approved':'rejected';if(failNextAfterApproval)nextReadFailure=true;return route.fulfill({json:row});}
     throw Error('Unexpected fixture request '+req.method()+' '+path);
   });
@@ -79,6 +82,12 @@ async page=>{
     await page.getByText('审核已通过，但下一张读取失败，请手动切图或重新加载',{exact:true}).waitFor();await current(2);
     if(reviews!==4||records[2].review_status!=='approved')throw Error('Next read failure resubmitted or lost successful approval');
     checks.push('next-image read failure retains a successful approval without resubmitting');
+    await page.goto(origin+'/annotate/'+assets[0].id+'?label=bike');await current(0);
+    await page.getByRole('button',{name:'标记负样本（N）',exact:true}).click();await page.getByRole('button',{name:'保存标注',exact:true}).click();
+    await page.getByText('当前图片已不符合筛选，上一张 / 下一张仍在筛选结果中切换',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'下一张',exact:true}).click();await current(1);
+    if(new URL(page.url()).searchParams.get('label')!=='bike')throw Error('Saving a negative sample lost the label-only scope');
+    checks.push('saving a negative sample outside a label-only filter keeps filtered navigation available');
     capability=false;await page.goto(origin+'/annotate/'+assets[2].id+'?review_status=pending');await canvas.waitFor();
     await page.getByText('审核筛选队列读取失败，请重试并确认后台支持审核状态筛选',{exact:true}).waitFor();if(await page.getByRole('button',{name:'下一张',exact:true}).isEnabled())throw Error('Ignored filter displayed an unfiltered queue');
     checks.push('missing backend support fails closed instead of showing unfiltered navigation');

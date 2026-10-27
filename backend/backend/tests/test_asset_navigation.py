@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 import pytest
+from sqlalchemy import select
 from models import Asset, Project, Tenant
 
 
@@ -118,9 +119,19 @@ async def test_label_filter_uses_latest_annotation_for_list_selection_and_neighb
     assert selected['asset_ids']==[str(ids[2]),str(ids[0])]
     neighbors=client.get('/api/assets/'+str(ids[2])+'/neighbors',headers=auth_headers,params={'label':'fire'}).json()
     assert neighbors==dict(position=1,total=2,previous_id=None,next_id=str(ids[0]))
-    assert client.get('/api/assets/'+str(ids[1])+'/neighbors',headers=auth_headers,params={'label':'fire'}).status_code==404
+    outside=client.get('/api/assets/'+str(ids[1])+'/neighbors',headers=auth_headers,params={'label':'fire'})
+    assert outside.status_code==200,outside.text
+    assert outside.json()==dict(position=0,total=2,previous_id=str(ids[2]),next_id=str(ids[0]),matched=False)
+    empty=client.get('/api/assets/'+str(ids[1])+'/neighbors',headers=auth_headers,params={'label':'star'})
+    assert empty.status_code==200 and empty.json()==dict(position=0,total=0,previous_id=None,next_id=None,matched=False)
     assert client.get('/api/assets',headers=auth_headers,params={**query,'label':'star'}).json()['total']==0
     assert client.get('/api/assets',headers=auth_headers,params={k:v for k,v in query.items() if k!='label'}).json()['total']==5
+    latest=await test_db.scalar(select(Annotation).where(Annotation.asset_id==ids[2],Annotation.is_latest.is_(True)))
+    latest.is_latest=False
+    test_db.add(Annotation(asset_id=ids[2],annotation_data={'boxes':[]},version=2,is_latest=True))
+    await test_db.commit()
+    after_save=client.get('/api/assets/'+str(ids[2])+'/neighbors',headers=auth_headers,params={'label':'fire'})
+    assert after_save.status_code==200 and after_save.json()==dict(position=0,total=1,previous_id=None,next_id=str(ids[0]),matched=False)
 
 
 @pytest.mark.asyncio

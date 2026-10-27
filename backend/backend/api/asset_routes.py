@@ -202,7 +202,7 @@ async def asset_neighbors(asset_id: UUID, response:Response,label:str|None=Query
     row = (await db.execute(select(ranked.c.position, ranked.c.total, ranked.c.previous_id, ranked.c.next_id)
         .where(ranked.c.id == asset_id))).mappings().one_or_none()
     if row is None:
-        if review_status:
+        if review_status or label:
             anchor_created_at=select(Asset.created_at).where(Asset.id==asset.id).correlate(None).scalar_subquery()
             ahead=(Asset.created_at>anchor_created_at)|((Asset.created_at==anchor_created_at)&(Asset.id>asset.id))
             behind=(Asset.created_at<anchor_created_at)|((Asset.created_at==anchor_created_at)&(Asset.id<asset.id))
