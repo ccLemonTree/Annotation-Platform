@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 import subprocess
 import tempfile
+import weakref
 from datetime import datetime,timezone
 from uuid import UUID,uuid4
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ ROOT=Path(__file__).resolve().parents[1]
 ACTIVE=('starting','running','stopping','unknown')
 _worker=None
 _startups={}
+_snapshot_locks=weakref.WeakValueDictionary()
 logger=logging.getLogger(__name__)
 
 
@@ -226,7 +228,28 @@ async def ensure_starting(db,run):
 
 async def transfer_snapshot(db,run):
     if run.source['kind']!='snapshot':return
-    await startup_progress(db,run,'archive','正在校验并暂存平台冻结包')
+    key=(run.server['id'],run.source['sha256'])
+    lock=_snapshot_locks.setdefault(key,asyncio.Lock())
+    async with lock:await transfer_cached_snapshot(db,run)
+
+
+async def transfer_cached_snapshot(db,run):
+    await ensure_starting(db,run)
+    await startup_progress(db,run,'archive','正在按SHA256检查服务器冻结包缓存及已上传的历史任务')
+    previous=(await db.scalars(select(TrainingRun.output_dir).where(TrainingRun.tenant_id==run.tenant_id,
+        TrainingRun.id!=run.id,TrainingRun.source['sha256'].as_string()==run.source['sha256'],
+        TrainingRun.server['id'].as_string()==run.server['id']).order_by(TrainingRun.created_at.desc()).limit(5))).all()
+    await ensure_starting(db,run)
+    cached=await remote(db,run,'snapshot_cache',snapshot_hash=run.source['sha256'],
+        legacy_archives=[directory+'/input.zip' for directory in previous])
+    if cached['hit']:
+        steps=[step for step in run.inspection['startup']['steps'] if step!='upload']
+        await startup_progress(db,run,'unpack',('已校验并缓存历史任务冻结包，跳过上传' if cached.get('imported') else
+            '服务器冻结包SHA256缓存命中，跳过上传')+'；正在独立解包及逐张核验',cache_hit=True,steps=steps)
+        await ensure_starting(db,run)
+        await remote(db,run,'unpack',snapshot_hash=run.source['sha256'])
+        return
+    await startup_progress(db,run,'archive','缓存未命中，正在校验并暂存平台冻结包',cache_hit=False)
     folder=ROOT/'.backups/training-transfer';folder.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='run-',dir=folder) as temp:
         local=Path(temp)/'input.zip'
@@ -247,7 +270,7 @@ async def transfer_snapshot(db,run):
         await asyncio.to_thread(bridge,'platform_training' if conn else run.server['name'],
             dict(connection=conn,upload=dict(localPath=str(local),remotePath=run.output_dir+'/input.zip')))
         await ensure_starting(db,run)
-        await startup_progress(db,run,'unpack','传输完成，正在远端校验SHA256、解包及逐张核验')
+        await startup_progress(db,run,'unpack','传输完成，正在远端校验SHA256并写入缓存、独立解包及逐张核验')
         await remote(db,run,'unpack',snapshot_hash=run.source['sha256'])
 
 

@@ -138,7 +138,8 @@ async def test_worker_claims_durable_queue_without_an_http_background_task(clien
 
 
 @pytest.mark.asyncio
-async def test_snapshot_start_records_transfer_and_verification_before_container(client,auth_headers,test_engine,test_project,tmp_path,monkeypatch):
+@pytest.mark.parametrize('cache_hit',[False,True])
+async def test_snapshot_start_records_transfer_and_verification_before_container(client,auth_headers,test_engine,test_project,tmp_path,monkeypatch,cache_hit):
     from pathlib import Path
     from services import training_runs
     from tests.test_p2_exports import populate
@@ -149,17 +150,28 @@ async def test_snapshot_start_records_transfer_and_verification_before_container
     async def remote(db,run,action,**values):
         calls.append(action)
         if action=='precheck':return dict(ok=True,checks=[])
+        if action=='snapshot_cache':
+            assert values['legacy_archives']==[legacy['output_dir']+'/input.zip']
+            assert values['snapshot_hash']==snapshot['content_hash']
+            return dict(hit=cache_hit,imported=False)
         return dict(status='running') if action=='start' else dict(ok=True)
     def upload(server,value):
         assert Path(value['upload']['localPath']).is_file()
         calls.append('upload');return dict(success=True)
     monkeypatch.setattr(training_runs,'remote',remote);monkeypatch.setattr(training_runs,'bridge',upload)
     monkeypatch.setattr(training_runs,'ROOT',tmp_path)
+    legacy=client.post('/api/training/runs',headers=auth_headers,json=spec(snapshot_id=snapshot['id'],dataset_path='',output_root='/data/old-runs').model_dump(mode='json')).json()
     run=client.post('/api/training/runs',headers=auth_headers,json=spec(snapshot_id=snapshot['id'],dataset_path='').model_dump(mode='json')).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     await training_runs.process_start(UUID(run['id']),async_sessionmaker(test_engine,expire_on_commit=False))
     current=client.get('/api/training/runs/'+run['id'],headers=auth_headers).json()
     assert current['status']=='running',current
-    assert calls==['precheck','stage','upload','unpack','start']
-    assert [row['phase'] for row in current['inspection']['startup']['events']]==['queued','precheck','stage','archive','upload','unpack','container','complete']
-    assert current['inspection']['startup']['archive_bytes']>0
+    assert calls==['precheck','stage','snapshot_cache']+([] if cache_hit else ['upload'])+['unpack','start']
+    progress=current['inspection']['startup']
+    assert progress['cache_hit'] is cache_hit
+    if cache_hit:
+        assert 'upload' not in progress['steps']
+        assert any('跳过上传' in row['message'] for row in progress['events'])
+    else:
+        assert [row['phase'] for row in progress['events']]==['queued','precheck','stage','archive','archive','upload','unpack','container','complete']
+        assert progress['archive_bytes']>0

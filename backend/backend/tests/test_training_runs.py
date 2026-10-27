@@ -534,7 +534,7 @@ async def test_other_tenant_cannot_read_operate_or_see_training(client,auth_head
 
 
 @pytest.mark.asyncio
-async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch):
+async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch,tmp_path):
     import hashlib,threading
     from io import BytesIO
     from types import SimpleNamespace
@@ -548,12 +548,15 @@ async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch):
     class Storage:
         async def get_file(self,key):return GuardedFile(raw)
     monkeypatch.setattr(training_runs,'get_storage',lambda:Storage())
+    monkeypatch.setattr(training_runs,'ROOT',tmp_path)
     monkeypatch.setattr(training_runs,'bridge',lambda *a,**k:dict(success=True))
-    async def remote(*args,**kwargs):return dict(ok=True)
+    async def remote(*args,**kwargs):return dict(ok=True,hit=False)
     monkeypatch.setattr(training_runs,'remote',remote)
-    run=SimpleNamespace(source=dict(kind='snapshot',blob_path='fixture.zip',sha256=hashlib.sha256(raw).hexdigest()),
+    run=SimpleNamespace(id=uuid4(),tenant_id=1,source=dict(kind='snapshot',blob_path='fixture.zip',sha256=hashlib.sha256(raw).hexdigest()),
         server=dict(id='default',name=settings.GPU_SERVER_NAME),output_dir='/tmp/fixture')
     async def progress(*args,**kwargs):pass
     monkeypatch.setattr(training_runs,'startup_progress',progress)
     monkeypatch.setattr(training_runs,'ensure_starting',progress)
-    await training_runs.transfer_snapshot(None,run)
+    class DB:
+        async def scalars(self,query):return SimpleNamespace(all=lambda:[])
+    await training_runs.transfer_snapshot(DB(),run)

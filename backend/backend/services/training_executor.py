@@ -9,7 +9,46 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import zipfile
+
+SNAPSHOT_CACHE_ROOT=Path('/ai/chen/training/dataset-cache')
+
+
+def cached_snapshot(payload,path,publish=False):
+    sha=payload['snapshot_hash']
+    if not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha):
+        raise ValueError('冻结包SHA256非法')
+    root=SNAPSHOT_CACHE_ROOT;entry=root/sha
+    if root.is_symlink() or entry.is_symlink():raise ValueError('冻结包缓存目录不能是链接')
+    entry.mkdir(parents=True,exist_ok=True,mode=0o700)
+    archive=entry/'input.zip'
+    with run_lock(entry):
+        if archive.is_symlink():raise ValueError('冻结包缓存不能是链接')
+        if archive.is_file() and file_hash(archive)==sha:
+            staged=path/'input.zip'
+            if publish and staged.is_file() and not staged.is_symlink() and file_hash(staged)==sha:staged.unlink()
+            return dict(hit=True,imported=False,path=str(archive))
+        candidates=[str(path/'input.zip')] if publish else payload.get('legacy_archives',[])[:5]
+        for name in candidates:
+            source=Path(name)
+            if source.is_symlink() or not source.is_file():continue
+            # Publish only a complete, verified copy; parallel jobs never see the temporary file.
+            with tempfile.TemporaryDirectory(prefix='.publish-',dir=entry) as temp:
+                temporary=Path(temp)/'input.zip';digest=hashlib.sha256();size=0
+                with source.open('rb') as inp,temporary.open('xb') as out:
+                    for chunk in iter(lambda:inp.read(1024*1024),b''):
+                        size+=len(chunk)
+                        if size>40*1024**3:raise ValueError('冻结包超过40GiB缓存上限')
+                        out.write(chunk);digest.update(chunk)
+                if digest.hexdigest()!=sha:
+                    if publish:raise ValueError('传输冻结包SHA256不匹配，禁止缓存或解包')
+                    continue
+                os.replace(temporary,archive)
+            if publish:source.unlink()
+            return dict(hit=True,imported=not publish,path=str(archive))
+    if publish:raise ValueError('冻结包未上传且缓存未命中')
+    return dict(hit=False,imported=False)
 
 
 def docker(args,check=True,timeout=25):
@@ -196,7 +235,8 @@ def precheck(payload):
                 add('导出依赖与来源',True,json.loads(result.stdout.strip().splitlines()[-1]))
             except (ValueError,RuntimeError,subprocess.TimeoutExpired) as error:add('导出依赖与来源',False,str(error))
     elif config.get('snapshot_id'):
-        add('冻结包',True,'启动时传输固定SHA256包并校验全部图片，不重新导出')
+        add('冻结包缓存目录',writable_output(SNAPSHOT_CACHE_ROOT),'需可写：'+str(SNAPSHOT_CACHE_ROOT))
+        add('冻结包',True,'按SHA256校验并复用服务器缓存；未命中才上传，各任务独立解包，不重新导出')
     else:
         path=Path(config['dataset_path'])
         if config['kind'] in ('swift_sft','wemm'):add('训练数据',path.is_file(),'Swift填写JSONL：'+str(path))
@@ -386,9 +426,12 @@ def execute(payload):
                     if target.is_symlink() or target.read_text()!=content:raise ValueError('已存在任务文件不匹配，禁止覆盖')
                 else:target.write_text(content)
             return dict(directory=str(path))
+        if action=='snapshot_cache':
+            if (path/'.canceled').exists():raise ValueError('任务已取消，停止准备冻结包')
+            return cached_snapshot(payload,path)
         if action=='unpack':
-            archive=path/'input.zip'
-            if file_hash(archive)!=payload['snapshot_hash']:raise ValueError('传输冻结包SHA256不匹配')
+            if (path/'.canceled').exists():raise ValueError('任务已取消，停止解包')
+            archive=Path(cached_snapshot(payload,path,publish=True)['path'])
             dataset=path/'dataset'
             if not (path/'.dataset-ready').exists():
                 unpack_snapshot(archive,dataset,config['kind'])
