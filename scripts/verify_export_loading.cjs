@@ -6,6 +6,7 @@ async page => {
   const asset = { id: 'a', original_name: 'a.png' };
   let release, releaseSummary, oldRequests = 0, summaryRequests = 0, downloads = 0, failure=false, previewConflict=false,downloadFailure=false,abortFreeze=false;
   let snapshots = [{ id: 'existing', format: 'yolo', asset_count: 7, created_at: new Date().toISOString() }];
+  let groupedPreview=false,groupedFreeze=false;
   const held = new Promise(resolve => release = resolve);
   const summaryHeld = new Promise(resolve => releaseSummary = resolve);
   await page.route('**/src/App.tsx*', route => route.fulfill({ contentType: 'application/javascript', body: `import React from '${react}';import Provider from '/src/ui/PlatformProvider.tsx';import Export from '/src/components/ProjectExport.tsx';export default function App(){return React.createElement(Provider,null,React.createElement(Export,{projectId:'fixture'}));}` }));
@@ -23,6 +24,8 @@ async page => {
     }
     if (path.endsWith('/snapshots')) {
       if (route.request().method() === 'POST') {
+        const selection=route.request().postDataJSON().selection;
+        if(selection.group_similar){if(!selection.check_duplicates)throw Error('Grouping disabled similarity checks');groupedFreeze=true;}
         if(abortFreeze)return route.abort('failed');
         if(failure)return route.fulfill({status:409,json:{detail:'近重复图片跨数据划分，请放在同一划分；冲突图片：a.png、b.png'}});
         if (route.request().postDataJSON().selection.mode !== 'val_only') throw Error('Freeze lost validation-only mode');
@@ -34,6 +37,7 @@ async page => {
     }
     if (path.endsWith('/splits/preview')) {
       if (route.request().postDataJSON().selection.mode !== 'val_only') throw Error('Preview lost validation-only mode');
+      if(route.request().postDataJSON().selection.group_similar){groupedPreview=true;return route.fulfill({json:{images_by_split:{val:1},labels_by_split:{val:{fire:1}},excluded_asset_ids:[],can_freeze:true,grouping:{group_count:1,largest_group:1,actual_ratios:{train:0,val:100,test:0}}}});}
       return route.fulfill({ json: { images_by_split: { val: 1 }, labels_by_split: { val: { fire: 1 } }, excluded_asset_ids: [],can_freeze:!previewConflict,...(previewConflict?{failure_reason:'近重复图片跨数据划分，请放在同一划分；冲突图片：a.png、b.png'}:{}) } });
     }
     if(path.endsWith('/packages'))return route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({detail:'图片哈希与资产不一致'})});
@@ -86,7 +90,12 @@ async page => {
     await page.getByRole('button',{name:'冻结并下载',exact:true}).click();
     await page.locator('.ant-alert-error').getByText(/冻结版本已创建（frozen）.*冻结包读取失败/).waitFor();
     abortFreeze=true;await freeze.click();await page.locator('.ant-alert-error').getByText(/网络连接中断.*避免重复提交/).waitFor();
-    return { checks: ['Summary loads labels without paginated asset or annotation requests', 'Review filter uses matching counts', 'Freeze elapsed seconds advance and clear on completion', 'Freeze cannot be submitted twice', 'Existing snapshot shows and downloads before labels load', 'Validation-only mode reaches preview and freeze', 'Referenced snapshot delete stays blocked', 'Confirmed deletion removes the row', 'Freeze-only does not download','Freeze conflict reason and example filenames persist on the page','Blob JSON download errors show the server reason','Preview conflicts disable freeze and download','Download failure after freeze identifies the already-created snapshot','Network failure says the outcome is unknown and avoids duplicate submission'], businessWrites: 0 };
+    abortFreeze=false;downloadFailure=false;await page.getByRole('checkbox',{name:'相似图片自动分组后划分',exact:true}).check();
+    if(!await freeze.isDisabled())throw Error('Changing grouping retained an obsolete preview');
+    await page.getByRole('button',{name:'预览当前划分',exact:true}).click();await page.getByText(/分组结果：1 组.*实际比例.*验证 100%/).waitFor();
+    await freeze.click();await page.getByText('冻结版本已保存',{exact:true}).waitFor();
+    if(!groupedPreview||!groupedFreeze)throw Error('Grouping flag was lost between preview and freeze');
+    return { checks: ['Summary loads labels without paginated asset or annotation requests', 'Review filter uses matching counts', 'Freeze elapsed seconds advance and clear on completion', 'Freeze cannot be submitted twice', 'Existing snapshot shows and downloads before labels load', 'Validation-only mode reaches preview and freeze', 'Referenced snapshot delete stays blocked', 'Confirmed deletion removes the row', 'Freeze-only does not download','Freeze conflict reason and example filenames persist on the page','Blob JSON download errors show the server reason','Preview conflicts disable freeze and download','Download failure after freeze identifies the already-created snapshot','Network failure says the outcome is unknown and avoids duplicate submission','Grouping invalidates obsolete previews and displays actual ratios','Preview and freeze both enable grouping with similarity checks'], businessWrites: 0 };
   } finally {
     release(); releaseSummary(); await page.goto('about:blank'); await page.unrouteAll({ behavior: 'ignoreErrors' });
   }

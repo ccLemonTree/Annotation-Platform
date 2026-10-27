@@ -27,7 +27,7 @@ def split_failure_reason(report, rows):
     return error['message'] + ('；冲突图片：' + '、'.join(examples) if examples else '')
 
 
-def simple_split(rows, labels, mode, ratios, budgets):
+def simple_split(rows, labels, mode, ratios, budgets, groups=None):
     if mode not in ('ratio', 'train_only', 'val_only'):
         raise HTTPException(400, '划分模式无效')
     if mode == 'ratio' and (not isinstance(ratios, dict) or set(ratios) != {'train', 'val', 'test'} or
@@ -37,32 +37,51 @@ def simple_split(rows, labels, mode, ratios, budgets):
             value is not None and (type(value) is not int or value < 1) for value in budgets.values()):
         raise HTTPException(400, '每类图片预算无效')
     ordered = sorted(rows, key=lambda row: sha256(str(row[0].id).encode()).hexdigest())
-    target_train = len(rows) if mode == 'train_only' else 0 if mode == 'val_only' else round(len(rows) * ratios['train'] / 100)
     splits, train_counts = {}, Counter()
-    for asset, annotation in ordered:
-        key = str(asset.id)
-        image_labels = {box['label'] for box in annotation.annotation_data['boxes'] if box['label'] in labels}
-        fits_budget = all(budgets.get(label) is None or train_counts[label] < budgets[label] for label in image_labels)
-        if len(splits) < target_train and fits_budget:
-            splits[key] = 'train'
-            train_counts.update(image_labels)
-    remaining = [row for row in ordered if str(row[0].id) not in splits]
-    if mode == 'val_only':
-        splits.update({str(asset.id): 'val' for asset, _ in remaining})
-    if mode == 'ratio':
-        holdout_ratio = ratios['val'] + ratios['test']
-        val_target = round(len(rows) * ratios['val'] / 100)
-        for index, (asset, _) in enumerate(remaining):
-            split = 'val' if holdout_ratio and len([v for v in splits.values() if v == 'val']) < val_target else 'test'
-            splits[str(asset.id)] = split
+    if groups is None:
+        target_train = len(rows) if mode == 'train_only' else 0 if mode == 'val_only' else round(len(rows) * ratios['train'] / 100)
+        for asset, annotation in ordered:
+            key = str(asset.id)
+            image_labels = {box['label'] for box in annotation.annotation_data['boxes'] if box['label'] in labels}
+            fits_budget = all(budgets.get(label) is None or train_counts[label] < budgets[label] for label in image_labels)
+            if len(splits) < target_train and fits_budget:
+                splits[key] = 'train'
+                train_counts.update(image_labels)
+        remaining = [row for row in ordered if str(row[0].id) not in splits]
+        if mode == 'val_only':
+            splits.update({str(asset.id): 'val' for asset, _ in remaining})
+        if mode == 'ratio':
+            holdout_ratio = ratios['val'] + ratios['test']
+            val_target = round(len(rows) * ratios['val'] / 100)
+            for index, (asset, _) in enumerate(remaining):
+                split = 'val' if holdout_ratio and len([v for v in splits.values() if v == 'val']) < val_target else 'test'
+                splits[str(asset.id)] = split
+    else:
+        ratios = ratios if mode == 'ratio' else dict(train=100 if mode=='train_only' else 0,val=100 if mode=='val_only' else 0,test=0)
+        sizes = Counter()
+        per_image = {str(asset.id):{box['label'] for box in ann.annotation_data['boxes'] if box['label'] in labels} for asset,ann in rows}
+        # Place large connected groups first; ties never depend on database row order.
+        for group in sorted((sorted(group) for group in groups),key=lambda group:(-len(group),sha256('\0'.join(group).encode()).hexdigest())):
+            counts = Counter(label for key in group for label in per_image[key])
+            candidates = [split for split in ('train','val','test') if ratios[split]>0 and (split!='train' or
+                all(budgets.get(label) is None or train_counts[label]+count<=budgets[label] for label,count in counts.items()))]
+            if not candidates:continue
+            split = min(candidates,key=lambda candidate:sum((sizes[name]+(len(group) if name==candidate else 0)-len(rows)*ratios[name]/100)**2 for name in ('train','val','test')))
+            splits.update(dict.fromkeys(group,split));sizes[split]+=len(group)
+            if split=='train':train_counts.update(counts)
     labels_by_split = {split: {label: 0 for label in labels} for split in ('train', 'val', 'test')}
     for asset, annotation in rows:
         split = splits.get(str(asset.id))
         if split:
             for label in {box['label'] for box in annotation.annotation_data['boxes'] if box['label'] in labels}:
                 labels_by_split[split][label] += 1
-    return dict(splits=splits, labels_by_split=labels_by_split,
+    result = dict(splits=splits, labels_by_split=labels_by_split,
                 images_by_split=dict(Counter(splits.values())), excluded_asset_ids=[str(a.id) for a, _ in rows if str(a.id) not in splits])
+    if groups is not None:
+        result['grouping']=dict(group_count=len(groups),largest_group=max(map(len,groups),default=0),
+            actual_ratios={name:round(sum(value==name for value in splits.values())/len(splits)*100,2) if splits else 0 for name in ('train','val','test')},
+            empty_requested_splits=[name for name in ('train','val','test') if ratios[name]>0 and name not in splits.values()])
+    return result
 
 async def export_rows(db, project, approved_only, lock=True):
     if project.task_type != 'detection':
@@ -110,24 +129,20 @@ async def training_package(db, project, format, selected=None, approved_only=Tru
     selection_result = None
     if selection is not None:
         labels = category_labels(project, rows, selected)
-        selection_result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'])
+        selection_result = await prepare_selection(rows, labels, selection)
         ratios = selection['ratios'] if selection['mode'] == 'ratio' else {
             'train': 100 if selection['mode'] == 'train_only' else 0, 'val': 100 if selection['mode'] == 'val_only' else 0, 'test': 0}
         selection_result.update(mode=selection['mode'], ratios=ratios, budgets=selection['budgets'],
-            check_duplicates=selection['check_duplicates'], phash_distance=selection['phash_distance'],
+            check_duplicates=selection['check_duplicates'], group_similar=selection.get('group_similar',False), phash_distance=selection['phash_distance'],
             color_distance=selection['color_distance'], require_source=selection['require_source'])
         splits = selection_result['splits']
         excluded.extend(selection_result['excluded_asset_ids'])
         rows = [(asset, ann) for asset, ann in rows if str(asset.id) in splits]
-        if selection['check_duplicates']:
-            check_policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
-                training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
-            report = await inspect_splits(rows, labels, check_policy, splits)
-            selection_result['leakage_report'] = report
-            if report['errors']:
-                reason = split_failure_reason(report, rows)
-                logging.getLogger(__name__).warning('Export rejected before ZIP: project=%s code=%s reason=%s', project.id, report['errors'][0]['code'], reason)
-                raise HTTPException(409, reason)
+        report = selection_result.get('leakage_report')
+        if report and report['errors']:
+            reason = split_failure_reason(report, rows)
+            logging.getLogger(__name__).warning('Export rejected before ZIP: project=%s code=%s reason=%s', project.id, report['errors'][0]['code'], reason)
+            raise HTTPException(409, reason)
     return await run_in_threadpool(lambda: asyncio.run(
         _build_package(project, rows, excluded, format, selected, approved_only, splits, policy, selection_result)))
 
@@ -139,6 +154,11 @@ async def preview_splits(db, project, selected, approved_only, policy, splits=No
 
 
 async def inspect_splits(rows, labels, policy, splits=None, suggest=False):
+    fingerprints = await image_fingerprints(rows)
+    return await run_in_threadpool(split_report, rows, labels, policy, splits, suggest, fingerprints)
+
+
+async def image_fingerprints(rows):
 
     async def fingerprint(asset):
         try:
@@ -164,24 +184,38 @@ async def inspect_splits(rows, labels, policy, splits=None, suggest=False):
 
     def inspect():
         with ThreadPoolExecutor(max_workers=4) as workers:
-            fingerprints = dict(workers.map(lambda row: asyncio.run(fingerprint(row[0])), rows))
-        return split_report(rows, labels, policy, splits, suggest, fingerprints)
+            return dict(workers.map(lambda row: asyncio.run(fingerprint(row[0])), rows))
 
     return await run_in_threadpool(inspect)
+
+
+async def prepare_selection(rows, labels, selection):
+    result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'])
+    result['can_freeze'] = bool(result['splits'])
+    if selection['check_duplicates']:
+        policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
+            training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
+        if selection.get('group_similar'):
+            fingerprints = await image_fingerprints(rows)
+            grouping = await run_in_threadpool(split_report, rows, labels, policy, result['splits'], False, fingerprints)
+            result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'], groups=grouping['groups'])
+        chosen = [row for row in rows if str(row[0].id) in result['splits']]
+        if selection.get('group_similar'):
+            kept = {str(asset.id) for asset,_ in chosen}
+            report = await run_in_threadpool(split_report, chosen, labels, policy, result['splits'], False,
+                {key:value for key,value in fingerprints.items() if key in kept})
+        else:report = await inspect_splits(chosen, labels, policy, result['splits'])
+        result.update(errors=report['errors'], warnings=report['warnings'], can_freeze=bool(result['splits']) and not report['errors'],
+            failure_reason=split_failure_reason(report, chosen) if report['errors'] else '',leakage_report=report)
+    return result
 
 
 async def preview_simple_split(db, project, selected, approved_only, selection):
     rows, excluded = await export_rows(db, project, approved_only, lock=False)
     labels = category_labels(project, rows, selected)
-    result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'])
-    result.update(labels=labels, excluded_asset_ids=excluded + result['excluded_asset_ids'], can_freeze=bool(result['splits']))
-    if selection['check_duplicates']:
-        policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
-            training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
-        chosen = [row for row in rows if str(row[0].id) in result['splits']]
-        report = await inspect_splits(chosen, labels, policy, result['splits'])
-        result.update(errors=report['errors'], warnings=report['warnings'], can_freeze=bool(result['splits']) and not report['errors'],
-            failure_reason=split_failure_reason(report, chosen) if report['errors'] else '')
+    result = await prepare_selection(rows, labels, selection)
+    result.pop('leakage_report',None)
+    result.update(labels=labels, excluded_asset_ids=excluded + result['excluded_asset_ids'])
     return result
 
 async def _build_package(project, rows, excluded, format, selected, approved_only, splits, policy=None, selection_result=None):
@@ -214,6 +248,8 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
             images_by_split=selection_result['images_by_split'], labels_by_split=selection_result['labels_by_split'],
             independent=False, near_duplicate_checked=selection_result.get('check_duplicates', False),
             leakage_policy={key: selection_result[key] for key in ('phash_distance','color_distance','require_source')} if selection_result.get('check_duplicates') else None)
+        manifest['selection']['group_similar'] = selection_result.get('group_similar',False)
+        if 'grouping' in selection_result:manifest['selection']['grouping'] = selection_result['grouping']
     counts = Counter()
     fingerprints = {}
     try:

@@ -17,7 +17,7 @@ import uuid
 import logging
 from collections import Counter
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
 from models import ExportSnapshot, AnnotationEvent, TrainingRun, ValidationSet
 from api.asset_routes import scoped_project, scoped_asset
@@ -280,9 +280,15 @@ class SimpleSelection(BaseModel):
     ratios: dict[str, int] = Field(default_factory=lambda: {'train': 80, 'val': 10, 'test': 10})
     budgets: dict[str, int | None] = Field(default_factory=dict)
     check_duplicates: bool = False
+    group_similar: bool = False
     phash_distance: int = Field(default=4, ge=0, le=64)
     color_distance: int = Field(default=20, ge=0, le=255)
     require_source: bool = False
+
+    @model_validator(mode='after')
+    def grouped_check(self):
+        if self.group_similar:self.check_duplicates=True
+        return self
 
 
 class SnapshotRequest(BaseModel):
