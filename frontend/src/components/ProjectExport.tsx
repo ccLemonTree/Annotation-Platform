@@ -65,7 +65,7 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
   const preview = async () => {
     if (!selected.length) return notice.error('至少选择一个标签');
     setBusy(true); setError(''); setReport(null); setElapsed(0);
-    try { setReport((await apiClient.post(`/api/export/projects/${projectId}/splits/preview`, request(), { timeout: 300000 })).data); }
+    try { setReport((await apiClient.post(`/api/export/projects/${projectId}/splits/preview`, request(), { timeout: selection.group_similar ? 600000 : 300000 })).data); }
     catch (failure) { setError(await failureReason(failure, '划分预览失败，请检查标注和图片')); }
     finally { setBusy(false); }
   };
