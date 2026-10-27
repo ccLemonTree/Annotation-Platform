@@ -34,6 +34,7 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
   const [report, setReport] = useState<Record<string, unknown> | null>(null), [elapsed, setElapsed] = useState(0);
   const grouping = report?.grouping as {group_count:number;largest_group:number;actual_ratios:Record<Split,number>;empty_requested_splits?:Split[]} | undefined;
   const eligible = summary?.[approved ? 'approved' : 'all'];
+  const packageTimeout = selection.group_similar ? 1800000 : 600000;
 
   useEffect(() => {
     if (!busy) return;
@@ -70,7 +71,7 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
     finally { setBusy(false); }
   };
   const downloadBlob = async (responseUrl: string, body: Record<string, unknown>) => {
-    const response = await apiClient.post(responseUrl, body, { responseType: 'blob', timeout: 600000 });
+    const response = await apiClient.post(responseUrl, body, { responseType: 'blob', timeout: packageTimeout });
     const url = URL.createObjectURL(response.data); const link = document.createElement('a'); link.href = url; link.download = `detection_${projectId}_${format}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
   };
   const run = async (action: 'download' | 'freeze' | 'freeze-download') => {
@@ -81,7 +82,7 @@ export default function ProjectExport({ projectId }: { projectId: string }) {
       const body = { format, ...request() };
       if (action === 'download') await downloadBlob(`/api/export/projects/${projectId}/packages`, body);
       else {
-        const response = await apiClient.post(`/api/export/projects/${projectId}/snapshots`, body, { timeout: 600000 });
+        const response = await apiClient.post(`/api/export/projects/${projectId}/snapshots`, body, { timeout: packageTimeout });
         frozenId = response.data.id;
         if (action === 'freeze-download') {
           const downloadResponse = await apiClient.get(`/api/export/snapshots/${response.data.id}/download`, { responseType: 'blob', timeout: 600000 });
