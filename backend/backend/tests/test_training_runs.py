@@ -157,6 +157,29 @@ async def test_edit_draft_keeps_identity_and_resets_precheck(client,auth_headers
 
 
 @pytest.mark.asyncio
+async def test_create_copy_has_new_identity_directory_and_requires_precheck(client,auth_headers,test_db,monkeypatch):
+    from services import training_runs
+    from models.training_run import TrainingRun,TrainingGpuHold
+    from sqlalchemy import select,func
+    async def no_remote(*args,**kwargs):raise AssertionError('Copying cannot start or inspect a GPU server')
+    monkeypatch.setattr(training_runs,'remote',no_remote)
+    payload=spec().model_dump(mode='json')
+    original=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
+    stored=await test_db.get(TrainingRun,UUID(original['id']));stored.status='canceled';await test_db.commit()
+    response=client.post('/api/training/runs',headers=auth_headers,json={**payload,'name':payload['name']+' 副本'})
+    assert response.status_code==201,response.text
+    copied=response.json()
+    assert copied['id']!=original['id'] and copied['output_dir']!=original['output_dir']
+    assert copied['output_dir']==payload['output_root']+'/'+copied['id']
+    assert copied['status']=='draft' and copied['inspection']=={} and copied['error'] is None
+    assert copied['source']==original['source']
+    for key in ('gpu_uuids','parameters','model_path','mounts','environment'):
+        assert copied['config'][key]==original['config'][key]
+    assert client.get('/api/training/runs/'+original['id'],headers=auth_headers).json()['status']=='canceled'
+    assert await test_db.scalar(select(func.count()).select_from(TrainingGpuHold))==0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('state',['starting','running','stopping','unknown','completed','failed','canceled'])
 async def test_edit_refuses_submitted_tasks(client,auth_headers,test_db,state):
     from models.training_run import TrainingRun

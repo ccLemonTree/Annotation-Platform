@@ -159,15 +159,15 @@ export default function TrainingPage() {
     }
     setOpen(true);
   };
-  const showEdit = (run: TrainingRun) => {
+  const showEdit = (run: TrainingRun, copy = false) => {
     setSaveError('');
-    setEditing(run.id); setError(''); setKind(run.kind); setServerId(run.server.id); setSource(run.source.kind === 'snapshot' ? 'snapshot' : 'remote');
+    setEditing(copy ? undefined : run.id); setError(''); setKind(run.kind); setServerId(run.server.id); setSource(run.source.kind === 'snapshot' ? 'snapshot' : 'remote');
     setGpuLoading(true); setGpuError(''); setGpus([]); setSnapshots([]);
     setDatasetLabels(run.source.labels || []);
     form.resetFields();
-    const values = { ...run.config } as TrainingInput & { adapter_version?: number; runtime_dataset?: string };
+    const values = structuredClone(run.config) as TrainingInput & { adapter_version?: number; runtime_dataset?: string };
     delete values.adapter_version; delete values.runtime_dataset;
-    form.setFieldsValue({ ...values, server_id: run.server.id, project_id: run.source.project_id });
+    form.setFieldsValue({ ...values, name: copy ? `${run.name.slice(0,197)} 副本` : run.name, server_id: run.server.id, project_id: run.source.project_id });
     setOpen(true);
     if (run.source.project_id) {
       setSnapshotLoading(true);
@@ -296,6 +296,7 @@ export default function TrainingPage() {
       {selected && <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
         <Space wrap>{status(selected)}{admin && <>
           <Button disabled={!!busy || selected.status !== 'draft'||outputKinds.includes(selected.kind)} onClick={() => showEdit(selected)}>编辑配置</Button>
+          {!outputKinds.includes(selected.kind)&&<Button disabled={!!busy||!catalog[selected.kind]} onClick={()=>showEdit(selected,true)}>复制配置新建任务</Button>}
           <Button disabled={!!busy} onClick={() => { void action('precheck'); }}>预检查</Button>
           <Button type="primary" disabled={!!busy || selected.status !== 'draft' || checkResult?.ok !== true} onClick={() => setConfirm('start')}>{outputKinds.includes(selected.kind)?'启动执行':'启动训练'}</Button>
           <Button danger disabled={!!busy || !['draft', ...active].includes(selected.status)} onClick={() => setConfirm('stop')}>停止任务</Button>

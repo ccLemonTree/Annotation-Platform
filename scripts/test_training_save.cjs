@@ -85,3 +85,31 @@ for (const editing of [undefined, 'existing-run']) {
     assert.equal(h.requests[0].input.shm_size_gb, 128);
   });
 }
+
+test('copying a canceled run prefills a create form and preserves the original configuration', () => {
+  const node=find(node=>ts.isVariableDeclaration(node)&&node.name.getText(tree)==='showEdit');
+  const state={},set=key=>value=>{state[key]=value;};
+  const form={resetFields:()=>{},setFieldsValue:values=>{state.values=values;}};
+  const showEdit=compile(node.initializer.getText(tree),{
+    setSaveError:set('saveError'),setEditing:set('editing'),setError:set('error'),setKind:set('kind'),setServerId:set('server'),
+    setSource:set('source'),setGpuLoading:set('gpuLoading'),setGpuError:set('gpuError'),setGpus:set('gpus'),setSnapshots:set('snapshots'),
+    setDatasetLabels:set('labels'),form,setOpen:set('open'),setSnapshotLoading:set('snapshotLoading'),
+    getTrainingSnapshots:()=>Promise.resolve([]),errorText,
+  });
+  const original={id:'canceled-id',name:'原训练',kind:'rfdetr_2xlarge',status:'canceled',server:{id:'server-a'},
+    source:{kind:'snapshot',id:'snapshot-a',project_id:'project-a',labels:['ele','bike']},
+    config:{name:'原训练',kind:'rfdetr_2xlarge',snapshot_id:'snapshot-a',selected_labels:['bike'],model_path:'/models/base.pth',
+      gpu_uuids:['GPU-a','GPU-b'],parameters:{epochs:50,batch_size:64},environment:{CUDA_VISIBLE_DEVICES:'0,1'},mounts:[],
+      output_root:'/runs/custom',output_subdir:'train',adapter_version:1,runtime_dataset:'/output/dataset/rfdetr'}};
+  const before=JSON.stringify(original);
+  showEdit(original,true);
+  assert.equal(state.editing,undefined);
+  assert.equal(state.values.name,'原训练 副本');
+  assert.equal(state.source,'snapshot');assert.equal(state.open,true);
+  for(const key of ['snapshot_id','selected_labels','model_path','gpu_uuids','parameters','environment','mounts','output_root'])
+    assert.deepEqual(state.values[key],original.config[key],key);
+  assert.equal(state.values.server_id,'server-a');assert.equal(state.values.project_id,'project-a');
+  assert.ok(!('adapter_version' in state.values)&&!('runtime_dataset' in state.values));
+  state.values.parameters.epochs=999;state.values.gpu_uuids.push('GPU-c');
+  assert.equal(JSON.stringify(original),before);
+});
