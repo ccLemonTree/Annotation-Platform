@@ -46,6 +46,29 @@ def test_directory_source_automatically_uses_existing_class_metadata(source,tmp_
     assert json.loads((tmp_path/'prepared/data.yaml').read_text())['names']==['fire','smoke','star']
 
 
+@pytest.mark.parametrize('change',['none','rank_zero','invalid_rank','no_receipt','partial','changed_receipt','labels','kind','source'])
+def test_ddp_reuses_only_completed_parent_preparation(source,tmp_path,monkeypatch,change):
+    from services.training_dataset import prepare_detection
+    monkeypatch.delenv('LOCAL_RANK',raising=False)
+    monkeypatch.setenv('PLATFORM_PREPARED_DETECTION','')
+    output=tmp_path/'prepared';kind='rfdetr_medium';labels=['smoke'];input_path=str(source)
+    expected=prepare_detection(input_path,str(output),kind,labels)
+    monkeypatch.setenv('LOCAL_RANK','1')
+    if change=='rank_zero':monkeypatch.setenv('LOCAL_RANK','0')
+    if change=='invalid_rank':monkeypatch.setenv('LOCAL_RANK','bad')
+    if change=='no_receipt':monkeypatch.delenv('PLATFORM_PREPARED_DETECTION')
+    if change=='partial':(output/'class_mapping.json').unlink()
+    if change=='changed_receipt':(output/'class_mapping.json').write_text('{}')
+    if change=='labels':labels=['star']
+    if change=='kind':kind='rfdetr_2xlarge'
+    if change=='source':input_path=str(source/'data.yaml')
+    before={str(p):p.read_bytes() for p in output.rglob('*') if p.is_file()}
+    if change=='none':assert prepare_detection(input_path,str(output),kind,labels)==expected
+    else:
+        with pytest.raises(ValueError,match='禁止覆盖'):prepare_detection(input_path,str(output),kind,labels)
+    assert before=={str(p):p.read_bytes() for p in output.rglob('*') if p.is_file()}
+
+
 def test_yolo_missing_negative_label_stays_a_background_sample(source,tmp_path):
     from services.training_dataset import prepare_detection
     (source/'train/labels/negative.txt').unlink()

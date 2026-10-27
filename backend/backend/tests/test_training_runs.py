@@ -108,6 +108,8 @@ def test_rfdetr_initializes_with_actual_training_dataset_classes(kind,source,mon
     monkeypatch.setitem(sys.modules,'rfdetr',types.SimpleNamespace(RFDETR=Model,RFDETRMedium=Model,RFDETR2XLarge=Model))
     monkeypatch.setattr(Path,'symlink_to',lambda self,target:shutil.copyfile(target,self))
     prepared=tmp_path/'prepared'
+    monkeypatch.delenv('PLATFORM_PREPARED_DETECTION',raising=False)
+    monkeypatch.delenv('LOCAL_RANK',raising=False)
     code=build_script(config).replace('"/output/prepared-dataset"',repr(str(prepared)))
     exec(compile(code,'train.py','exec'),{'__name__':'__main__'})
     assert [event[0] for event in events]==['detect','init','train']
@@ -116,6 +118,12 @@ def test_rfdetr_initializes_with_actual_training_dataset_classes(kind,source,mon
     assert events[1][1]['pretrain_weights']==config['model_path']
     assert 'num_classes' not in events[2][1]
     assert json.loads((root/'data.yaml').read_text())['names']==names
+    if snapshot:
+        before={str(p): (p.read_bytes(),p.stat().st_mtime_ns) for p in prepared.rglob('*') if p.is_file()}
+        monkeypatch.setenv('LOCAL_RANK','1')
+        exec(compile(code,'train.py','exec'),{'__name__':'__main__'})
+        assert [event[0] for event in events]==['detect','init','train']*2
+        assert before=={str(p): (p.read_bytes(),p.stat().st_mtime_ns) for p in prepared.rglob('*') if p.is_file()}
 
 
 @pytest.mark.parametrize('detected',[0,'unreadable'])

@@ -1,6 +1,8 @@
 """Runs in the detection image: read-only sources, per-run configs and class labels."""
 import json
 import math
+import os
+import hashlib
 from pathlib import Path
 
 IMAGE_SUFFIXES={'.jpg','.jpeg','.png','.bmp','.webp','.tif','.tiff','.dng','.mpo'}
@@ -127,7 +129,15 @@ def prepare_detection(source,destination,kind,selected_labels=None):
     if not selected or set(selected)-set(names):raise ValueError('选择的训练标签不存在或为空')
     labels=[name for name in names if name in selected]
     output=Path(destination)
-    if output.exists():raise ValueError('生成数据目录已存在，禁止覆盖')
+    receipt=output/'class_mapping.json'
+    signature=json.dumps([str(Path(source).resolve()),str(output.resolve()),kind,labels])
+    if output.exists():
+        # Lightning re-executes this script; only its children inherit completed preparation proof.
+        rank=os.environ.get('LOCAL_RANK','')
+        if (kind.startswith('rfdetr') and rank.isdecimal() and int(rank)>0 and receipt.is_file()
+                and os.environ.get('PLATFORM_PREPARED_DETECTION')==signature+hashlib.sha256(receipt.read_bytes()).hexdigest()):
+            return str(output)
+        raise ValueError('生成数据目录已存在，禁止覆盖')
     output.mkdir(parents=True)
     mapping={old:labels.index(name) for old,name in enumerate(names) if name in labels}
     counts={};objects={split:0 for split in data['splits']}
@@ -177,6 +187,8 @@ def prepare_detection(source,destination,kind,selected_labels=None):
     if data['format']=='yolo':
         (output/'data.yaml').write_text(json.dumps(dict(path=str(output),nc=len(labels),names=labels,
             train='train/images',val='valid/images',test='test/images' if 'test' in data['splits'] else []),ensure_ascii=False))
-    (output/'class_mapping.json').write_text(json.dumps(dict(labels=labels,original_labels=names,
+    receipt.write_text(json.dumps(dict(labels=labels,original_labels=names,
         id_mapping=mapping,images_by_split=counts,objects_by_split=objects),ensure_ascii=False,indent=2))
+    if kind.startswith('rfdetr'):
+        os.environ['PLATFORM_PREPARED_DETECTION']=signature+hashlib.sha256(receipt.read_bytes()).hexdigest()
     return str(output/'data.yaml') if kind=='yolo26' else str(output)
