@@ -9,7 +9,7 @@ type Props = {
   tool: 'draw' | 'select'; disabled: boolean;
   onSelect: (index: number) => void; onChange: (boxes: Box[]) => void; onDragging: (value: boolean) => void;
 };
-type Drag = { mode: 'pan' | 'draw' | 'move' | 'resize'; start: { x: number; y: number }; view: View; inverse: DOMMatrix; index: number; before: Box[] };
+type Drag = { mode: 'pan' | 'draw' | 'move' | 'resize'; handle: string | null; start: { x: number; y: number }; view: View; inverse: DOMMatrix; index: number; before: Box[] };
 export default function DetectionCanvas({ image, width, height, boxes, selected, label, tool, disabled, onSelect, onChange, onDragging }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -43,6 +43,7 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
     svg.current!.focus(); event.preventDefault();
     const raw = point(event.clientX, event.clientY), p = clamp(raw);
     const before = boxes.map(b => ({ ...b }));
+    const handle = (event.target as Element).getAttribute('data-resize');
     let mode: Drag['mode'], index = selected;
     if (event.ctrlKey || event.metaKey || space.current || event.button === 1) mode = 'pan';
     else {
@@ -51,7 +52,7 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
       if (event.altKey && hits.length) {
         onSelect(hits[(hits.indexOf(selected) + 1) % hits.length]); return;
       }
-      if ((event.target as Element).getAttribute('data-resize') === 'true' && !event.shiftKey) mode = 'resize';
+      if (handle && !event.shiftKey) mode = 'resize';
       else if (event.shiftKey || (tool === 'draw' && !hits.length)) {
         if (!label || raw.x < 0 || raw.y < 0 || raw.x > width || raw.y > height) return;
         mode = 'draw'; index = boxes.length;
@@ -59,7 +60,7 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
       } else if (hits.length) { mode = 'move'; index = hits[0]; onSelect(index); }
       else { onSelect(-1); return; }
     }
-    drag.current = { mode, index, start: mode === 'pan' ? raw : p, view, inverse: svg.current!.getScreenCTM()!.inverse(), before };
+    drag.current = { mode, handle, index, start: mode === 'pan' || mode === 'resize' ? raw : p, view, inverse: svg.current!.getScreenCTM()!.inverse(), before };
     svg.current!.setPointerCapture(event.pointerId); onDragging(true);
   };
   const move = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -78,7 +79,12 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
       b.x = Math.max(0, Math.min(width - b.width, b.x + p.x - d.start.x));
       b.y = Math.max(0, Math.min(height - b.height, b.y + p.y - d.start.y));
     } else {
-      b.width = Math.max(1, Math.min(width - b.x, p.x - b.x)); b.height = Math.max(1, Math.min(height - b.y, p.y - b.y));
+      const dx = raw.x - d.start.x, dy = raw.y - d.start.y;
+      const right = b.x + b.width, bottom = b.y + b.height;
+      if (d.handle?.includes('w')) { b.x = Math.max(0, Math.min(right - 1, b.x + dx)); b.width = right - b.x; }
+      if (d.handle?.includes('e')) b.width = Math.max(1, Math.min(width - b.x, b.width + dx));
+      if (d.handle?.includes('n')) { b.y = Math.max(0, Math.min(bottom - 1, b.y + dy)); b.height = bottom - b.y; }
+      if (d.handle?.includes('s')) b.height = Math.max(1, Math.min(height - b.y, b.height + dy));
     }
     preview.current = d.before.map((box, i) => i === d.index ? b : box); setPreviewBoxes(preview.current);
   };
@@ -92,6 +98,7 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
     if (svg.current!.hasPointerCapture(event.pointerId)) svg.current!.releasePointerCapture(event.pointerId);
   };
   const displayed = previewBoxes || boxes;
+  const active = displayed[selected];
   const stroke = Math.max(view.width / 450, 1), handle = Math.max(view.width / 80, 1);
   return <div className="detection-canvas">
     <Space wrap style={{ marginBottom: 12 }}>
@@ -117,8 +124,10 @@ export default function DetectionCanvas({ image, width, height, boxes, selected,
       {displayed.map((b, i) => <g key={i}>
         <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="rgba(22,119,255,.08)" stroke={i === selected ? '#ffff00' : '#00ff88'} strokeWidth={stroke} />
         <text x={b.x + stroke * 2} y={Math.max(stroke * 10, b.y - stroke * 3)} fill="#00ff88" fontSize={stroke * 8} pointerEvents="none">{i + 1} · {b.label}</text>
-        {i === selected && !disabled && <rect data-resize="true" x={b.x + b.width - handle / 2} y={b.y + b.height - handle / 2} width={handle} height={handle} fill="#ffff00" />}
       </g>)}
+      {active && !disabled && ([['nw',0,0],['n',.5,0],['ne',1,0],['e',1,.5],['se',1,1],['s',.5,1],['sw',0,1],['w',0,.5]] as const).map(([direction,x,y]) =>
+        <rect key={direction} data-resize={direction} aria-label={`调整框 ${direction}`} x={active.x + active.width * x - handle / 2} y={active.y + active.height * y - handle / 2}
+          width={handle} height={handle} fill="#ffff00" style={{cursor:`${direction}-resize`}} />)}
     </svg>
   </div>;
 }

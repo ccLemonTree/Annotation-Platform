@@ -78,7 +78,7 @@ async (page) => {
     ensure(Math.abs(+(await page.getByRole('spinbutton', { name: '框width' }).inputValue()) - 100) < 1, 'Shift Tab starts from last box');
     await page.keyboard.press('Shift+Tab');
     const beforeResize = await boxes();
-    const handle = canvas.locator('rect[data-resize]');
+    const handle = canvas.locator('rect[data-resize="se"]');
     const bounds = await handle.boundingBox();
     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2); await page.mouse.down();
     await page.mouse.move(bounds.x + bounds.width / 2 + 15, bounds.y + bounds.height / 2 + 15, { steps: 3 }); await page.mouse.up();
