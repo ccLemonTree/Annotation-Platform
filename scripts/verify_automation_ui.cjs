@@ -16,7 +16,7 @@ async (page) => {
     {id:'job-failed',project_id:'p1',kind:'review',status:'failed',total:4,processed:3,approved_count:1,needs_review_count:1,failed_count:1,error:'fixture failure',config:{},created_at:'2026-10-15T00:00:00Z'},
   ];
   const item = {id:'item-1',job_id:'job-running',asset_id:'asset-1',annotation_id:'annotation-1',annotation_version:3,
-    status:'needs_review',reason:'低分目标待确认',evidence:{boxes:[{index:0,verdict:'uncertain',reason:'fixture box uncertain'}],
+    project_id:'p1',project_name:'检测项目 1',asset_name:'fixture.png',job_kind:'preannotate',status:'needs_review',reason:'低分目标待确认',evidence:{boxes:[{index:0,verdict:'uncertain',reason:'fixture box uncertain'}],
       completeness:'fail',negative:'uncertain',reason:'fixture image incomplete',rounds:[{reason:'fixture negative needs admin',crops:[{index:0,bounds:[0,12,200,150]}]}]},
     result:{boxes:[{label:'fire',x:20,y:30,width:150,height:90,score:.6}]},created_at:'2026-10-15T00:00:00Z'};
   let queue = [item,
@@ -38,6 +38,7 @@ async (page) => {
       return route.fulfill({json:paginate(projects,url,101)});
     }
     if (path==='/api/model-services') return route.fulfill({json:models});
+    if (path==='/api/model-services/prompt-defaults') return route.fulfill({json:{detection_preannotation:'独立检测全部项目目标',attributes:'分析全部项目属性'}});
     if (path==='/api/automation/jobs' && method==='GET') {
       listCalls++;
       const snapshot=jobs.map(j=>({...j})), oldMode=mode;
@@ -87,10 +88,12 @@ async (page) => {
   const appPattern='**/src/App.tsx*';
   await page.route(appPattern,route=>route.fulfill({contentType:'application/javascript',body:`
     import React from '${reactUrl}';
-    import {BrowserRouter} from '${routerUrl}';
+    import {BrowserRouter,useLocation} from '${routerUrl}';
     import Provider from '/src/ui/PlatformProvider.tsx';
     import AutomationPage from '/src/pages/AutomationPage.tsx';
-    export default function App(){return React.createElement(BrowserRouter,null,React.createElement(Provider,null,React.createElement('main',{style:{padding:20,minWidth:0}},React.createElement(AutomationPage))));}` }));
+    import ReviewQueuePage from '/src/pages/ReviewQueuePage.tsx';
+    function Page(){const location=useLocation();return React.createElement(location.pathname==='/review-queue'?ReviewQueuePage:AutomationPage);}
+    export default function App(){return React.createElement(BrowserRouter,null,React.createElement(Provider,null,React.createElement('main',{style:{padding:20,minWidth:0}},React.createElement(Page))));}` }));
   await page.route(origin+'/api/**',handler);
   const choose = async (name,text) => {
     await page.getByRole('combobox',{name,exact:true}).click();
@@ -138,7 +141,9 @@ async (page) => {
     const scope=page.getByRole('combobox',{name:'审核类别',exact:true});
     await scope.locator('xpath=ancestor::*[contains(@class,"ant-form-item-control")][1]').locator('.ant-select-selection-item').filter({hasText:'person'}).locator('.ant-select-selection-item-remove').click();
     await page.getByText('仅检查所选类别是否漏标；留空检查全部项目类别。未选类别无需补标，所有已有框仍逐框核验。历史审核结论不会自动更新。',{exact:true}).waitFor();
-    await page.getByRole('textbox',{name:'审核提示词',exact:true}).fill('检查全部项目类别有无遗漏');
+    await page.getByRole('button',{name:'编辑审核补充要求',exact:true}).click();
+    await page.getByRole('dialog',{name:'本次审核补充要求',exact:true}).getByRole('textbox',{name:'审核提示词',exact:true}).fill('检查全部项目类别有无遗漏');
+    await page.getByRole('dialog',{name:'本次审核补充要求',exact:true}).getByRole('button',{name:'应用提示词',exact:true}).click();
     await page.getByRole('spinbutton',{name:'自动通过置信度',exact:true}).fill('0.95');
     await page.getByRole('button',{name:'提交任务',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
     const reviewPayload=writes.filter(w=>w.path==='/api/automation/jobs')[1].payload;
@@ -167,11 +172,13 @@ async (page) => {
     await page.getByRole('button',{name:'关闭明细',exact:true}).click();
     if(!queries.some(q=>q.startsWith('/api/automation/jobs/job-running/items?')&&q.includes('page=2'))||!queries.some(q=>q.includes('status=failed')&&q.includes('page=1')))throw Error('Item pagination/filter reset wrong');
     checks.push('paginated item status filter and complete evidence');
-    await page.locator('.ant-table-wrapper').nth(1).locator('.ant-pagination-next').click();
+    await page.getByRole('link',{name:'管理员待审队列 →',exact:true}).click();
+    await page.getByRole('button',{name:'刷新待审',exact:true}).waitFor();
+    await page.locator('.ant-table-wrapper').first().locator('.ant-pagination-next').click();
     await row('asset-unknown').getByRole('button',{name:'预览审核',exact:true}).click();
     await page.getByText('候选框尚未保存；可以驳回移出队列，或打开标注工作台修正类别并保存。',{exact:true}).waitFor();
     if(await page.getByRole('button',{name:'批准',exact:true}).isEnabled())throw Error('Unsaved candidate may be approved');
-    if(!(await page.getByRole('link',{name:'打开标注工作台',exact:true}).getAttribute('href')).startsWith('/annotate/asset-unknown?from=review'))throw Error('Unknown label lacks workspace link');
+    if(!(await page.getByRole('link',{name:'打开标注工作台',exact:true}).getAttribute('href')).startsWith('/annotate/asset-unknown?from=automation-review'))throw Error('Unknown label lacks workspace link');
     await page.getByText('驳回仅移出旧候选，不修改新的人工标注',{exact:true}).waitFor();
     await page.getByRole('textbox',{name:'审核评论',exact:true}).fill('丢弃未保存候选');
     await page.getByRole('button',{name:'驳回',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
@@ -194,7 +201,7 @@ async (page) => {
     await page.screenshot({path:'output/playwright/automation-review.png',fullPage:true,animations:'disabled'});
     if(!annotationReads.includes('/api/annotations/annotation-1'))throw Error('Preview did not load the exact annotation');
     const link=await page.getByRole('link',{name:'打开标注工作台',exact:true}).getAttribute('href');
-    if(!link.startsWith('/annotate/asset-1?from=review'))throw Error('Invalid workspace link');
+    if(!link.startsWith('/annotate/asset-1?from=automation-review'))throw Error('Invalid workspace link');
     if(!link.includes('project_id=p1'))throw Error('All-project queue lost workspace project context');
     await page.getByRole('textbox',{name:'审核评论',exact:true}).fill('人工核对通过');
     await page.getByRole('button',{name:'批准',exact:true}).click();
@@ -213,21 +220,22 @@ async (page) => {
     if(!writes.some(w=>w.payload?.approved===false&&w.payload.comment==='不能确认负样本'))throw Error('Reject missing after approval conflict');
     checks.push('zero box warning, approval conflict keeps comment and permits discarding obsolete candidate');
     conflict=false;queue.push({...item,id:'item-zero-confirm',asset_id:'asset-zero',annotation_id:'annotation-zero',result:{boxes:[]}});
-    await page.getByRole('button',{name:'刷新待审',exact:true}).click();
+    await page.getByRole('button',{name:/刷新待审/}).click();
     await row('asset-zero').getByRole('button',{name:'预览审核',exact:true}).click();
     await page.getByRole('textbox',{name:'审核评论',exact:true}).fill('管理员核对原图，确认负样本');
     await page.getByRole('button',{name:'批准',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
     if(!writes.some(w=>w.path.endsWith('/item-zero-confirm/resolve')&&w.payload.approved))throw Error('Admin cannot approve saved negative sample');
     checks.push('Qwen pass does not bypass human negative sample confirmation');
     await page.locator('.ant-modal-mask').waitFor({state:'hidden'});
+    await goto();
     jobs=jobs.map(job=>job.id==='job-failed'?{...job,status:'completed'}:job);
-    await page.getByRole('button',{name:'刷新任务',exact:true}).click();
+    await page.getByRole('button',{name:/刷新任务/}).click();
     await row('job-failed').getByText('已完成',{exact:true}).waitFor();
     await page.waitForFunction(()=>document.querySelector('.ant-spin-spinning')===null);
     await page.clock.install();
     jobs=jobs.map(job=>job.id==='job-failed'?{...job,status:'pending'}:job);
     mode='hold';const before=listCalls;
-    await page.getByRole('button',{name:'刷新任务',exact:true}).click();
+    await page.getByRole('button',{name:/刷新任务/}).click();
     await page.waitForFunction(()=>document.querySelector('.ant-spin-spinning')!==null);
     await page.clock.runFor(10000);
     if(listCalls!==before+1)throw Error('Overlapping polls');
@@ -238,15 +246,15 @@ async (page) => {
     await page.clock.runFor(3100);
     await page.waitForFunction(()=>document.querySelector('.ant-spin-spinning')===null);
     if(listCalls!==polled+1)throw Error('Active task did not poll after 3s');
-    if(queueCalls<=queueBefore)throw Error('New review candidates did not refresh the admin queue');
-    mode='hold';await page.getByRole('button',{name:'刷新任务',exact:true}).click();
+    if(queueCalls!==queueBefore)throw Error('Task page still polls a duplicate review queue');
+    mode='hold';await page.getByRole('button',{name:/刷新任务/}).click();
     await page.waitForFunction(()=>document.querySelector('.ant-spin-spinning')!==null);
     mode='normal';await choose('筛选项目','分页末尾项目 101');
     await row('job-other').waitFor();release();await page.clock.runFor(4000);
     if(await row('job-running').count())throw Error('Late response replaced current project');
     const completedCalls=listCalls;await page.clock.runFor(10000);
     if(listCalls!==completedCalls)throw Error('Completed task kept polling');
-    checks.push('3s completion-based polling, no overlap, new candidates refresh queue, stale project response ignored, terminal tasks stop polling');
+    checks.push('3s completion-based polling, no overlap, separate review queue, stale project response ignored, terminal tasks stop polling');
     await page.clock.resume();
     await page.screenshot({path:'output/playwright/automation-admin.png',fullPage:true});
     role='annotator';const writesBefore=writes.length;await goto();await row('job-running').waitFor();
@@ -257,14 +265,15 @@ async (page) => {
     if(await page.locator('html').evaluate(el=>el.scrollWidth>el.clientWidth+1))throw Error('Narrow page overflow');
     await page.screenshot({path:'output/playwright/automation-narrow.png',fullPage:true});
     checks.push('narrow viewport');
-    mode='error';await page.getByRole('button',{name:'刷新任务',exact:true}).click();
+    mode='error';await page.getByRole('button',{name:/刷新任务/}).click();
     await page.getByText('任务读取失败，请重试；当前显示可能已过期。',{exact:true}).waitFor();
     checks.push('request failure shown explicitly');
     if(unexpected.length)throw Error('Unexpected requests: '+unexpected.join(', '));
     if(!queries.some(q=>q.startsWith('/api/automation/review-queue?')&&q.includes('page=2')))throw Error('Queue pagination not sent');
     return {checks,writes,projectPages,annotationReads,listCalls,unexpected};
   } catch(error) {
-    throw Error(error.message+'\nDOM: '+(await page.locator('body').innerText()).slice(-6500));
+    await page.screenshot({path:'output/playwright/automation-regression-failure.png',fullPage:true});
+    throw Error(error.message+'\nChecks: '+checks.join('; ')+'\nDOM: '+(await page.locator('body').innerText()).slice(-6500));
   } finally {
     if(release)release();await page.clock.resume().catch(()=>{});
     await page.goto('about:blank');await page.unroute(origin+'/api/**',handler);await page.unroute(appPattern);

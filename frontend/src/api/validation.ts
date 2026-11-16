@@ -36,6 +36,7 @@ export interface ValidationRun {
   id: string; set_id: string; name: string; status: string; total: number; processed: number; failed_count: number;
   model: { id: string; revision: number; name: string; score_type?: string; source?: string; weight_path?: string; weight_sha256?: string; image_digest?: string; kind?: string; device?: string }; config: ValidationConfig; metrics: Partial<ValidationMetrics> | null;
   remote_active?: boolean;
+  video?: {name:string;interval:number;duration:number};
   target_metrics?: Partial<ValidationMetrics>;
   labels?: string[];
   error: string | null; created_at: string; updated_at: string;
@@ -54,14 +55,14 @@ export interface ValidationSnapshot {
 export const validationStatusLabels: Record<string, string> = { pending: '等待中', running: '执行中', completed: '已完成', failed: '失败', canceled: '已取消' };
 export const activeValidationRun = (run: ValidationRun) => run.status === 'pending' || run.status === 'running';
 const root = '/api/validation';
-export const getValidationSets = async (params: { page: number; page_size: number }, signal?: AbortSignal): Promise<PaginatedResponse<ValidationSet>> =>
+export const getValidationSets = async (params: { project_id?:string;page: number; page_size: number }, signal?: AbortSignal): Promise<PaginatedResponse<ValidationSet>> =>
   (await apiClient.get(`${root}/sets`, { params, signal })).data;
 export const createValidationSet = async (data: ValidationSetCreate): Promise<ValidationSet> => (await apiClient.post(`${root}/sets`, data, { timeout: 120000 })).data;
 export const refreshValidationSet = async(id:string):Promise<ValidationSet> => (await apiClient.post(`${root}/sets/${encodeURIComponent(id)}/refresh`, undefined, { timeout: 120000 })).data;
 export const deleteValidationSet = async(id:string):Promise<void> => {await apiClient.delete(`${root}/sets/${encodeURIComponent(id)}`);};
 export const getValidationSnapshots = async (projectId: string, signal?: AbortSignal): Promise<ValidationSnapshot[]> =>
   (await apiClient.get(`/api/export/projects/${encodeURIComponent(projectId)}/snapshots`, { signal })).data;
-export const getValidationRuns = async (params: { set_id?: string; page: number; page_size: number }, signal?: AbortSignal): Promise<PaginatedResponse<ValidationRun>> =>
+export const getValidationRuns = async (params: { project_id?:string;set_id?: string; page: number; page_size: number }, signal?: AbortSignal): Promise<PaginatedResponse<ValidationRun>> =>
   (await apiClient.get(`${root}/runs`, { params, signal })).data;
 export const createValidationRun = async (data: { set_id: string; model_id?: string; checkpoint?: CheckpointInput; name?: string; config: ValidationConfig }): Promise<ValidationRun> =>
   (await apiClient.post(`${root}/runs`, data)).data;

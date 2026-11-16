@@ -5,19 +5,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from schemas.image_ingest import ImageIngestConfig
 from schemas.prompts import ChatPrompts
 
+DEFAULT_DETECTION_CONFIDENCE = .85
+
 
 class ModelServiceConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra='forbid', str_strip_whitespace=True)
     key: str = Field(min_length=1, max_length=80, pattern=r'^[a-zA-Z0-9_-]+$')
     name: str = Field(min_length=1, max_length=200)
     kind: Literal['detection', 'caption', 'embedding', 'reranker']
-    protocol: Literal['model_service', 'openai_chat', 'openai_embedding', 'openai_rerank']
+    protocol: Literal['model_service', 'openai_chat', 'openai_embedding', 'openai_rerank', 'jev_decide']
     base_url: str = Field(max_length=500)
     endpoint: str = Field(max_length=200)
     model_name: str = Field(default='', max_length=200)
     enabled: bool = True
     timeout_seconds: int = Field(default=60, ge=1, le=180)
-    confidence: float = Field(default=.25, ge=0, le=1, allow_inf_nan=False)
+    confidence: float = Field(default=DEFAULT_DETECTION_CONFIDENCE, ge=0, le=1, allow_inf_nan=False)
     iou: float = Field(default=.45, ge=0, le=1, allow_inf_nan=False)
     labels: list[str] = Field(default_factory=list, max_length=100)
     label_mapping: dict[str, str] = Field(default_factory=dict, max_length=100)
@@ -63,10 +65,10 @@ class ModelServiceConfig(BaseModel):
     @model_validator(mode='after')
     def compatible(self):
         allowed = {'model_service': ('detection', 'caption'), 'openai_chat': ('caption',),
-                   'openai_embedding': ('embedding',), 'openai_rerank': ('reranker',)}
+                   'openai_embedding': ('embedding',), 'openai_rerank': ('reranker',), 'jev_decide': ('caption',)}
         if self.kind not in allowed[self.protocol]:
             raise ValueError('模型用途与接口协议不匹配')
-        if self.protocol != 'model_service' and not self.model_name:
+        if self.protocol.startswith('openai_') and not self.model_name:
             raise ValueError('OpenAI格式服务需配置准确模型ID')
         return self
 
@@ -75,6 +77,7 @@ class ModelServiceResponse(ModelServiceConfig):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     revision: int
+    connection_check: dict | None = None
 
 
 class PredictionRequest(BaseModel):

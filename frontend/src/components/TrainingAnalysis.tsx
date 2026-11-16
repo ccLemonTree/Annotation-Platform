@@ -1,11 +1,12 @@
 import {useEffect,useState} from 'react';
-import {Alert,Button,Card,Collapse,Input,Select,Space,Table,Tag,Typography} from 'antd';
+import {Alert,Button,Card,Collapse,Select,Space,Table,Tag,Typography} from 'antd';
 import {Link} from 'react-router-dom';
 import {analyzeTraining,collectTrainingEvidence,getTrainingComparisons,getTrainingReports,getTrainingReport} from '../api/training';
 import type {TrainingEvidence,TrainingEvidenceRun,TrainingMetric,TrainingReport,TrainingReportSummary,TrainingRun} from '../api/training';
 import {getModelServices,getPromptDefaults} from '../api/modelServices';
 import type {ModelService} from '../api/modelServices';
 import JsonView from './JsonView';
+import PromptEditor from './PromptEditor';
 
 const value=(n:number|null|undefined)=>n==null?'—':Number(n.toPrecision(6)).toString();
 const errorText=(error:unknown)=>{
@@ -75,12 +76,12 @@ export default function TrainingAnalysis({run,admin}:{run:TrainingRun;admin:bool
     {candidates.length<total&&<Button disabled={!!busy} onClick={()=>{void more();}}>加载更多历史模型（{candidates.length}/{total}）</Button>}
     {total===0&&<Typography.Text type="secondary">暂无更早完成的训练任务；失败、取消和运行中的任务不作为历史成品模型候选。</Typography.Text>}
     <Space wrap><Button aria-label="读取指标并对比" disabled={!!busy||run.status==='draft'} loading={busy==='collect'} onClick={()=>{void execute(false);}}>读取指标并对比</Button>
-      <Link to="/models">配置分析大模型 / 默认提示词 →</Link></Space>
+      <Link to="/models">管理分析模型 →</Link></Space>
     {admin&&<>
       <Typography.Text>分析大模型</Typography.Text>
       <Select aria-label="训练分析大模型" style={{width:'100%'}} value={modelId} disabled={!!busy} placeholder="选择模型管理中已启用的对话模型" options={models.map(m=>({value:m.id,label:m.name}))} onChange={id=>{setModelId(id);setPrompt(models.find(m=>m.id===id)?.chat_prompts?.training_analysis||defaultPrompt);}}/>
       {!models.length&&<Alert type="warning" title="请先在模型管理中配置并启用OpenAI对话模型；原始指标仍可查看。"/>}
-      <Collapse items={[{key:'prompt',label:'编辑本次训练分析提示词',children:<Input.TextArea aria-label="本次训练分析提示词" value={prompt} maxLength={8000} disabled={!!busy} autoSize={{minRows:4,maxRows:12}} onChange={e=>setPrompt(e.target.value)}/>} ]}/>
+      <PromptEditor key={modelId??'none'} title="本次训练分析提示词" buttonLabel="编辑提示词" value={prompt} onChange={setPrompt} defaultValue={models.find(m=>m.id===modelId)?.chat_prompts?.training_analysis||defaultPrompt} maxLength={8000} disabled={!!busy||!modelId}/>
       <Button aria-label="大模型分析并保存报告" type="primary" loading={busy==='analyze'} disabled={!!busy||!modelId||!prompt.trim()||!metrics.length} onClick={()=>{void execute(true);}}>大模型分析并保存报告</Button>
     </>}
     {busy&&<Typography.Text type="secondary">{busy==='analyze'?'正在重新读取指标并调用大模型，请稍候…':busy==='collect'?'正在从各训练服务器读取指标…':'正在加载历史数据…'}</Typography.Text>}

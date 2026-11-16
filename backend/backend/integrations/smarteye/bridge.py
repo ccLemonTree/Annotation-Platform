@@ -39,7 +39,7 @@ async def dispatch(path: str, request: Request, user: User = Depends(get_current
         try:minimum=int(minimum)
         except ValueError:raise HTTPException(400,'分辨率阈值须为整数')
         if not 0<=minimum<=32768:raise HTTPException(400,'分辨率阈值须为0至32768')
-    owner = {'tenant_id': user.tenant_id, 'user_id': user.id}
+    owner = {'tenant_id': user.tenant_id, 'user_id': user.id, 'role': user.role}
     if minimum is not None:owner['min_long_edge']=minimum
     collection=request.headers.get('X-SmartEye-Collection')
     if collection:

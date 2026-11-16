@@ -69,7 +69,7 @@ async def login(
     return Token(
         access_token=access_token,
         token_type="bearer",
-        expires_in=3600
+        expires_in=settings.JWT_EXPIRATION
     )
 
 

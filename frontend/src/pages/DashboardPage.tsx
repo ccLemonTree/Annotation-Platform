@@ -59,7 +59,7 @@ export default function DashboardPage() {
     { label: '待标注', value: unannotated, note: '按项目使用记录统计' },
   ];
   return <div className="dashboard-shell">
-    <nav className="dashboard-tabs" aria-label="数据工作区"><Link to="/" aria-current="page">工作概览</Link><Link to="/assets">图片管理</Link><span>查看图片、项目与处理进度</span></nav>
+    <nav className="dashboard-tabs" aria-label="数据工作区"><Link to="/" aria-current="page">工作概览</Link><Link to="/projects/data-sources">图片管理</Link><span>查看图片、项目与处理进度</span></nav>
     {errors.length > 0 && <Alert type="error" showIcon title={errors.join('；')} action={<Button onClick={() => setRevision(value => value + 1)}>重试概览</Button>} />}
     <section className="dashboard-metrics" aria-label="数据概况" aria-busy={loading}>
       {metrics.map(metric => <div className={`dashboard-metric${metric.attention ? ' dashboard-metric-attention' : ''}`} key={metric.label}>
@@ -77,13 +77,13 @@ export default function DashboardPage() {
           <div className="dashboard-work-actions"><Link className="dashboard-primary-link" to={reviewLink}>{project.task_type==='vector'?'审核匹配与描述 →':'查看待审图片 →'}</Link><Link to={`/projects/${project.id}/images`}>项目图片 ↗</Link></div>
         </div> : <Empty description="暂无标注项目"><Link to="/projects">前往项目管理</Link></Empty>}
       </Card>
-      <Card className="dashboard-panel dashboard-gallery" title={<h2>图片巡览</h2>} extra={<Link to="/assets">浏览图片库 →</Link>} loading={loading}>
+      <Card className="dashboard-panel dashboard-gallery" title={<h2>图片巡览</h2>} extra={<Link to="/projects/data-sources">浏览图片库 →</Link>} loading={loading}>
         {images.length ? <><div className={`dashboard-mosaic${images.length === 1 ? ' dashboard-mosaic-single' : ''}`}>
           {images.map((image, index) => <button type="button" className="dashboard-photo" aria-label={`预览 ${image.original_name}`} key={image.id} onClick={() => setPreview(index)}>
             <AssetImage imageId={image.id} alt={image.original_name} preview={false} width="100%" height="100%" />
             <span className="dashboard-photo-caption" title={image.original_name}>{image.scene_labels[0] || image.original_name}</span>
           </button>)}
-        </div><p className="dashboard-panel-note">图片库真实原图 · 点击放大查看</p></> : <Empty description={errors.includes('图片读取失败') ? '图片读取失败，请重试概览' : '图片库暂无图片'}><Link to="/assets">前往图片管理</Link></Empty>}
+        </div><p className="dashboard-panel-note">图片库真实原图 · 点击放大查看</p></> : <Empty description={errors.includes('图片读取失败') ? '图片读取失败，请重试概览' : '图片库暂无图片'}><Link to="/projects/data-sources">前往图片管理</Link></Empty>}
       </Card>
       <DashboardQueue admin={admin} />
       <DashboardGpu admin={admin} />

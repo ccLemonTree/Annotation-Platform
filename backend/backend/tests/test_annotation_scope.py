@@ -1,7 +1,7 @@
 from uuid import uuid4
 import pytest
 from sqlalchemy import select
-from models import Asset,Annotation,LibraryImage
+from models import Asset,Annotation,ImageCollection,ImageCollectionMember,LibraryImage
 
 
 @pytest.mark.asyncio
@@ -48,3 +48,30 @@ async def test_legacy_crops_cannot_be_listed_selected_or_attached(client,auth_he
 def test_annotation_scope_config_rejects_unknown_values():
     from schemas.project import ProjectCreate
     with pytest.raises(ValueError):ProjectCreate(project_name='scope',task_type='vector',label_schema={'annotation_scope':'invalid'})
+
+
+@pytest.mark.asyncio
+async def test_collection_annotation_queue_includes_crops_of_member_originals(client,auth_headers,test_db,test_project,test_asset):
+    image=LibraryImage(tenant_id=test_project.tenant_id,original_name='original.png',blob_path='original.png',
+        content_hash=test_asset.content_hash,source_type='upload',file_size=10,width=64,height=48)
+    group=ImageCollection(tenant_id=test_project.tenant_id,name='input')
+    test_db.add_all([image,group]);await test_db.flush()
+    test_asset.image_id=image.id
+    test_db.add(ImageCollectionMember(collection_id=group.id,image_id=image.id))
+    crops=[Asset(project_id=test_project.id,original_name=f'crop-{n}.png',blob_path=f'crop-{n}.png',
+        content_hash=f'crop-{n}',source_type='model_crop',file_size=10,width=20,height=30,
+        device_info={'parent_image_id':str(root)}) for n,root in enumerate((image.id,test_asset.id,uuid4()))]
+    test_db.add_all(crops);await test_db.commit()
+    filters={'project_id':str(test_project.id),'collection_id':str(group.id)}
+    annotation_filters={**filters,'scope':'annotation'}
+    all_rows=client.get('/api/assets',headers=auth_headers,params=annotation_filters).json()
+    assert {item['id'] for item in all_rows['items']}=={str(test_asset.id),str(crops[0].id),str(crops[1].id)}
+    neighbors=client.get(f'/api/assets/{crops[0].id}/neighbors',headers=auth_headers,
+        params={'collection_id':str(group.id),'image_kind':'crops'}).json()
+    assert neighbors['matched'] and neighbors['total']==2
+    direct=client.get('/api/assets/selection',headers=auth_headers,params=filters).json()
+    assert direct['asset_ids']==[str(test_asset.id)]
+    test_project.label_schema={'annotation_scope':'crops'};await test_db.commit()
+    groups=client.get('/api/assets/collections',headers=auth_headers,
+        params={'project_id':str(test_project.id),'include_source_collections':True}).json()
+    assert [row['id'] for row in groups]==[str(group.id)]

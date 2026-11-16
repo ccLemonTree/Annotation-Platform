@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
-import { isIP } from 'node:net';
+import { connectionEnvironment } from './ssh_connection_env.mjs';
 
 const entry = resolve(process.argv[2]);
 let client, transport, stopping = false, initialized = false, chain = Promise.resolve();
@@ -31,14 +31,8 @@ async function start(config) {
   let env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('SSH_') || key === 'PREFER_TOML_CONFIG'));
   let server = config.server;
   if (config.connection) {
-    const c = config.connection;
-    if (!isIP(c.host) || c.host.includes('%') || !Number.isInteger(c.port) || c.port < 1 || c.port > 65535
-      || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(c.username) || typeof c.password !== 'string' || !c.password || c.password.length > 1024 || c.password.includes('\0')) throw Error('Invalid connection');
     server = 'platform_terminal';
-    env = { SSH_ENV_PATH: resolve(entry, 'no-terminal-env'), SSH_CONFIG_PATH: resolve(entry, 'no-terminal-config'),
-      SSH_SERVER_PLATFORM_TERMINAL_HOST: c.host, SSH_SERVER_PLATFORM_TERMINAL_PORT: String(c.port),
-      SSH_SERVER_PLATFORM_TERMINAL_USER: c.username, SSH_SERVER_PLATFORM_TERMINAL_PASSWORD: c.password,
-      SSH_SERVER_PLATFORM_TERMINAL_PLATFORM: 'linux', SSH_SERVER_PLATFORM_TERMINAL_MODE: 'unrestricted' };
+    env = connectionEnvironment(entry,server,config.connection,'unrestricted');
   }
   env.PLATFORM_SSH_TERMINAL_EXTENSION = resolve(dirname(fileURLToPath(import.meta.url)), 'terminal_mcp_extension.mjs');
   env.SSH_LOG_LEVEL = 'ERROR'; env.MCP_SSH_MAX_OUTPUT_LENGTH = '1048576';

@@ -42,6 +42,24 @@ def test_three_way_grouped_split_and_multiple_labels_count_images_not_boxes():
     assert result['labels_by_split']['train']=={'person':3,'bike':3}
 
 
+def test_ratio_never_uses_zero_percent_test_split_when_train_budget_is_full():
+    result=simple_split(rows_for([list('abcdefghij')]),['person'],'ratio',
+        {'train':80,'val':20,'test':0},{'person':2})
+    assert result['images_by_split']=={'train':2,'val':8}
+
+
+@pytest.mark.asyncio
+async def test_default_split_keeps_crops_of_the_same_original_together():
+    from services.detection_export import prepare_selection
+    rows=rows_for([list('abcdefghij')])
+    for asset,_ in rows:
+        asset.content_hash=asset.id
+        asset.device_info={'parent_image_id':'same-original'} if asset.id!='j' else {}
+    result=await prepare_selection(rows,['person'],dict(mode='ratio',ratios={'train':80,'val':10,'test':10},
+        budgets={},check_duplicates=False,group_similar=False))
+    assert len({result['splits'][key] for key in 'abcdefghi'})==1
+
+
 @pytest.mark.asyncio
 async def test_grouping_combines_source_and_similarity_links_transitively(monkeypatch):
     import imagehash

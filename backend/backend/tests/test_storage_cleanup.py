@@ -112,12 +112,19 @@ def test_runtime_download_without_library_registration_is_protected(cleanup_clie
 
 
 @pytest.mark.asyncio
-async def test_snapshot_manifest_hash_protects_original(cleanup_client, auth_headers, test_db, test_project):
+@pytest.mark.parametrize('in_file', [False, True])
+async def test_snapshot_manifest_hash_protects_original(cleanup_client, auth_headers, test_db, test_project, in_file):
     from models import ExportSnapshot
+    from services.snapshot_manifests import write_manifest
+
     original(cleanup_client[1])
+    source = {'manifest': {'assets': [{'content_hash': 'a' * 64}]}}
+    if in_file:
+        path = 'exports/manifests/test.json'
+        await write_manifest(source['manifest'], path)
+        source = {'manifest_path': path}
     test_db.add(ExportSnapshot(project_id=test_project.id, user_id=1, export_format='yolo',
-        blob_path='exports/frozen.zip', content_hash='f' * 64,
-        manifest={'assets': [{'content_hash': 'a' * 64}]}))
+        blob_path='exports/frozen.zip', content_hash='f' * 64, **source))
     await test_db.commit()
     data = preview(cleanup_client, auth_headers).json()
     assert data['candidate_count'] == 0

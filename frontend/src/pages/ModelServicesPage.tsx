@@ -3,16 +3,17 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
-import { addDefaultModelServices, createModelService, deleteModelService, getModelServices, getPromptDefaults, predictModelService, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
+import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getModelServices, getPromptDefaults, predictModelService, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
 import type { ModelKind, ModelProtocol, ModelService, ModelServiceConfig, PredictionResult, PromptDefaults } from '../api/modelServices';
 import { PredictionResultView } from '../components/ModelPrediction';
 import JsonInput from '../components/JsonInput';
 import TrialImagePicker from '../components/TrialImagePicker';
+import { DefaultPromptPreview } from '../components/PromptEditor';
 
 const kinds: Record<ModelKind, string> = { detection: '目标检测', caption: '图像描述', embedding: 'Embedding', reranker: '重排序' };
-const protocols: Record<ModelProtocol, ModelKind[]> = { model_service: ['detection', 'caption'], openai_chat: ['caption'], openai_embedding: ['embedding'], openai_rerank: ['reranker'] };
+const protocols: Record<ModelProtocol, ModelKind[]> = { model_service: ['detection', 'caption'], openai_chat: ['caption'], openai_embedding: ['embedding'], openai_rerank: ['reranker'], jev_decide: ['caption'] };
 const defaults: ModelServiceConfig = { key: '', name: '', base_url: '', endpoint: '/detect', protocol: 'model_service', kind: 'detection', model_name: '',
-  enabled: true, timeout_seconds: 60, confidence: .25, iou: .45, labels: [], label_mapping: {}, api_key_env: '' };
+  enabled: true, timeout_seconds: 60, confidence: DEFAULT_DETECTION_CONFIDENCE, iou: .45, labels: [], label_mapping: {}, api_key_env: '' };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 type ModelForm = Omit<ModelServiceConfig, 'label_mapping'> & { label_mapping_text: string };
 type TrialForm = { source: 'image_id' | 'asset_id'; reference_id: string; prompt?: string };
@@ -26,6 +27,7 @@ export default function ModelServicesPage() {
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [promptDefaults, setPromptDefaults] = useState<PromptDefaults>();
   const [connection, setConnection] = useState<{ ok: boolean; detail: string; models?: string[] }>();
+  const [checking, setChecking] = useState<Set<string>>(new Set());
   const [trial, setTrial] = useState<ModelService>(), [trialBusy, setTrialBusy] = useState(false), [trialError, setTrialError] = useState('');
   const [trialResult, setTrialResult] = useState<{ result: PredictionResult; source: TrialForm['source']; id: string }>();
   const trialRequest = useRef(0), trialController = useRef<AbortController | null>(null);
@@ -69,7 +71,7 @@ export default function ModelServicesPage() {
   };
   const toggle = async (model: ModelService) => {
     if (!admin || working) return;
-    const { id, revision: _revision, ...config } = model;
+    const { id, revision: _revision, connection_check: _connectionCheck, ...config } = model;
     setWorking(true); setError('');
     try { await updateModelService(id, { ...config, enabled: !model.enabled }); await load(); }
     catch { setError('启停失败，请重试'); }
@@ -94,8 +96,24 @@ export default function ModelServicesPage() {
     setWorking(true); setError('');
     try { setConnection(await testModelService(model.id)); }
     catch { setConnection({ ok: false, detail: '连接测试失败，请核对地址、模型 ID 或服务鉴权' }); }
-    finally { setWorking(false); }
+    finally { setWorking(false); await load(); }
   };
+  const modelVersions = models.map(model => `${model.id}:${model.revision}`).join(',');
+  useEffect(() => {
+    if (!admin || !models.length) return;
+    let active = true, next = 0;
+    setChecking(new Set(models.map(model => model.id)));
+    const check = async () => {
+      while (active && next < models.length) {
+        const model = models[next++];
+        try { await testModelService(model.id); }
+        catch { /* The server retains the offline result for the list. */ }
+        finally { if (active) setChecking(previous => { const remaining = new Set(previous); remaining.delete(model.id); return remaining; }); }
+      }
+    };
+    void Promise.all(Array.from({length: Math.min(3, models.length)}, check)).then(() => { if (active) void load(); });
+    return () => { active = false; };
+  }, [admin, modelVersions]);
   const clearTrialResult = () => { trialRequest.current++; trialController.current?.abort(); setTrialResult(undefined); setTrialError(''); setTrialBusy(false); };
   const openTrial = (model: ModelService) => {
     if (model.kind === 'reranker') return;
@@ -133,10 +151,16 @@ export default function ModelServicesPage() {
         { title: 'KEY', dataIndex: 'key', width: 130, ellipsis: true }, { title: '名称', dataIndex: 'name', width: 140 },
         { title: 'URL', dataIndex: 'base_url', width: 190, ellipsis: true }, { title: 'ENDPOINT', dataIndex: 'endpoint', width: 175, ellipsis: true },
         { title: '类型', dataIndex: 'kind', width: 110, render: (value: ModelKind, record) => <><Tag>{kinds[value]}</Tag><Typography.Text type="secondary" style={{ fontSize: 12 }}>{record.protocol}</Typography.Text></> },
-        { title: '状态', dataIndex: 'enabled', width: 80, render: value => <Tag color={value ? 'success' : 'default'}>{value ? '已启用' : '已停用'}</Tag> },
+        { title: '启用状态', dataIndex: 'enabled', width: 90, render: value => <Tag color={value ? 'success' : 'default'}>{value ? '已启用' : '已停用'}</Tag> },
+        { title: '连接状态', width: 180, render: (_, model) => {
+          const check = model.connection_check?.checked_revision === model.revision ? model.connection_check : undefined;
+          return <Space orientation="vertical" size={0}><Tag color={checking.has(model.id) ? 'processing' : check?.status === 'online' ? 'success' : check?.status === 'offline' ? 'error' : 'default'}>{checking.has(model.id) ? '检测中' : check?.status === 'online' ? '在线' : check?.status === 'offline' ? '离线' : '未检测'}</Tag>
+            {check && <><small>{new Date(check.checked_at).toLocaleString('zh-CN')}</small>{check.status === 'offline' && <span>{check.detail}</span>}</>}
+          </Space>;
+        } },
         { title: '操作', key: 'actions', width: admin ? 180 : 90, fixed: 'right', render: (_, record) => <Space size="small" wrap>
-          <Tooltip title={record.kind === 'reranker' ? '仅保存配置，部署后接入推理' : undefined}><span>
-            <Button size="small" onClick={() => openTrial(record)} disabled={!record.enabled || working || record.kind === 'reranker'}>试运行</Button>
+          <Tooltip title={record.protocol === 'jev_decide' ? '请在项目的目标属性分析中配置属性和可选值后使用' : record.kind === 'reranker' ? '仅保存配置，部署后接入推理' : undefined}><span>
+            <Button size="small" onClick={() => openTrial(record)} disabled={!record.enabled || working || record.kind === 'reranker' || record.protocol === 'jev_decide'}>试运行</Button>
           </span></Tooltip>
           {admin && <><Button aria-label="编辑" size="small" onClick={() => edit(record)} disabled={working}>编辑</Button>
             <Button aria-label={record.enabled ? '停用' : '启用'} size="small" onClick={() => toggle(record)} disabled={working}>{record.enabled ? '停用' : '启用'}</Button>
@@ -163,8 +187,9 @@ export default function ModelServicesPage() {
             if (!protocols[protocol].includes(value)) form.setFieldValue('protocol', Object.keys(protocols).find(key => protocols[key as ModelProtocol].includes(value)));
             if (!editing && value === 'reranker') form.setFieldValue('enabled', false);
           }} /></Form.Item>
-        <Form.Item label="协议" name="protocol" rules={[{ required: true }]}><Select aria-label="模型协议" options={Object.entries(protocols).filter(([, values]) => values.includes(kind)).map(([value]) => ({ value, label: value }))} /></Form.Item>
-        <Form.Item label="模型 ID" name="model_name" rules={[{ required: protocol !== 'model_service', whitespace: true }]} extra="填写服务返回的准确模型 ID；Embedding 例如 /models/wemm_embedding_2b。"><Input aria-label="模型 ID" maxLength={200} /></Form.Item>
+        <Form.Item label="协议" name="protocol" rules={[{ required: true }]}><Select aria-label="模型协议" onChange={value=>{if(value==='jev_decide')form.setFieldValue('endpoint','/decide');}} options={Object.entries(protocols).filter(([, values]) => values.includes(kind)).map(([value]) => ({ value, label: value==='jev_decide'?'jev_decide · JEV属性选择':value }))} /></Form.Item>
+        {protocol === 'jev_decide' && <Alert type="info" showIcon title="JEV 目标属性选择" description="URL 填服务地址（含 /v1），ENDPOINT 填 /decide，模型 ID 可留空。请在项目目标属性分析中为每项属性填写可选值；不支持自由文本和正确范例，结果需人工审核。" style={{marginBottom:16}}/>}
+        <Form.Item label="模型 ID" name="model_name" rules={[{ required: protocol.startsWith('openai_'), whitespace: true }]} extra="OpenAI 协议填写服务返回的准确模型 ID；JEV choice 不发送模型 ID。"><Input aria-label="模型 ID" maxLength={200} /></Form.Item>
         {protocol === 'openai_chat' && <>
           <Typography.Title level={5}>Qwen / 视觉对话提示词</Typography.Title>
           <Typography.Paragraph type="secondary">此模型的完整核心指令。保存后对后续请求生效；已有批次使用配置快照，配置版本变化时需新建批次。恢复默认只修改当前输入，保存后生效。</Typography.Paragraph>
@@ -172,18 +197,22 @@ export default function ModelServicesPage() {
           <Form.Item label="描述核心提示词" name={['chat_prompts', 'caption']} rules={[{ required: true, whitespace: true, max: 8000, message: '请输入1–8000字符' }]} extra="用于单图预测和批量图片描述；单次/本批填写的提示词优先于此默认值。">
             <Input.TextArea aria-label="描述核心提示词" maxLength={8000} autoSize={{ minRows: 3, maxRows: 10 }} />
           </Form.Item>
+          <DefaultPromptPreview value={promptDefaults?.caption} label="查看平台默认描述提示词" expanded={false}/>
           <Button disabled={!promptDefaults} onClick={() => form.setFieldValue(['chat_prompts', 'caption'], promptDefaults!.caption)} style={{ marginBottom: 16 }}>恢复默认描述提示词</Button>
           <Form.Item label="审核核心提示词" name={['chat_prompts', 'review']} rules={[{ required: true, whitespace: true, max: 8000, message: '请输入1–8000字符' }]} extra="用于预标注后的 AI 审核及已有标注审核。系统追加项目类别、框编号、本轮编号和 JSON 输出约束；任务中的补充审核要求也会追加。解析失败转人工，负样本和置信度规则仍由平台校验。">
             <Input.TextArea aria-label="审核核心提示词" maxLength={8000} autoSize={{ minRows: 6, maxRows: 14 }} />
           </Form.Item>
+          <DefaultPromptPreview value={promptDefaults?.review} label="查看平台默认审核提示词" expanded={false}/>
           <Button disabled={!promptDefaults} onClick={() => form.setFieldValue(['chat_prompts', 'review'], promptDefaults!.review)} style={{ marginBottom: 16 }}>恢复默认审核提示词</Button>
           <Form.Item label="检索匹配审核提示词" name={['chat_prompts','match_review']} rules={[{required:true,whitespace:true,max:8000}]} extra="独立判断查询与候选图是否匹配；不向模型提供人工判定或检索分数。一致自动通过，分歧、无法判断或请求失败转人工复核。">
             <Input.TextArea aria-label="检索匹配审核提示词" maxLength={8000} autoSize={{minRows:4,maxRows:12}}/>
           </Form.Item>
+          <DefaultPromptPreview value={promptDefaults?.match_review} label="查看平台默认匹配审核提示词" expanded={false}/>
           <Button disabled={!promptDefaults} onClick={()=>form.setFieldValue(['chat_prompts','match_review'],promptDefaults!.match_review)} style={{marginBottom:16}}>恢复默认匹配审核提示词</Button>
           <Form.Item label="训练效果分析提示词" name={['chat_prompts','training_analysis']} rules={[{required:true,whitespace:true,max:8000}]} extra="用于训练指标分析与历史模型对比。平台会追加原始指标、数据一致性警告及证据约束；每次分析也可单独修改提示词。">
             <Input.TextArea aria-label="训练效果分析提示词" maxLength={8000} autoSize={{minRows:4,maxRows:10}}/>
           </Form.Item>
+          <DefaultPromptPreview value={promptDefaults?.training_analysis} label="查看平台默认训练分析提示词" expanded={false}/>
           <Button disabled={!promptDefaults} onClick={()=>form.setFieldValue(['chat_prompts','training_analysis'],promptDefaults!.training_analysis)} style={{marginBottom:16}}>恢复默认训练分析提示词</Button>
         </>}
         <Form.Item label="密钥环境变量名（可选）" name="api_key_env" extra="只引用服务器环境变量名，不填写或保存密钥。" rules={[{ validator: (_, value) => !value || /^(QWEN_API_KEY|EMBEDDING_API_KEY|RERANKER_API_KEY|MODEL_API_KEY_[A-Z0-9_]+)$/.test(value) ? Promise.resolve() : Promise.reject(new Error('只允许指定环境变量或 MODEL_API_KEY_ 开头的名称')) }]}>
@@ -219,6 +248,8 @@ export default function ModelServicesPage() {
           <TrialImagePicker value={referenceId} onChange={value => { clearTrialResult(); trialForm.setFieldValue('reference_id', value || ''); }} />
         </Form.Item>}
         <Form.Item label="图片 ID" name="reference_id" rules={[{ required: true, pattern: uuid, message: '请输入有效的 UUID 图片 ID' }]}><Input aria-label="图片 ID" /></Form.Item>
+        {supportsModelPrompt(trial)&&<DefaultPromptPreview value={trial?.kind==='detection'?trial.labels?.join('；'):trial?.chat_prompts?.caption}
+          label={trial?.kind==='detection'?'模型默认检测类别':'模型默认描述提示词'}/>}
         <Form.Item label="检测类别 / 描述文本（可选）" name="prompt" extra="VLX-Seek、GroundingPI 可填写检测类别，用分号分隔，留空使用模型配置类别；Qwen 留空使用默认描述提示词。"><Input.TextArea aria-label="试运行提示词" disabled={!supportsModelPrompt(trial)} maxLength={2000} autoSize={{ minRows: 1, maxRows: 4 }} /></Form.Item>
       </Form>
       {trialError && <Alert type="error" showIcon title={trialError} />}

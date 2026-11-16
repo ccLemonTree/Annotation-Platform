@@ -94,6 +94,26 @@ def test_creation_summary_pagination_and_no_internal_paths(vclient, auth_headers
 
 
 @pytest.mark.asyncio
+async def test_validation_reads_file_backed_frozen_manifest(vclient, auth_headers, ready, test_db, test_user):
+    from models import ExportSnapshot
+    from services.snapshot_manifests import write_manifest
+
+    asset, annotation = ready['asset'], ready['annotation']
+    path = 'exports/manifests/test.json'
+    await write_manifest({'labels': ['person'], 'assets': [
+        dict(asset_id=str(asset.id), annotation_id=str(annotation.id), annotation_version=1,
+             original_name=asset.original_name, content_hash=asset.content_hash, width=asset.width,
+             height=asset.height, review_status='approved', split='val', annotation_data=annotation.annotation_data)
+    ]}, path)
+    frozen = ExportSnapshot(project_id=asset.project_id, user_id=test_user.id, export_format='yolo',
+        blob_path='exports/test.zip', content_hash='test', manifest_path=path)
+    test_db.add(frozen)
+    await test_db.commit()
+    dataset = create_set(vclient, auth_headers, ready, snapshot_id=str(frozen.id), split='val')
+    assert dataset['total'] == 1
+
+
+@pytest.mark.asyncio
 async def test_unscored_model_rejected_for_confidence_metrics(vclient,auth_headers,ready,test_db):
     ready['model'].endpoint='/detect/grounding';await test_db.commit()
     dataset=create_set(vclient,auth_headers,ready)

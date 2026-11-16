@@ -16,10 +16,51 @@ async def training_tables(test_engine):
         await conn.run_sync(lambda c:TrainingGpuHold.__table__.create(c,checkfirst=True))
 
 
+@pytest_asyncio.fixture
+async def platform_payload(test_db,test_project,test_user,monkeypatch):
+    from models.annotation_event import ExportSnapshot
+    from services import training_runs
+    snapshot=ExportSnapshot(project_id=test_project.id,user_id=test_user.id,export_format='yolo',
+        blob_path='fixture.zip',content_hash='a'*64,manifest=dict(approved_only=True,
+            assets=[dict(split='train'),dict(split='val')]))
+    test_db.add(snapshot);await test_db.commit()
+    async def transferred(*args,**kwargs):pass
+    monkeypatch.setattr(training_runs,'transfer_snapshot',transferred)
+    return spec(snapshot_id=snapshot.id,dataset_path='').model_dump(mode='json')
+
+
+@pytest_asyncio.fixture
+async def platform_wemm_payload(platform_payload,test_db):
+    from models.annotation_event import ExportSnapshot
+    snapshot=await test_db.get(ExportSnapshot,UUID(platform_payload['snapshot_id']))
+    snapshot.export_format='infonce';snapshot.manifest=dict(training=dict(format='infonce',samples=2))
+    await test_db.commit()
+    return spec('wemm',model_path='/data/WeMM',dataset_path='',snapshot_id=snapshot.id).model_dump(mode='json')
+
+
 def spec(kind='yolo26', **values):
     from schemas.training_run import TrainingCreate
     return TrainingCreate(**dict(dict(name='训练测试',kind=kind,gpu_uuids=['GPU-test-1'],
         dataset_path='/data/dataset/data.yaml',model_path='/data/weights/model.pt',output_root='/data/runs'),**values))
+
+
+@pytest.mark.asyncio
+async def test_new_training_requires_designated_docker_server(client,auth_headers,test_db,test_engine,platform_payload):
+    from models.gpu_server import GpuServer
+    async with test_engine.begin() as conn:
+        await conn.run_sync(GpuServer.__table__.create)
+    server=GpuServer(tenant_id=1,name='GPU',host='192.0.2.10',password_encrypted='fixture')
+    test_db.add(server)
+    await test_db.commit()
+    payload={**platform_payload,'server_id':str(server.id)}
+    response=client.post('/api/training/runs',headers=auth_headers,json=payload)
+    assert response.status_code==409,response.text
+    assert '训练服务器' in response.json()['detail']
+    response=client.patch(f'/api/gpu-resources/servers/{server.id}',headers=auth_headers,json={'training_enabled':True})
+    assert response.status_code==200,response.text
+    assert response.json()['training_enabled'] is True
+    response=client.post('/api/training/runs',headers=auth_headers,json=payload)
+    assert response.status_code==201,response.text
 
 
 def test_labels_and_timestamp_output_are_part_of_saved_config():
@@ -144,12 +185,12 @@ def test_rfdetr_invalid_dataset_classes_stop_before_model_loading(detected,monke
 
 
 @pytest.mark.asyncio
-async def test_edit_draft_keeps_identity_and_resets_precheck(client,auth_headers,test_db,monkeypatch):
+async def test_edit_draft_keeps_identity_and_resets_precheck(client,auth_headers,test_db,monkeypatch,platform_payload):
     from services import training_runs
     from models.training_run import TrainingRun
     async def no_remote(*args,**kwargs):raise AssertionError('Editing cannot contact GPU server')
     monkeypatch.setattr(training_runs,'remote',no_remote)
-    payload=spec().model_dump(mode='json')
+    payload=dict(platform_payload)
     row=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     stored=await test_db.get(TrainingRun,UUID(row['id']))
     stored.inspection=dict(ok=True,checks=[]);stored.error='old';await test_db.commit()
@@ -165,13 +206,13 @@ async def test_edit_draft_keeps_identity_and_resets_precheck(client,auth_headers
 
 
 @pytest.mark.asyncio
-async def test_create_copy_has_new_identity_directory_and_requires_precheck(client,auth_headers,test_db,monkeypatch):
+async def test_create_copy_has_new_identity_directory_and_requires_precheck(client,auth_headers,test_db,monkeypatch,platform_payload):
     from services import training_runs
     from models.training_run import TrainingRun,TrainingGpuHold
     from sqlalchemy import select,func
     async def no_remote(*args,**kwargs):raise AssertionError('Copying cannot start or inspect a GPU server')
     monkeypatch.setattr(training_runs,'remote',no_remote)
-    payload=spec().model_dump(mode='json')
+    payload=dict(platform_payload)
     original=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     stored=await test_db.get(TrainingRun,UUID(original['id']));stored.status='canceled';await test_db.commit()
     response=client.post('/api/training/runs',headers=auth_headers,json={**payload,'name':payload['name']+' 副本'})
@@ -189,9 +230,9 @@ async def test_create_copy_has_new_identity_directory_and_requires_precheck(clie
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state',['starting','running','stopping','unknown','completed','failed','canceled'])
-async def test_edit_refuses_submitted_tasks(client,auth_headers,test_db,state):
+async def test_edit_refuses_submitted_tasks(client,auth_headers,test_db,state,platform_payload):
     from models.training_run import TrainingRun
-    payload=spec().model_dump(mode='json')
+    payload=dict(platform_payload)
     row=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     stored=await test_db.get(TrainingRun,UUID(row['id']));stored.status=state;await test_db.commit()
     response=client.put('/api/training/runs/'+row['id'],headers=auth_headers,json=dict(payload,name='不得写入'))
@@ -200,9 +241,9 @@ async def test_edit_refuses_submitted_tasks(client,auth_headers,test_db,state):
 
 
 @pytest.mark.asyncio
-async def test_edit_requires_admin_and_scoped_tenant(client,auth_headers,test_db,test_user):
+async def test_edit_requires_admin_and_scoped_tenant(client,auth_headers,test_db,test_user,platform_payload):
     from models import Tenant
-    payload=spec().model_dump(mode='json')
+    payload=dict(platform_payload)
     row=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     url='/api/training/runs/'+row['id']
     assert client.put(url,json=payload).status_code==401
@@ -214,12 +255,12 @@ async def test_edit_requires_admin_and_scoped_tenant(client,auth_headers,test_db
 
 
 @pytest.mark.asyncio
-async def test_weight_defaults_follow_saved_recipe_and_tenant(client,auth_headers,test_db,test_user):
+async def test_weight_defaults_follow_saved_recipe_and_tenant(client,auth_headers,test_db,test_user,platform_payload):
     base='/api/training/defaults?server_id=default&kind='
     response=client.get(base+'yolo26',headers=auth_headers)
     assert response.status_code==200,response.text
     assert response.json()['model_path']==''
-    client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json'))
+    client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload))
     assert client.get(base+'yolo26',headers=auth_headers).json()['model_path']=='/data/weights/model.pt'
     assert client.get(base+'wemm',headers=auth_headers).json()['model_path']==''
     from models import Tenant
@@ -308,6 +349,25 @@ def test_snapshot_source_requires_detection_and_rejects_unsplit_or_wrong_format(
     with pytest.raises(HTTPException):validate_snapshot('yolo26','coco',{'assets':[]})
     with pytest.raises(HTTPException):validate_snapshot('yolo26','yolo',{'assets':[{'split':'all'}]})
     validate_snapshot('rfdetr_medium','coco',{'assets':[{'split':'train'},{'split':'val'}],'approved_only':True})
+
+
+def test_snapshot_review_evidence_and_split_errors():
+    from services.training_config import validate_snapshot
+    from fastapi import HTTPException
+    def check(approved_only, statuses, splits=('train','val')):
+        assets=[dict(split=split,**status) for split,status in zip(splits,statuses)]
+        return validate_snapshot('rfdetr_medium','yolo',dict(assets=assets,approved_only=approved_only))
+    approved={'review_status':'approved'}
+    check(False,[approved,approved])
+    check(False,[approved,{'review_status':'pending'}])
+    check(True,[{},{}])
+    for flag,statuses in [(False,[approved,{}]),('false',[approved,{}]),(True,[approved,{'review_status':'pending'}]),
+                          (False,[approved,{'review_status':'rejected'}]),(True,[approved,{'review_status':None}])]:
+        with pytest.raises(HTTPException,match='审核'):
+            check(flag,statuses)
+    for splits in [('train','train'),('train','all')]:
+        with pytest.raises(HTTPException,match='划分'):
+            check(True,[approved,approved],splits)
 
 
 def test_archive_extraction_rejects_traversal_and_symlinks(tmp_path):
@@ -438,12 +498,12 @@ def test_remote_start_is_idempotent_and_stop_blocks_late_start(monkeypatch,tmp_p
 
 
 @pytest.mark.asyncio
-async def test_training_create_read_permissions_and_immutable_source(client,auth_headers,test_db,test_user,test_project,test_engine):
+async def test_training_create_read_permissions_and_immutable_source(client,auth_headers,test_db,test_user,test_project,test_engine,platform_payload):
     from models.training_run import TrainingRun,TrainingGpuHold
     async with test_engine.begin() as conn:
         await conn.run_sync(lambda c:TrainingRun.__table__.create(c,checkfirst=True))
         await conn.run_sync(lambda c:TrainingGpuHold.__table__.create(c,checkfirst=True))
-    payload=dict(name='只保存不启动',kind='yolo26',gpu_uuids=['GPU-test-1'],dataset_path='/data/data.yaml',model_path='/data/model.pt',output_root='/data/runs')
+    payload={**platform_payload,'name':'只保存不启动'}
     response=client.post('/api/training/runs',headers=auth_headers,json=payload)
     assert response.status_code==201,response.text
     row=response.json();assert row['status']=='draft'
@@ -453,11 +513,11 @@ async def test_training_create_read_permissions_and_immutable_source(client,auth
     assert client.get('/api/training/runs').status_code==401
     test_user.role='annotator';await test_db.commit()
     assert client.post('/api/training/runs',headers=auth_headers,json=payload).status_code==403
-    assert client.get('/api/training/runs/'+row['id'],headers=auth_headers).status_code==200
+    assert client.get('/api/training/runs/'+row['id'],headers=auth_headers).status_code==403
 
 
 @pytest.mark.asyncio
-async def test_start_recheck_holds_and_stop_release(client,auth_headers,monkeypatch,test_db):
+async def test_start_recheck_holds_and_stop_release(client,auth_headers,monkeypatch,test_db,platform_payload):
     from sqlalchemy import select,func
     from services import training_runs
     from models.training_run import TrainingGpuHold
@@ -467,7 +527,7 @@ async def test_start_recheck_holds_and_stop_release(client,auth_headers,monkeypa
         if action=='precheck':return dict(ok=True,checks=[])
         return dict(status='canceled' if action=='stop' else 'running')
     monkeypatch.setattr(training_runs,'remote',fake)
-    payload=spec().model_dump(mode='json')
+    payload=dict(platform_payload)
     first=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     second=client.post('/api/training/runs',headers=auth_headers,json=payload).json()
     assert client.post('/api/training/runs/'+first['id']+'/start',headers=auth_headers).json()['status']=='starting'
@@ -482,7 +542,7 @@ async def test_start_recheck_holds_and_stop_release(client,auth_headers,monkeypa
 
 
 @pytest.mark.asyncio
-async def test_ssh_uncertainty_retains_gpu_holds_and_never_relaunches(client,auth_headers,monkeypatch,test_db):
+async def test_ssh_uncertainty_retains_gpu_holds_and_never_relaunches(client,auth_headers,monkeypatch,test_db,platform_payload):
     from sqlalchemy import select,func
     from fastapi import HTTPException
     from services import training_runs
@@ -494,7 +554,7 @@ async def test_ssh_uncertainty_retains_gpu_holds_and_never_relaunches(client,aut
         if action=='stage':return dict(directory=run.output_dir)
         raise HTTPException(503,'SSH已断开')
     monkeypatch.setattr(training_runs,'remote',fake)
-    row=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    row=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     assert client.post('/api/training/runs/'+row['id']+'/start',headers=auth_headers).status_code==202
     await training_runs.process_start(UUID(row['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
     assert client.get('/api/training/runs/'+row['id'],headers=auth_headers).json()['status']=='unknown'
@@ -504,7 +564,7 @@ async def test_ssh_uncertainty_retains_gpu_holds_and_never_relaunches(client,aut
 
 
 @pytest.mark.asyncio
-async def test_failed_precheck_releases_holds_without_staging(client,auth_headers,monkeypatch,test_db):
+async def test_failed_precheck_releases_holds_without_staging(client,auth_headers,monkeypatch,test_db,platform_payload):
     from sqlalchemy import select,func
     from services import training_runs
     from models.training_run import TrainingGpuHold
@@ -512,7 +572,7 @@ async def test_failed_precheck_releases_holds_without_staging(client,auth_header
     async def fake(db,run,action,**values):
         calls.append(action);return dict(ok=False,checks=[dict(name='GPU',ok=False,detail='busy')])
     monkeypatch.setattr(training_runs,'remote',fake)
-    row=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    row=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     result=client.post('/api/training/runs/'+row['id']+'/start',headers=auth_headers)
     assert result.status_code==202 and calls==[]
     await training_runs.process_start(UUID(row['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
@@ -522,9 +582,9 @@ async def test_failed_precheck_releases_holds_without_staging(client,auth_header
 
 
 @pytest.mark.asyncio
-async def test_other_tenant_cannot_read_operate_or_see_training(client,auth_headers,test_db,test_user):
+async def test_other_tenant_cannot_read_operate_or_see_training(client,auth_headers,test_db,test_user,platform_payload):
     from models import Tenant
-    row=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    row=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     test_db.add(Tenant(id=2,tenant_name='other'));await test_db.flush()
     test_user.tenant_id=2;await test_db.commit()
     assert client.get('/api/training/runs',headers=auth_headers).json()['total']==0
@@ -560,3 +620,35 @@ async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch,tmp_
     class DB:
         async def scalars(self,query):return SimpleNamespace(all=lambda:[])
     await training_runs.transfer_snapshot(DB(),run)
+
+
+@pytest.mark.parametrize('kind',['yolo26','rfdetr_medium','rfdetr_2xlarge','dinov3_vits16_ltdetr','swift_sft','wemm'])
+def test_new_training_rejects_server_dataset_paths(client,auth_headers,kind):
+    response=client.post('/api/training/runs',headers=auth_headers,json=spec(kind).model_dump(mode='json'))
+    assert response.status_code==422,response.text
+    assert '平台冻结导出' in response.json()['detail']
+    assert client.get('/api/training/runs',headers=auth_headers).json()['total']==0
+
+
+def test_project_training_list_contains_only_project_and_its_outputs(client,auth_headers,platform_payload,test_project):
+    run=client.post('/api/training/runs',headers=auth_headers,json=platform_payload).json()
+    output=client.post('/api/training/runs/'+run['id']+'/outputs',headers=auth_headers,
+        json=dict(format='onnx',source_path='/data/checkpoints/best.pt',output_root='/data/exports')).json()
+    assert output['source']['project_id']==str(test_project.id)
+    params=dict(project_id=str(test_project.id),page_size=1,page=1)
+    first=client.get('/api/training/runs',headers=auth_headers,params=params)
+    second=client.get('/api/training/runs',headers=auth_headers,params={**params,'page':2})
+    assert first.status_code==second.status_code==200
+    assert first.json()['total']==second.json()['total']==2
+    assert {first.json()['items'][0]['id'],second.json()['items'][0]['id']}=={run['id'],output['id']}
+    empty=client.get('/api/training/runs',headers=auth_headers,params=dict(project_id=str(uuid4())))
+    assert empty.json()['total']==0
+    assert client.get('/api/training/runs',headers=auth_headers).json()['total']==2
+
+
+def test_saved_training_cannot_switch_to_server_path(client,auth_headers,platform_payload):
+    run=client.post('/api/training/runs',headers=auth_headers,json=platform_payload).json()
+    response=client.put('/api/training/runs/'+run['id'],headers=auth_headers,json=spec().model_dump(mode='json'))
+    assert response.status_code==422
+    saved=client.get('/api/training/runs/'+run['id'],headers=auth_headers).json()
+    assert saved['source']['kind']=='snapshot' and saved['config']['snapshot_id']==platform_payload['snapshot_id']

@@ -5,13 +5,83 @@ from types import SimpleNamespace
 from uuid import UUID,uuid4
 import pytest
 from pydantic import ValidationError
-from tests.test_training_runs import training_tables,spec
+from tests.test_training_runs import training_tables,spec,platform_payload,platform_wemm_payload
 
 
 def request(**values):
     from schemas.model_output import ModelOutputCreate
     return ModelOutputCreate(**dict(dict(format='onnx',server_id='default',gpu_uuid='GPU-test-1',
         source_path='/data/run/best.pt',output_root='/data/exports'),**values))
+
+
+def test_model_input_cache_reuses_verified_files(tmp_path,monkeypatch):
+    import hashlib,zipfile,contextlib
+    from services import training_executor as executor
+    monkeypatch.setattr(executor,'run_lock',lambda _:contextlib.nullcontext())
+    body=b'model weights'
+    files=[dict(path='model.safetensors',bytes=len(body),sha256=hashlib.sha256(body).hexdigest())]
+    for index in (1,2):
+        run=tmp_path/str(index);run.mkdir()
+        config=dict(kind='model_merge',output_root=str(tmp_path),model_path=str(run/'base'))
+        request=dict(config=config,input_kind='base',tenant_id=1,files=files,digest='a'*64,model_cache_root=str(tmp_path/'cache'))
+        probe=executor.merge_cache(dict(request,action='merge_cache_probe'),run)
+        assert probe['hit']==(index==2)
+        if not probe['hit']:
+            with zipfile.ZipFile(probe['upload_path'],'w') as archive:archive.writestr('model.safetensors',body)
+            assert executor.merge_cache(dict(request,action='merge_cache_publish'),run)['hit']
+        assert (run/'base/model.safetensors').read_bytes()==body
+
+
+@pytest.mark.asyncio
+async def test_cross_server_merge_uses_training_artifacts_without_target_paths(monkeypatch):
+    from services import model_output,training_runs
+    parent=SimpleNamespace(id=uuid4(),kind='wemm',status='completed',source={},
+        server={'id':'jiashan-k8s'},output_dir='/pv/runs/old',
+        config=dict(execution_backend='k8s',parameters={'tuner_type':'lora'},model_path='/pv/base',
+            output_subdir='train',image='fixture'))
+    async def server(*args):return {'id':'default'}
+    monkeypatch.setattr(training_runs,'server_snapshot',server)
+    id=uuid4()
+    config,source,_=await model_output.configuration(None,SimpleNamespace(tenant_id=1),parent,
+        request(format='merge',source_path='/pv/runs/old/train/checkpoint-40'),id)
+    assert source['merge_inputs']=={'base':'base/config.json','adapter':'checkpoint-40/adapter_config.json'}
+    assert config['model_path']==f'/data/exports/{id}/base'
+    assert config['adapter_path']==f'/data/exports/{id}/adapter'
+
+
+def test_onnx_precheck_waits_for_training_checkpoint_transfer(monkeypatch,tmp_path):
+    from services import training_executor as executor
+    checkpoint=tmp_path/'checkpoint.pth'
+    config=dict(kind='model_export',output={'format':'onnx'},image='fixture',gpu_uuids=[],
+        model_path=str(checkpoint),dataset_path='',output_root=str(tmp_path),parameters={},mounts=[])
+    monkeypatch.setattr(executor,'docker',lambda *a,**kw:SimpleNamespace(returncode=0,stdout='[{"Id":"fixture"}]'))
+    assert executor.precheck(dict(config=config,pending_checkpoint=True))['ok']
+    assert not executor.precheck(dict(config=config))['ok']
+    checkpoint.touch()
+    assert executor.precheck(dict(config=config))['ok']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('format','suffix'),[('onnx','.pt'),('tensorrt','.pth')])
+async def test_completed_export_archives_selected_training_checkpoint(
+        test_db,test_user,monkeypatch,platform_payload,format,suffix):
+    from services import model_output,model_repository,training_runs
+    parent=await training_runs.create(test_db,test_user,spec(snapshot_id=platform_payload['snapshot_id'],dataset_path=''))
+    parent.status='completed'
+    checkpoint='best'+suffix
+    output='model.onnx' if format=='onnx' else 'model.engine'
+    job=await model_output.create(test_db,test_user,parent.id,request(format=format,
+        source_path=f"{parent.output_dir}/{parent.config['output_subdir']}/{checkpoint}"))
+    job.status='running'
+    await test_db.commit()
+    async def remote(*args,**kwargs):
+        return dict(status='completed',artifacts=dict(files=[dict(path=output)]))
+    scheduled=[]
+    monkeypatch.setattr(training_runs,'remote',remote)
+    monkeypatch.setattr(model_repository,'schedule_automatic',lambda run,path,user_id=None:scheduled.append((run.id,path)))
+    await training_runs.refresh(test_db,job)
+    assert job.status=='completed'
+    assert scheduled==[(job.id,output),(parent.id,checkpoint)]
 
 
 @pytest.mark.parametrize('values',[
@@ -25,11 +95,11 @@ def test_reject_invalid_output_parameters(values):
     with pytest.raises(ValidationError):request(**values)
 
 
-def test_output_api_creates_draft_without_remote_work(client,auth_headers,monkeypatch):
+def test_output_api_creates_draft_without_remote_work(client,auth_headers,monkeypatch,platform_payload):
     from services import training_runs
     async def forbidden(*args,**kwargs):raise AssertionError('Saving must not invoke SSH')
     monkeypatch.setattr(training_runs,'remote',forbidden)
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,json=request(batch=7).model_dump(mode='json'))
     assert result.status_code==201,result.text
     job=result.json()
@@ -40,22 +110,95 @@ def test_output_api_creates_draft_without_remote_work(client,auth_headers,monkey
 
 
 @pytest.mark.asyncio
-async def test_output_type_and_tenant_and_admin_checks(client,auth_headers,test_db,test_user):
+@pytest.mark.parametrize('format',['onnx','tensorrt'])
+async def test_export_can_share_platform_gpu_without_changing_its_hold(client,auth_headers,test_db,monkeypatch,format,platform_payload):
+    from sqlalchemy import select
+    from models.training_run import TrainingGpuHold
+    from services import training_runs
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
+    test_db.add(TrainingGpuHold(gpu_uuid='GPU-test-1',run_id=UUID(parent['id'])))
+    await test_db.commit()
+    job=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
+        json=request(format=format).model_dump(mode='json')).json()
+    async def remote(db,run,action,**values):
+        assert action in ('precheck','stop')
+        return dict(ok=True,checks=[]) if action=='precheck' else dict(status='canceled')
+    monkeypatch.setattr(training_runs,'remote',remote)
+    url='/api/training/runs/'+job['id']
+    assert client.post(url+'/precheck',headers=auth_headers).json()['ok'] is True
+    assert client.post(url+'/start',headers=auth_headers).status_code==202
+    assert client.post(url+'/stop',headers=auth_headers).json()['status']=='canceled'
+    assert await test_db.scalar(select(TrainingGpuHold.run_id))==UUID(parent['id'])
+
+
+@pytest.mark.asyncio
+async def test_draft_output_update_keeps_id_and_rebuilds_stages(client,auth_headers,test_db,platform_payload):
     from models.training_run import TrainingRun
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
+    job=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
+        json=request(format='tensorrt',onnx_image='old/onnx:1',image='old/trt:1').model_dump(mode='json')).json()
+    row=await test_db.get(TrainingRun,UUID(job['id']))
+    row.inspection={'ok':True,'checks':[{'name':'old'}]};await test_db.commit()
+    url='/api/training/runs/'+job['id']+'/outputs'
+    edited=request(format='tensorrt',source_path='/data/run/new.pth',output_root='/data/new-exports',
+        gpu_uuid='GPU-target-2',source_gpu_uuid='GPU-source-2',onnx_image='new/onnx:2',image='new/trt:2')
+    response=client.put(url,headers=auth_headers,json=edited.model_dump(mode='json'))
+    assert response.status_code==200,response.text
+    updated=response.json()
+    assert updated['id']==job['id'] and updated['status']=='draft' and updated['inspection']=={}
+    assert updated['source']['source_path']=='/data/run/new.pth'
+    assert updated['output_dir']=='/data/new-exports/'+job['id']
+    assert updated['config']['image']=='new/trt:2' and updated['config']['gpu_uuids']==['GPU-target-2']
+    assert updated['config']['onnx_stage']['config']['image']=='new/onnx:2'
+    assert updated['config']['onnx_stage']['config']['gpu_uuids']==[]
+    assert updated['config']['model_path']=='/data/new-exports/'+job['id']+'/onnx/model.onnx'
+    response=client.put(url,headers=auth_headers,json=request(source_path='/data/run/final.pth').model_dump(mode='json'))
+    assert response.status_code==200,response.text
+    assert 'onnx_stage' not in response.json()['config']
+    assert response.json()['config']['model_path']=='/data/run/final.pth'
+    row=await test_db.get(TrainingRun,UUID(job['id']))
+    row.status='running';await test_db.commit()
+    assert client.put(url,headers=auth_headers,json=edited.model_dump(mode='json')).status_code==409
+
+
+def test_draft_merge_update_reuses_parent_image(client,auth_headers,platform_wemm_payload):
+    parent=client.post('/api/training/runs',headers=auth_headers,
+        json=dict(platform_wemm_payload)).json()
+    job=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
+        json=request(format='merge',source_path='/data/checkpoint-1').model_dump(mode='json')).json()
+    url='/api/training/runs/'+job['id']+'/outputs'
+    response=client.put(url,headers=auth_headers,
+        json=request(format='merge',source_path='/data/checkpoint-2',model_type='wemm_embedding').model_dump(mode='json'))
+    assert response.status_code==200,response.text
+    assert response.json()['id']==job['id']
+    assert response.json()['config']['adapter_path']=='/data/checkpoint-2'
+    assert response.json()['config']['image']==parent['config']['image']
+    assert client.put(url,headers=auth_headers,json=request().model_dump(mode='json')).status_code==422
+
+
+@pytest.mark.asyncio
+async def test_output_type_and_tenant_and_admin_checks(client,auth_headers,test_db,test_user,platform_payload):
+    from models.training_run import TrainingRun
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     url='/api/training/runs/'+parent['id']+'/outputs'
     assert client.post(url,headers=auth_headers,json=request(format='merge').model_dump(mode='json')).status_code==422
+    job=client.post(url,headers=auth_headers,json=request().model_dump(mode='json')).json()
+    edit_url='/api/training/runs/'+job['id']+'/outputs'
+    assert client.put(edit_url,json=request().model_dump(mode='json')).status_code==401
     assert client.post(url,json=request().model_dump(mode='json')).status_code==401
     test_user.role='annotator';await test_db.commit()
+    assert client.put(edit_url,headers=auth_headers,json=request().model_dump(mode='json')).status_code==403
     assert client.post(url,headers=auth_headers,json=request().model_dump(mode='json')).status_code==403
     from models import Tenant
     test_db.add(Tenant(id=999,tenant_name='other'));await test_db.commit()
     test_user.role='admin';row=await test_db.get(TrainingRun,UUID(parent['id']));row.tenant_id=999;await test_db.commit()
     assert client.post(url,headers=auth_headers,json=request().model_dump(mode='json')).status_code==404
+    row=await test_db.get(TrainingRun,UUID(job['id']));row.tenant_id=999;await test_db.commit()
+    assert client.put(edit_url,headers=auth_headers,json=request().model_dump(mode='json')).status_code==404
 
 
-def test_merge_uses_original_image_and_rejects_full_tuning(client,auth_headers):
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec('wemm',model_path='/data/WeMM',parameters={'tuner_type':'lora'}).model_dump(mode='json')).json()
+def test_merge_uses_original_image_and_rejects_full_tuning(client,auth_headers,platform_wemm_payload):
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_wemm_payload)).json()
     result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
         json=request(format='merge',source_path='/data/run/checkpoint-40',model_type='wemm_embedding').model_dump(mode='json'))
     assert result.status_code==201,result.text
@@ -66,10 +209,10 @@ def test_merge_uses_original_image_and_rejects_full_tuning(client,auth_headers):
     assert job['source']['model_kind']=='wemm'
 
 
-def test_cross_server_requires_explicit_base_model_path(client,auth_headers,monkeypatch):
+def test_cross_server_requires_explicit_base_model_path(client,auth_headers,monkeypatch,platform_wemm_payload):
     from services import training_runs
     async def snapshot(db,id,tenant):return dict(id=id,name='target',revision=1)
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec('wemm',model_path='/data/WeMM').model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_wemm_payload)).json()
     monkeypatch.setattr(training_runs,'server_snapshot',snapshot)
     result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
         json=request(format='merge',source_path='/data/run/checkpoint-1',server_id=str(uuid4())).model_dump(mode='json'))
@@ -95,10 +238,10 @@ def test_swift_merge_argv_is_not_shell_text():
         assert args[args.index(flag)+1]==value
 
 
-def test_output_script_and_remote_payload_have_no_dataset(client,auth_headers,monkeypatch):
+def test_output_script_and_remote_payload_have_no_dataset(client,auth_headers,monkeypatch,platform_payload):
     from services import training_runs
     from services.training_config import build_script
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     job=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,json=request().model_dump(mode='json')).json()
     code=build_script(job['config'])
     compile(code,'export.py','exec')
@@ -153,7 +296,7 @@ def test_rfdetr_uses_checkpoint_class_resolution_and_trust(monkeypatch,tmp_path,
     monkeypatch.setattr(runner,'prepare_onnx',lambda *a,**k:{'input_name':'input'})
     options=request(source_path='/data/model.pth',trust_checkpoint=True,dynamic_batch=True,opt_batch=7,max_batch=8).model_dump()
     runner.export_onnx(dict(model_kind='rfdetr_2xlarge',model_path='/data/model.pth',output=options),tmp_path)
-    assert calls[0][2]=={'trust_checkpoint':True}
+    assert calls[0][2]=={'trust_checkpoint':True,'device':'cpu'}
     assert calls[1][1]['shape']==(resolution,resolution) and calls[1][1]['batch_size']==7 and calls[1][1]['dynamic_batch'] is True
     assert calls[1][1]['fp16'] is True
 
@@ -181,11 +324,11 @@ def test_empty_export_without_success_manifest_is_failed(monkeypatch,tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_output_start_reserves_gpu_and_stop_releases_it(client,auth_headers,test_db,monkeypatch):
+async def test_cpu_output_start_and_stop_do_not_reserve_gpu(client,auth_headers,test_db,monkeypatch,platform_payload):
     from services import training_runs
     from models.training_run import TrainingGpuHold
     from sqlalchemy import select
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     job=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,json=request().model_dump(mode='json')).json()
     actions=[]
     async def remote(db,run,action,**values):
@@ -202,7 +345,7 @@ async def test_output_start_reserves_gpu_and_stop_releases_it(client,auth_header
     from sqlalchemy.ext.asyncio import async_sessionmaker
     await training_runs.process_start(UUID(job['id']),async_sessionmaker(test_db.bind,expire_on_commit=False))
     assert actions==['precheck','stage','start']
-    assert await test_db.scalar(select(TrainingGpuHold.gpu_uuid))=='GPU-test-1'
+    assert await test_db.scalar(select(TrainingGpuHold.gpu_uuid)) is None
     await test_db.rollback()
     assert client.post(url+'/start',headers=auth_headers).status_code==409
     assert client.post(url+'/stop',headers=auth_headers).json()['status']=='canceled'
@@ -228,7 +371,7 @@ def test_container_runner_checks_source_stability_and_writes_hash_manifest(tmp_p
     else:
         runner.run(config)
         manifest=json.loads((tmp_path/'result/result.json').read_text())
-        assert manifest['gpu_name']=='A100' and manifest['files'][0]['sha256']==runner.sha(tmp_path/'result/model.onnx')
+        assert manifest['gpu_name']=='' and manifest['gpu_uuid']=='' and manifest['files'][0]['sha256']==runner.sha(tmp_path/'result/model.onnx')
 
 
 def test_merge_does_not_mark_adapter_only_output_successful(tmp_path,monkeypatch):
@@ -275,10 +418,10 @@ def test_external_onnx_tensors_are_part_of_source_identity(tmp_path):
     assert before!=sources(config) and 'model.data' in before['external_data']
 
 
-def test_cross_server_tensorrt_keeps_checkpoint_on_training_server(client,auth_headers,monkeypatch):
+def test_cross_server_tensorrt_keeps_checkpoint_on_training_server(client,auth_headers,monkeypatch,platform_payload):
     from services import training_runs
     async def snapshot(db,id,tenant):return dict(id=id,name='target',revision=1)
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     monkeypatch.setattr(training_runs,'server_snapshot',snapshot)
     target=str(uuid4())
     result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
@@ -286,17 +429,97 @@ def test_cross_server_tensorrt_keeps_checkpoint_on_training_server(client,auth_h
     assert result.status_code==201,result.text
     job=result.json();source=job['config']['onnx_stage']
     assert source['server']==parent['server'] and source['config']['model_path']=='/data/run/best.pt'
-    assert source['config']['output']['format']=='onnx' and source['config']['gpu_uuids']==['GPU-source']
+    assert source['config']['output']['format']=='onnx' and source['config']['gpu_uuids']==[]
     assert job['server']['id']==target and job['config']['gpu_uuids']==['GPU-target']
     assert job['config']['model_path']==job['output_dir']+'/onnx/model.onnx'
     assert job['config']['output']['source_path']==job['config']['model_path']
 
 
-def test_onnx_cannot_be_silently_exported_on_another_server(client,auth_headers):
-    parent=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+def test_onnx_can_use_checkpoint_on_another_docker_server(client,auth_headers,monkeypatch,platform_payload):
+    from services import training_runs
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
+    target=str(uuid4())
+    async def snapshot(db,id,tenant):
+        assert id==target
+        return dict(id=id,name='export target',revision=1)
+    monkeypatch.setattr(training_runs,'server_snapshot',snapshot)
     result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
-        json=request(server_id=str(uuid4())).model_dump(mode='json'))
-    assert result.status_code==422 and '训练服务器' in result.text
+        json=request(server_id=target,source_path='/shared/copied/best.pt').model_dump(mode='json'))
+    assert result.status_code==201,result.text
+    job=result.json()
+    assert job['server']['id']==job['source']['source_server_id']==target
+    assert job['config']['model_path']=='/shared/copied/best.pt'
+
+
+@pytest.mark.parametrize('format',['onnx','tensorrt'])
+def test_selected_training_checkpoint_stages_on_export_server(client,auth_headers,monkeypatch,platform_payload,format):
+    from services import training_runs
+    parent=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
+    cpu,gpu=str(uuid4()),str(uuid4())
+    async def snapshot(db,id,tenant):return dict(id=id,name='export',revision=1)
+    monkeypatch.setattr(training_runs,'server_snapshot',snapshot)
+    path=parent['output_dir']+'/'+parent['config']['output_subdir']+'/nested/best.pth'
+    result=client.post('/api/training/runs/'+parent['id']+'/outputs',headers=auth_headers,
+        json=request(format=format,server_id=cpu if format=='onnx' else gpu,onnx_server_id=cpu if format=='tensorrt' else '',
+            gpu_uuid='GPU-target' if format=='tensorrt' else '',source_path=path).model_dump(mode='json'))
+    assert result.status_code==201,result.text
+    job=result.json()
+    assert job['source']['checkpoint_artifact']=='nested/best.pth'
+    assert job['source']['source_path']==path
+    if format=='tensorrt':
+        stage=job['config']['onnx_stage']
+        assert stage['server']['id']==cpu
+        config=stage['config']
+        assert config['model_path']==config['output_root']+'/'+stage['id']+'/checkpoint.pth'
+    else:
+        config=job['config']
+        assert config['model_path']==job['output_dir']+'/checkpoint.pth'
+    assert config['output']['source_path']==config['model_path']
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_transfer_uses_training_artifact_and_checks_destination(monkeypatch,tmp_path):
+    import hashlib
+    from services import training_runs,model_output_pipeline
+    from services import training_executor as executor
+    from contextlib import nullcontext
+    data=b'checkpoint fixture'
+    digest=hashlib.sha256(data).hexdigest()
+    parent_id,stage_id=str(uuid4()),str(uuid4())
+    parent=SimpleNamespace(id=parent_id,tenant_id=1,output_dir='/training/run',
+        config={'execution_backend':'k8s','output_subdir':'train'},server={'name':'training'})
+    directory=tmp_path/stage_id
+    directory.mkdir()
+    checkpoint=directory/'checkpoint.pth'
+    config=dict(kind='model_export',output={'format':'onnx'},model_path=str(checkpoint),output_root=str(tmp_path))
+    run=SimpleNamespace(id=uuid4(),tenant_id=1,server={'name':'gpu'},source={'run_id':parent_id,'checkpoint_artifact':'best.pth'},
+        config={'output_root':str(tmp_path),'onnx_stage':{'id':stage_id,'config':config,'server':{'name':'cpu'}}})
+    operations=[]
+    async def scoped(*args):return parent
+    async def active(*args):pass
+    async def connection(*args):return None
+    async def remote(db,current,action,**values):
+        if action=='artifact':
+            assert current is parent and values['path']=='best.pth'
+            return dict(path='/nfs/train/best.pth',logical_path='/training/run/train/best.pth',bytes=len(data),sha256=digest)
+        assert current.server['name']=='cpu'
+        return executor.execute(dict(action=action,run_id=stage_id,config=config,**values))
+    def bridge(server,payload):
+        if server=='training':
+            assert payload['download']['remotePath']=='/nfs/train/best.pth'
+            Path(payload['download']['localPath']).write_bytes(data)
+        else:
+            assert server=='cpu' and payload['upload']['remotePath']==str(checkpoint)+'.part'
+            Path(payload['upload']['remotePath']).write_bytes(Path(payload['upload']['localPath']).read_bytes())
+        operations.append(server)
+    for key,value in dict(scoped=scoped,ensure_starting=active,connection=connection,remote=remote,
+                         remote_direct=remote,bridge=bridge,ROOT=tmp_path).items():
+        monkeypatch.setattr(training_runs,key,value)
+    monkeypatch.setattr(executor,'run_directory',lambda _: (directory,'fixture'))
+    monkeypatch.setattr(executor,'run_lock',lambda _:nullcontext())
+    await model_output_pipeline.transfer_checkpoint(None,run)
+    assert operations==['training','cpu'] and checkpoint.read_bytes()==data
+    assert not list((tmp_path/'.backups/model-output-transfer').iterdir())
 
 
 def test_onnx_bundle_preserves_external_tensors_and_rejects_corruption(tmp_path):
@@ -328,13 +551,13 @@ def test_onnx_bundle_rejects_traversal_and_bad_checksum(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome',['success','source_failed','corrupt','canceled','target_blocked'])
-async def test_cross_server_lifecycle_and_transfer(test_db,test_engine,test_user,monkeypatch,tmp_path,outcome):
+async def test_cross_server_lifecycle_and_transfer(test_db,test_engine,test_user,monkeypatch,tmp_path,outcome,platform_payload):
     import hashlib
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from services import training_runs,model_output,model_output_pipeline as pipeline
     from models.training_run import TrainingGpuHold
-    parent=await training_runs.create(test_db,test_user,spec())
+    parent=await training_runs.create(test_db,test_user,spec(snapshot_id=platform_payload['snapshot_id'],dataset_path=''))
     async def snapshot(db,id,tenant):return dict(id=id,name='目标服务器',revision=1)
     async def server(*args,**kwargs):return SimpleNamespace(enabled=True,revision=1)
     monkeypatch.setattr(training_runs,'server_snapshot',snapshot)
@@ -382,7 +605,7 @@ async def test_cross_server_lifecycle_and_transfer(test_db,test_engine,test_user
     assert actions==[('source','precheck'),('target','precheck'),('source','stage'),('target','stage'),('source','start')]
     assert job.status=='running' and job.inspection['output_phase']=='onnx'
     holds=set((await test_db.scalars(select(TrainingGpuHold.gpu_uuid))).all())
-    assert holds=={'GPU-source','GPU-target'}
+    assert holds==set()
     await training_runs.refresh(test_db,job)
     task=pipeline._advancing.get(str(job.id))
     await test_db.commit()

@@ -1,6 +1,7 @@
 """Fixed remote executor. Standard library only; never runs user shell text."""
 import base64
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -52,7 +53,7 @@ def cached_snapshot(payload,path,publish=False):
 
 
 def docker(args,check=True,timeout=25):
-    result=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=timeout)
+    result=subprocess.run(['docker',*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=timeout)
     if check and result.returncode:raise RuntimeError((result.stderr or result.stdout or 'Docker失败')[-2000:])
     return result
 
@@ -83,7 +84,8 @@ def safe_child(root,name):
     if not isinstance(name,str) or '\\' in name or PurePosixPath(name).is_absolute() or '..' in name.split('/'):
         raise ValueError('冻结包路径非法')
     path=root.joinpath(name)
-    if not path.resolve().is_relative_to(root.resolve()):raise ValueError('冻结包路径越界')
+    try:path.resolve().relative_to(root.resolve())
+    except ValueError:raise ValueError('冻结包路径越界') from None
     return path
 
 
@@ -92,7 +94,7 @@ def unpack_snapshot(archive,destination,kind):
     if destination.exists():raise ValueError('数据目录已经存在，禁止覆盖')
     with zipfile.ZipFile(archive) as source:
         members=source.infolist()
-        if len(members)>40000 or sum(row.file_size for row in members)>40*1024**3:raise ValueError('冻结包超出40000项/40GiB限制')
+        if len(members)>100000 or sum(row.file_size for row in members)>40*1024**3:raise ValueError('冻结包超出100000项/40GiB限制')
         seen=set()
         for row in members:
             safe_child(destination,row.filename)
@@ -187,6 +189,10 @@ def lightly_metadata(config,code):
     return json.loads(docker(args,timeout=120).stdout)
 
 
+def cpu_export(config):
+    return config.get('kind')=='model_export' and config.get('output',{}).get('format')=='onnx'
+
+
 def precheck(payload):
     config=payload['config'];checks=[]
     def add(name,ok,detail):checks.append(dict(name=name,ok=bool(ok),detail=detail))
@@ -194,28 +200,42 @@ def precheck(payload):
     add('镜像',image.returncode==0,'已存在，不自动拉取' if image.returncode==0 else '镜像尚未就绪，请等待拉取完成')
     digest=None
     if image.returncode==0:digest=json.loads(image.stdout)[0]['Id']
-    gpu=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.free,mig.mode.current','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=10)
-    if gpu.returncode:raise RuntimeError('GPU状态读取失败')
     gpus=[]
-    for line in gpu.stdout.strip().splitlines():
-        index,uuid,name,free,mig=[part.strip() for part in line.split(',')]
-        gpus.append(dict(index=int(index),uuid=uuid,name=name,free_mib=float(free),mig_mode=mig))
-    processes=subprocess.run(['nvidia-smi','--query-compute-apps=gpu_uuid,pid','--format=csv,noheader,nounits'],capture_output=True,text=True,timeout=10)
-    if processes.returncode:raise RuntimeError('GPU进程状态未知，不能分配')
-    busy={line.split(',')[0].strip() for line in processes.stdout.splitlines() if line.strip()}
-    for uuid in config['gpu_uuids']:
-        physical=next((g for g in gpus if g['uuid']==uuid),None)
-        available=physical and physical['mig_mode'] in ('Disabled','N/A','[N/A]','Not Supported','[Not Supported]') and uuid not in busy
-        add('GPU '+uuid,available,'存在且无计算进程' if available else 'GPU不存在、已有计算任务或MIG启用/未知，禁止分配或抢占')
+    if cpu_export(config):add('执行设备',True,'CPU导出ONNX，不检查、不预留、不挂载GPU')
+    else:
+        shared=config.get('kind')=='model_export' and config['output']['format']=='tensorrt'
+        gpu=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.free,mig.mode.current','--format=csv,noheader,nounits'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=10)
+        if gpu.returncode:raise RuntimeError('GPU状态读取失败')
+        for line in gpu.stdout.strip().splitlines():
+            index,uuid,name,free,mig=[part.strip() for part in line.split(',')]
+            gpus.append(dict(index=int(index),uuid=uuid,name=name,free_mib=float(free),mig_mode=mig))
+        busy=set()
+        if not shared:
+            processes=subprocess.run(['nvidia-smi','--query-compute-apps=gpu_uuid,pid','--format=csv,noheader,nounits'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=10)
+            if processes.returncode:raise RuntimeError('GPU进程状态未知，不能分配')
+            busy={line.split(',')[0].strip() for line in processes.stdout.splitlines() if line.strip()}
+        for uuid in config['gpu_uuids']:
+            physical=next((g for g in gpus if g['uuid']==uuid),None)
+            available=physical and physical['mig_mode'] in ('Disabled','N/A','[N/A]','Not Supported','[Not Supported]') and (physical['free_mib']>0 if shared else uuid not in busy)
+            if shared:
+                detail='允许共享；剩余显存 '+str(physical['free_mib'])+' MiB，构建仍可能因显存不足失败' if available else 'GPU不存在、无剩余显存或MIG启用/未知，不能构建'
+            else:detail='存在且无计算进程' if available else 'GPU不存在、已有计算任务或MIG启用/未知，禁止分配或抢占'
+            add('GPU '+uuid,available,detail)
     root=Path(config['output_root'])
     add('输出根目录',writable_output(root),'已有目录需可写；不存在时在可写父目录下自动创建：'+str(root))
     pending=payload.get('pending_onnx',False) and config['kind']=='model_export' and config['output']['format']=='tensorrt'
+    pending_checkpoint=payload.get('pending_checkpoint',False) and cpu_export(config)
+    pending_merge=payload.get('pending_merge',False) and config['kind']=='model_merge'
     if pending:
         if image.returncode==0:
             code='from pathlib import Path; assert Path("/usr/src/tensorrt/bin/trtexec").is_file(), "缺少trtexec"'
             result=docker(['run','--rm','--pull=never','--network','none','--entrypoint','python3',digest,'-c',code],check=False,timeout=120)
             add('TensorRT构建依赖',result.returncode==0,'trtexec已就绪；目标服务器无需Python onnx包' if result.returncode==0 else (result.stderr or result.stdout)[-2000:])
-        add('ONNX输入',True,'训练服务器完成ONNX导出后自动传输并校验，不要求目标服务器已有检查点')
+        add('ONNX输入',True,'所选服务器完成ONNX导出后自动传输并校验，不要求目标服务器已有检查点')
+    elif pending_checkpoint:
+        add('检查点输入',True,'启动时从训练服务器传输权重，随后复核导出依赖')
+    elif pending_merge:
+        add('合并输入',True,'启动时从模型仓库准备基础模型和 LoRA，随后复核')
     elif config['kind'] in ('model_export','model_merge'):
         for key in ('model_path','adapter_path'):
             value=config.get(key)
@@ -224,6 +244,7 @@ def precheck(payload):
                 add('来源 '+key,path.exists() and path.resolve()==path,'来源须存在且不能通过符号链接越界：'+value)
         if image.returncode==0 and payload.get('output_code') and all(c['ok'] for c in checks if c['name'].startswith('来源 ')):
             args=['run','--rm','--pull=never','--network','none','--entrypoint','python3']
+            if cpu_export(config):args+=['--env','CUDA_VISIBLE_DEVICES=','--env','NVIDIA_VISIBLE_DEVICES=void']
             for key in ('model_path','adapter_path'):
                 value=config.get(key)
                 if value:
@@ -249,10 +270,15 @@ def precheck(payload):
             ok=path.is_file() if config['kind']=='yolo26' else path.is_dir() and (
                 (path/'train/_annotations.coco.json').is_file() or (path/'data.yaml').is_file() and (path/'train/images').is_dir())
             add('训练数据',ok,'镜像就绪后读取数据划分和标签：'+str(path))
-    if config['model_path'] and not pending:
+    if config['model_path'] and not (pending or pending_checkpoint or pending_merge or
+            payload.get('pending_base') and config['kind'] in ('swift_sft','wemm')):
         weights=Path(config['model_path'])
-        add('基础权重',weights.is_dir() if config['kind'] in ('swift_sft','wemm','model_merge') else weights.is_file(),
-            'Swift需要模型目录，检测模型需要权重文件：'+config['model_path'])
+        if config['kind']=='custom':
+            add('基础权重',(weights.is_file() or weights.is_dir()) and weights.resolve()==weights,
+                '基础权重文件或模型目录须存在，且不能经过符号链接：'+config['model_path'])
+        else:
+            add('基础权重',weights.is_dir() if config['kind'] in ('swift_sft','wemm','model_merge') else weights.is_file(),
+                'Swift需要模型目录，检测模型需要权重文件：'+config['model_path'])
     if config['kind']=='dinov3_vits16_ltdetr' and image.returncode==0:
         try:
             if not payload.get('dataset_code'):raise ValueError('缺少DINOv3预检查适配代码')
@@ -260,6 +286,18 @@ def precheck(payload):
             add('Lightly依赖与检测权重',True,json.dumps(info,ensure_ascii=False))
         except (ValueError,RuntimeError,subprocess.TimeoutExpired) as error:
             add('Lightly依赖与检测权重',False,str(error))
+    if config['kind']=='custom' and image.returncode==0:
+        module=config['trainer']['module']
+        code=('from importlib.util import find_spec; import sys; '
+              'assert sys.version_info >= (3, 9), "需要 Python 3.9 或更新版本"; '
+              'assert find_spec(sys.argv[1]), "训练模块未安装"; '
+              'assert sys.argv[2] not in ("yolo", "coco") or find_spec("yaml"), "缺少 PyYAML"')
+        try:
+            docker(['run','--rm','--pull=never','--network','none','--entrypoint','python3',
+                    digest,'-I','-c',code,module,config['trainer']['dataset_format']],timeout=90)
+            add('训练模块',True,module)
+        except (RuntimeError,subprocess.TimeoutExpired) as error:
+            add('训练模块',False,str(error))
     if config['kind']=='rfdetr_2xlarge':
         add('2XLarge许可证',config['accept_platform_model_license'],'需要管理员明确确认Platform Model License')
         if not config['model_path']:add('2XLarge默认权重',False,'请填写服务器已有2XLarge权重；平台不下载默认权重')
@@ -317,6 +355,128 @@ def artifact_file(root,name):
     path=root/name
     if root.resolve()!=root or path.resolve()!=path or not path.is_file():raise ValueError('产物不存在或包含符号链接')
     return path
+
+
+def model_directory(root,entry):
+    artifact_file(root,entry)
+    if not root.is_dir() or any((Path(parent)/name).is_symlink() for parent,dirs,names in os.walk(root) for name in dirs+names):
+        raise ValueError('模型目录包含符号链接')
+    files=artifacts(root)
+    if files['truncated']:raise ValueError('模型目录超过500个文件')
+    rows=[]
+    for item in sorted(files['files'],key=lambda row:row['path']):
+        file=artifact_file(root,item['path'])
+        rows.append(dict(path=item['path'],bytes=item['bytes'],sha256=file_hash(file)))
+    if not any(row['bytes'] and row['path'].endswith(('.safetensors','.bin')) for row in rows):
+        raise ValueError('模型目录缺少权重')
+    return rows
+
+
+def merge_cache(payload,path):
+    config=payload['config'];kind=payload['input_kind'];rows=payload['files']
+    digest=payload['digest']
+    if (kind not in ('base','adapter') or len(digest)!=64 or any(c not in '0123456789abcdef' for c in digest)
+            or not rows or len(rows)>500):raise ValueError('模型缓存清单无效')
+    root=Path(payload.get('model_cache_root', '/ai/chen/training/model-input-cache'))/str(int(payload['tenant_id']))
+    target=root/digest
+    destination=Path(config['model_path' if kind=='base' else 'adapter_path'])
+    if root.resolve()!=root or target.is_symlink():raise ValueError('模型缓存路径包含链接')
+    if config['kind'] not in ('model_merge','swift_sft','wemm') or destination!=path/kind:
+        raise ValueError('模型缓存路径与任务配置不匹配')
+    root.mkdir(parents=True,exist_ok=True)
+    if (root/'.lock').is_symlink():raise ValueError('模型缓存锁路径包含链接')
+    def matches(directory):
+        try:
+            return directory.is_dir() and directory.resolve()==directory and not any(
+                (Path(parent)/name).is_symlink() for parent,dirs,names in os.walk(directory) for name in dirs+names
+            ) and {item['path'] for item in artifacts(directory)['files']}=={row['path'] for row in rows} and all(
+                artifact_file(directory,row['path']).stat().st_size==row['bytes'] and
+                file_hash(directory/row['path'])==row['sha256'] for row in rows)
+        except ValueError:return False
+    if (path/'.canceled').exists():raise ValueError('任务已取消')
+    def attach():
+        if not destination.exists():
+            with tempfile.TemporaryDirectory(prefix='.input-',dir=path) as temp:
+                link=Path(temp)/'model'
+                def reuse(source,target):
+                    try:os.link(source,target)
+                    except OSError as error:
+                        if error.errno!=errno.EXDEV:raise
+                        shutil.copy2(source,target)
+                shutil.copytree(target,link,copy_function=reuse)
+                link.replace(destination)
+        if not matches(destination):raise ValueError('任务输入目录校验失败')
+        return dict(hit=True,path=str(destination))
+    with run_lock(root):
+        if matches(target):
+            if payload['action']=='merge_cache_publish':artifact_file(path,kind+'.zip').unlink()
+            return attach()
+        if payload['action']=='merge_cache_probe':
+            if target.exists():raise ValueError('已有模型缓存校验失败，请清理损坏目录后重试')
+            return dict(hit=False,upload_path=str(path/(kind+'.zip')))
+        archive=artifact_file(path,kind+'.zip')
+        if target.exists():raise ValueError('已有模型缓存校验失败，请清理损坏目录后重试')
+        if shutil.disk_usage(root).free<sum(row['bytes'] for row in rows):raise ValueError('模型缓存磁盘空间不足')
+        with tempfile.TemporaryDirectory(prefix='.model-',dir=root) as temp,zipfile.ZipFile(archive) as source:
+            directory=Path(temp)/'model';directory.mkdir()
+            names=[row['path'] for row in rows]
+            if sorted(source.namelist())!=sorted(names) or len(set(names))!=len(names):
+                raise ValueError('模型传输包文件与清单不符')
+            for row in rows:
+                member=source.getinfo(row['path'])
+                if member.file_size!=row['bytes'] or member.is_dir() or stat.S_ISLNK(member.external_attr>>16):
+                    raise ValueError('模型传输包文件无效')
+                file=safe_child(directory,row['path']);file.parent.mkdir(parents=True,exist_ok=True)
+                with source.open(member) as inp,file.open('xb') as out:shutil.copyfileobj(inp,out,1024**2)
+            if not matches(directory):raise ValueError('模型传输包 SHA256 校验失败')
+            directory.replace(target)
+        archive.unlink()
+        return attach()
+
+
+def repository_metadata(root,name,verify=True):
+    file=artifact_file(root,name);suffix=file.suffix.lower()
+    if suffix in ('.pt','.pth'):
+        return dict(format='pt',gpu_model='',tensorrt_version='',entry_file=name,
+            files=[dict(path=name,bytes=file.stat().st_size,sha256=file_hash(file))])
+    merged=name=='merged/config.json'
+    if suffix not in ('.onnx','.engine','.plan') and not merged:raise ValueError('请选择模型文件')
+    manifest_file=artifact_file(root,'result.json')
+    if manifest_file.stat().st_size>8*1024**2:raise ValueError('模型导出清单过大')
+    manifest=json.loads(manifest_file.read_text())
+    if manifest.get('format') not in (('merge',) if merged else ('onnx','tensorrt')):raise ValueError('需要平台标准导出的result.json清单')
+    rows=manifest.get('files',[])
+    if not rows or len(rows)>500 or len({r['path'] for r in rows})!=len(rows):raise ValueError('模型导出清单无效')
+    if name not in {r['path'] for r in rows}:raise ValueError('主文件未列入模型导出清单')
+    onnx=suffix=='.onnx'
+    selected=[r for r in rows if r['path'].startswith('merged/')] if merged else (
+        [r for r in rows if PurePosixPath(r['path']).suffix.lower() not in ('.engine','.plan')] if onnx else [r for r in rows if r['path']==name])
+    for row in selected:
+        path=artifact_file(root,row['path'])
+        if not isinstance(row['bytes'],int) or row['bytes']<0 or (row['bytes']==0 and (not merged or row['path']==name)) or path.stat().st_size!=row['bytes'] or verify and file_hash(path)!=row['sha256']:
+            raise ValueError('导出文件与清单不匹配，不能入库')
+    if merged:
+        if not any(PurePosixPath(row['path']).suffix in ('.bin','.safetensors') and row['bytes']>0 for row in selected):
+            raise ValueError('合并模型缺少权重文件')
+        return dict(format='huggingface',entry_file=name,files=selected,gpu_model='',tensorrt_version='',batch_profile='')
+    gpu=manifest.get('gpu_name','') if not onnx else ''
+    version=(manifest.get('versions',{}).get('tensorrt_runtime') or manifest.get('versions',{}).get('tensorrt','')) if not onnx else ''
+    if not onnx and (manifest['format']!='tensorrt' or not gpu or not version):raise ValueError('TensorRT导出缺少GPU型号或运行时版本')
+    options=manifest.get('options',{});batch=''
+    if not onnx and options.get('dynamic_batch') is True and all(key in options for key in ('min_batch','opt_batch','max_batch')):
+        batch='dynamic:'+':'.join(str(options[key]) for key in ('min_batch','opt_batch','max_batch'))
+    elif not onnx and options.get('dynamic_batch') is False and 'batch' in options:batch='fixed:'+str(options['batch'])
+    onnx_input={}
+    if onnx:
+        details=manifest.get('onnx') or {}
+        dynamic=options.get('dynamic_batch')
+        dimensions=[details.get('height'),details.get('width')]
+        if dynamic is False:dimensions.append(options.get('batch'))
+        if isinstance(details.get('input_name'),str) and isinstance(dynamic,bool) and all(type(d) is int and d>0 for d in dimensions):
+            onnx_input=dict(name=details['input_name'],shape=['N' if dynamic else options['batch'],3,*dimensions[:2]])
+    return dict(format='onnx' if onnx else 'tensorrt',entry_file=name,
+        files=[{key:row[key] for key in ('path','bytes','sha256')} for row in selected],gpu_model=gpu,tensorrt_version=version,batch_profile=batch,
+        **({'onnx_input':onnx_input} if onnx_input else {}))
 
 
 def pack_onnx(root,archive):
@@ -407,8 +567,33 @@ def execute(payload):
     if action=='artifact':
         file=artifact_file(Path(config['output_root'])/run_id/config['output_subdir'],payload['path'])
         return dict(path=str(file),bytes=file.stat().st_size,sha256=file_hash(file))
+    if action=='repository_metadata':
+        return repository_metadata(Path(config['output_root'])/run_id/config['output_subdir'],payload['path'],payload.get('verify',True))
+    if action=='model_directory':
+        directory=Path(config['model_path']) if payload['input_kind']=='base' else Path(config['output_root'])/run_id/config['output_subdir']
+        if payload['input_kind']=='adapter' and payload['path']:
+            directory=safe_child(directory,payload['path'])
+        entry=payload.get('entry','config.json' if payload['input_kind']=='base' else 'adapter_config.json')
+        if entry not in ('config.json','adapter_config.json'):raise ValueError('模型入口无效')
+        return dict(path=str(directory),files=model_directory(directory,entry))
+    if action=='base_model_file':
+        file=artifact_file(Path(config['model_path']),payload['path'])
+        return dict(path=str(file),bytes=file.stat().st_size,sha256=file_hash(file))
     path,config_hash=run_directory(payload)
     with run_lock(path):
+        if action in ('merge_cache_probe','merge_cache_publish'):
+            return merge_cache(dict(payload,model_cache_root='/ai/chen/training/model-input-cache'),path)
+        if action=='receive_checkpoint':
+            target=Path(config['model_path'])
+            if (not cpu_export(config) or target.parent!=path or target.name not in ('checkpoint.pt','checkpoint.pth')
+                    or (path/'.canceled').exists()):
+                raise ValueError('检查点接收路径无效或任务已取消')
+            partial=target.with_suffix(target.suffix+'.part')
+            if (partial.is_symlink() or not partial.is_file() or partial.stat().st_size!=payload['size']
+                    or file_hash(partial)!=payload['sha256']):
+                raise ValueError('检查点传输大小或 SHA256 校验失败')
+            partial.replace(target)
+            return dict(ok=True)
         if action=='pack_onnx':
             archive=path/'onnx.zip'
             if archive.is_symlink():raise ValueError('ONNX包不能是符号链接')
@@ -434,7 +619,11 @@ def execute(payload):
             archive=Path(cached_snapshot(payload,path,publish=True)['path'])
             dataset=path/'dataset'
             if not (path/'.dataset-ready').exists():
-                unpack_snapshot(archive,dataset,config['kind'])
+                kind=config['kind']
+                if kind=='custom':
+                    format=config['trainer']['dataset_format']
+                    kind={'yolo':'yolo26','coco':'rfdetr_medium'}.get(format,'swift_sft')
+                unpack_snapshot(archive,dataset,kind)
                 (path/'.dataset-ready').write_text(payload['snapshot_hash'])
             elif (path/'.dataset-ready').read_text()!=payload['snapshot_hash']:raise ValueError('冻结包版本不一致')
             return dict(ok=True)
@@ -458,17 +647,21 @@ def execute(payload):
         for name in ('dataset_path','model_path','adapter_path'):
             value=config.get(name)
             if value and (not config.get('snapshot_id') or name in ('model_path','adapter_path')):
-                source=Path(value);source=source if source.is_dir() else source.parent
+                source=Path(value)
+                if config['kind']!='custom' and not source.is_dir():source=source.parent
                 mounts[str(source)]=dict(source=str(source),target=str(source),read_only=True)
         val=config['parameters'].get('val_dataset')
         if val:mounts[str(Path(val).parent)]=dict(source=str(Path(val).parent),target=str(Path(val).parent),read_only=True)
         for mount in config['mounts']:mounts[mount['target']]=mount
         args=['create','--pull=never','--name',container_name(run_id),'--label','platform.training.id='+run_id,
-            '--label','platform.training.config='+config_hash,'--gpus','"device='+','.join(config['gpu_uuids'])+'"',
+            '--label','platform.training.config='+config_hash,
             '--shm-size',str(config['shm_size_gb'])+'g','--network','none','--workdir','/output','--entrypoint','python3']
+        if not cpu_export(config):args+=['--gpus','"device='+','.join(config['gpu_uuids'])+'"']
         for mount in mounts.values():
             args+=['--mount','type=bind,src='+mount['source']+',dst='+mount['target']+(',readonly' if mount['read_only'] else '')]
-        for key,value in config['environment'].items():args+=['--env',key+'='+value]
+        environment=dict(config['environment'])
+        if cpu_export(config):environment.update(CUDA_VISIBLE_DEVICES='',NVIDIA_VISIBLE_DEVICES='void')
+        for key,value in environment.items():args+=['--env',key+'='+value]
         args+=[checked['image_digest'],'-u','/output/train.py']
         docker(args);docker(['start',container_name(run_id)])
         return dict(status='running',image_digest=checked['image_digest'])

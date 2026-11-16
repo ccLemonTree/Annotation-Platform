@@ -1,8 +1,28 @@
 from datetime import datetime
+from io import BytesIO
 from uuid import UUID, uuid4
 import pytest
+from PIL import Image
 from sqlalchemy import select
 from models import Asset, Project, Tenant
+from services.storage import get_storage
+
+
+@pytest.mark.asyncio
+async def test_annotation_image_preview_keeps_original_bytes(client,auth_headers,test_asset):
+    buffer=BytesIO()
+    Image.new('RGB',(2400,1200),'blue').save(buffer,'JPEG')
+    original=buffer.getvalue()
+    await get_storage().save_file(BytesIO(original),test_asset.blob_path)
+
+    url=f'/api/assets/{test_asset.id}/content'
+    preview=client.get(url,headers=auth_headers,params={'preview':'true'})
+    assert preview.status_code==200
+    assert preview.headers['content-type']=='image/jpeg'
+    with Image.open(BytesIO(preview.content)) as picture:
+        assert picture.size==(1280,640)
+    assert len(preview.content)<len(original)
+    assert client.get(url,headers=auth_headers).content==original
 
 
 @pytest.mark.asyncio
@@ -38,6 +58,54 @@ async def test_review_filter_latest_versions_intersects_labels_and_preserves_nav
     assert empty==dict(position=0,total=0,previous_id=None,next_id=None,matched=False)
     for endpoint,extra in [('/api/assets',{'project_id':str(test_project.id)}),('/api/assets/selection',{'project_id':str(test_project.id)}),(url,{})]:
         assert client.get(endpoint,headers=auth_headers,params={**extra,'review_status':'invalid'}).status_code==422
+
+
+@pytest.mark.asyncio
+async def test_crop_label_filter_uses_crop_metadata_for_annotation_navigation(client,auth_headers,test_db,test_project):
+    from models import Annotation,ProjectMember,User
+    from services.auth import create_access_token
+
+    test_project.task_type='caption'
+    ids=[UUID(f'cccccccc-0000-4000-8000-{i+1:012x}') for i in range(5)]
+    for id,label,source,status in zip(ids,['car','sam3_Car','truck','car','car'],
+            ['model_crop','model_crop','model_crop','upload','model_crop'],
+            ['pending','pending','pending','pending','approved']):
+        test_db.add(Asset(id=id,project_id=test_project.id,original_name=f'{id}.jpg',blob_path='fixture.jpg',
+            content_hash=str(id),file_size=1,source_type=source,created_at=datetime(2026,11,12),
+            device_info={'crop':{'box':{'label':label}}}))
+        await test_db.flush()
+        test_db.add(Annotation(asset_id=id,version=1,is_latest=True,review_status=status,
+            annotation_data={'description':'裁剪图'}))
+    await test_db.commit()
+
+    filters=dict(crop_label='car',review_status='pending',annotation_kind='image')
+    listing=client.get('/api/assets',headers=auth_headers,
+        params={**filters,'project_id':str(test_project.id),'scope':'annotation','page':2,'page_size':1})
+    assert listing.status_code==200 and listing.headers.get('X-Asset-Crop-Label-Filter')=='1'
+    assert listing.json()['total']==2 and listing.json()['items'][0]['id']==str(ids[0])
+    neighbors=client.get(f'/api/assets/{ids[1]}/neighbors',headers=auth_headers,params=filters)
+    assert neighbors.headers.get('X-Asset-Crop-Label-Filter')=='1'
+    assert neighbors.json()==dict(position=1,total=2,previous_id=None,next_id=str(ids[0]),matched=True)
+    outside=client.get(f'/api/assets/{ids[2]}/neighbors',headers=auth_headers,params={'crop_label':'sam3_car'})
+    assert outside.json()==dict(position=0,total=3,previous_id=str(ids[4]),next_id=str(ids[1]),matched=False)
+    combined={**filters,'crop_label':['car','truck','sam3_car']}
+    listing=client.get('/api/assets',headers=auth_headers,
+        params={**combined,'project_id':str(test_project.id),'scope':'annotation'})
+    assert [row['id'] for row in listing.json()['items']]==[str(id) for id in ids[2::-1]]
+    neighbors=client.get(f'/api/assets/{ids[2]}/neighbors',headers=auth_headers,params=combined)
+    assert neighbors.json()==dict(position=1,total=3,previous_id=None,next_id=str(ids[1]),matched=True)
+    assert client.get(f'/api/assets/{ids[2]}/neighbors',headers=auth_headers,
+        params={**combined,'crop_label':['car','']}).status_code==422
+    member=User(tenant_id=test_project.tenant_id,username='crop-reviewer',email='crop-reviewer@fixture.test',
+        role='user',is_active=True,password_hash='unused')
+    test_db.add(member)
+    await test_db.commit()
+    headers={'Authorization':'Bearer '+create_access_token({'user_id':member.id})}
+    path=f'/api/projects/{test_project.id}/crop-labels'
+    assert client.get(path,headers=headers).status_code==404
+    test_db.add(ProjectMember(project_id=test_project.id,user_id=member.id))
+    await test_db.commit()
+    assert client.get(path,headers=headers).json()==['car','sam3_Car','truck']
 
 
 @pytest.mark.asyncio
@@ -159,3 +227,49 @@ async def test_tied_asset_paging_and_neighbors(client,auth_headers,test_db,test_
     assert client.get(f'/api/assets/{actual[0]}/neighbors').status_code==401
     for id in (str(uuid4()),foreign_id):
         assert client.get(f'/api/assets/{id}/neighbors',headers=auth_headers).status_code==404
+
+
+@pytest.mark.asyncio
+async def test_project_collection_filter_keeps_list_and_navigation_in_one_group(client,auth_headers,test_db,test_project):
+    from models.image import LibraryImage
+    from models.image_collection import ImageCollection,ImageCollectionMember
+    first=ImageCollection(tenant_id=test_project.tenant_id,name='第一批')
+    second=ImageCollection(tenant_id=test_project.tenant_id,name='第二批')
+    unused=ImageCollection(tenant_id=test_project.tenant_id,name='其他项目')
+    test_db.add_all([first,second,unused]);await test_db.flush()
+    test_db.add(Tenant(id=99,tenant_name='other-collection-tenant'));await test_db.flush()
+    foreign=ImageCollection(tenant_id=99,name='不可见图片集');test_db.add(foreign);await test_db.flush()
+    images=[LibraryImage(tenant_id=test_project.tenant_id,original_name=f'{i}.jpg',blob_path=f'{i}.jpg',
+        content_hash=f'collection-{i}',file_size=1,source_type='upload') for i in range(3)]
+    test_db.add_all(images);await test_db.flush()
+    assets=[Asset(id=UUID(f'dddddddd-0000-4000-8000-{[1,3,2][i]:012x}'),project_id=test_project.id,image_id=image.id,original_name=image.original_name,
+        blob_path=image.blob_path,content_hash=image.content_hash,file_size=1,source_type='upload',
+        created_at=datetime(2026,10,15)) for i,image in enumerate(images)]
+    test_db.add_all(assets)
+    test_db.add_all([ImageCollectionMember(collection_id=first.id,image_id=images[0].id),
+        ImageCollectionMember(collection_id=first.id,image_id=images[1].id),
+        ImageCollectionMember(collection_id=second.id,image_id=images[1].id),
+        ImageCollectionMember(collection_id=second.id,image_id=images[2].id),
+        ImageCollectionMember(collection_id=foreign.id,image_id=images[0].id)])
+    await test_db.commit()
+    groups=client.get('/api/assets/collections',headers=auth_headers,params={'project_id':str(test_project.id)})
+    assert groups.status_code==200,groups.text
+    assert {row['id'] for row in groups.json()}=={str(first.id),str(second.id)}
+    params={'project_id':str(test_project.id),'scope':'annotation','collection_id':str(first.id),'page_size':1}
+    page=client.get('/api/assets',headers=auth_headers,params=params)
+    assert page.status_code==200,page.text
+    assert page.headers['X-Asset-Collection-Filter']=='1' and page.json()['total']==2
+    assert page.json()['items'][0]['id']==str(assets[1].id)
+    assert client.get('/api/assets',headers=auth_headers,params={**params,'page':2}).json()['items'][0]['id']==str(assets[0].id)
+    neighbor=client.get(f'/api/assets/{assets[1].id}/neighbors',headers=auth_headers,params={'collection_id':str(first.id)})
+    assert neighbor.headers['X-Asset-Collection-Filter']=='1'
+    assert neighbor.json()==dict(position=1,total=2,previous_id=None,next_id=str(assets[0].id),matched=True)
+    outside=client.get(f'/api/assets/{assets[2].id}/neighbors',headers=auth_headers,params={'collection_id':str(first.id)})
+    assert outside.json()==dict(position=0,total=2,previous_id=str(assets[1].id),next_id=str(assets[0].id),matched=False)
+    assert client.get('/api/assets',headers=auth_headers,params={**params,'collection_id':str(foreign.id)}).json()['total']==0
+    selection=client.get('/api/assets/selection',headers=auth_headers,params=params)
+    assert selection.status_code==200,selection.text
+    assert selection.headers['X-Asset-Collection-Filter']=='1'
+    assert selection.json()['asset_ids']==[str(assets[1].id),str(assets[0].id)]
+    assert client.get('/api/assets/selection',headers=auth_headers,params={**params,'collection_id':str(foreign.id)}).json()['asset_ids']==[]
+    assert client.get('/api/assets/collections',headers=auth_headers,params={'project_id':str(uuid4())}).status_code==404

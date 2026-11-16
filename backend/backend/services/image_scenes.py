@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from io import BytesIO
 import httpx
 from PIL import Image
-from sqlalchemy import select,update
+from sqlalchemy import select,update,func
 from models import LibraryImage,ImageCollection
 from schemas.image_ingest import ImageIngestConfig
 from uuid import UUID
@@ -15,9 +15,31 @@ from config.settings import settings
 logger=logging.getLogger(__name__)
 _worker=None
 
+async def infer_scene_labels(content,config,client):
+    if not config.classification_enabled:raise ValueError('场景分类已关闭，请开启后重试')
+    with Image.open(BytesIO(content)) as picture:
+        picture=picture.convert('RGB');picture.thumbnail((1024,1024))
+        output=BytesIO();picture.save(output,format='JPEG',quality=85)
+    prompt=config.scene_prompt+'\n场景大类及具体场景：'+json.dumps([group.model_dump() for group in config.scene_groups],ensure_ascii=False)+'\n系统候选名称：'+json.dumps(config.scenes,ensure_ascii=False)+\
+        '\n输出约束：只返回JSON对象 {"labels":["候选名称"]}；labels只能使用候选名称，没有匹配时为空数组。'
+    headers={'Authorization':'Bearer '+settings.QWEN_API_KEY} if settings.QWEN_API_KEY else {}
+    response=await client.post(config.base_url+'/chat/completions',headers=headers,json={
+        'model':config.model,'messages':[{'role':'user','content':[{'type':'text','text':prompt},
+            {'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(output.getvalue()).decode()}}]}],
+        'temperature':0,'max_tokens':512,'response_format':{'type':'json_object'},
+        'chat_template_kwargs':{'enable_thinking':False}})
+    response.raise_for_status()
+    result=response.json()['choices'][0]['message']['content']
+    if not isinstance(result,str) or len(result)>16384:raise ValueError('模型返回不是有效的场景JSON')
+    labels=json.loads(result)['labels']
+    if not isinstance(labels,list) or any(not isinstance(label,str) or label not in config.scenes for label in labels):
+        raise ValueError('模型返回了自定义场景名单之外的标签')
+    return list(dict.fromkeys(labels))
+
 async def classify_one(sessions,client):
     async with sessions() as db:
-        image=await db.scalar(select(LibraryImage).where(LibraryImage.scene_status=='pending')
+        image=await db.scalar(select(LibraryImage).where(LibraryImage.scene_status=='pending',
+            func.coalesce(LibraryImage.scene_metadata['basis'].as_string(),'')!='device_name')
             .order_by(LibraryImage.created_at,LibraryImage.id).with_for_update(skip_locked=True).limit(1))
         if image is None:return False
         collection_id=UUID(image.scene_config['collection_id']) if image.scene_config else None
@@ -29,26 +51,8 @@ async def classify_one(sessions,client):
         await db.commit()
     labels=None;error=None
     try:
-        if not config.classification_enabled:raise ValueError('场景分类已关闭，请开启后重试')
         with await get_storage().get_file(path) as file:
-            with Image.open(file) as picture:
-                picture=picture.convert('RGB');picture.thumbnail((1024,1024))
-                output=BytesIO();picture.save(output,format='JPEG',quality=85)
-        prompt=config.scene_prompt+'\n系统候选名称：'+json.dumps(config.scenes,ensure_ascii=False)+\
-            '\n输出约束：只返回JSON对象 {"labels":["候选名称"]}；labels只能使用候选名称，没有匹配时为空数组。'
-        headers={'Authorization':'Bearer '+settings.QWEN_API_KEY} if settings.QWEN_API_KEY else {}
-        response=await client.post(config.base_url+'/chat/completions',headers=headers,json={
-            'model':config.model,'messages':[{'role':'user','content':[{'type':'text','text':prompt},
-                {'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+base64.b64encode(output.getvalue()).decode()}}]}],
-            'temperature':0,'max_tokens':512,'response_format':{'type':'json_object'},
-            'chat_template_kwargs':{'enable_thinking':False}})
-        response.raise_for_status()
-        content=response.json()['choices'][0]['message']['content']
-        if not isinstance(content,str) or len(content)>16384:raise ValueError('模型返回不是有效的场景JSON')
-        labels=json.loads(content)['labels']
-        if not isinstance(labels,list) or any(not isinstance(label,str) or label not in config.scenes for label in labels):
-            raise ValueError('模型返回了自定义场景名单之外的标签')
-        labels=list(dict.fromkeys(labels))
+            labels=await infer_scene_labels(file.read(),config,client)
     except httpx.TimeoutException:error='场景分类超时，图片已保留，可重试'
     except httpx.HTTPError:error='模型服务请求失败，图片已保留，请检查服务后重试'
     except (OSError,ValueError,KeyError,TypeError,IndexError):error='模型结果无效或图片读取失败，图片已保留，可重试'

@@ -4,7 +4,7 @@ import type { FormInstance } from 'antd';
 import { getTrainingArtifacts, getTrainingRuns, getTrainingServers, type TrainingRun, type TrainingArtifact } from '../../api/training';
 import { getGpuResources, type GpuServer, type GpuResource } from '../../api/gpuResources';
 
-export default function CheckpointFields({ form, busy, preview = false, taskType='detection' }: { form: FormInstance; busy: boolean; preview?: boolean; taskType?:'detection'|'caption'|'embedding' }) {
+export default function CheckpointFields({ form, busy, preview = false, taskType='detection',projectId }: { form: FormInstance; busy: boolean; preview?: boolean; taskType?:'detection'|'caption'|'embedding';projectId?:string }) {
   const multimodal=taskType!=='detection';
   const [runs, setRuns] = useState<TrainingRun[]>([]), [servers, setServers] = useState<GpuServer[]>([]);
   const [artifacts, setArtifacts] = useState<TrainingArtifact[]>([]), [loading, setLoading] = useState(false);
@@ -23,13 +23,13 @@ export default function CheckpointFields({ form, busy, preview = false, taskType
     (async () => {
       const all: TrainingRun[] = [];
       for (let page = 1; ; page++) {
-        const data = await getTrainingRuns(page); if (!active) return;
+        const data = await getTrainingRuns(page,undefined,projectId); if (!active) return;
         all.push(...data.items); if (all.length >= data.total || !data.items.length) break;
       }
       setRuns(all.filter(run => (preview ? run.status !== 'draft' : ['completed', 'failed', 'canceled'].includes(run.status)) && (multimodal?['swift_sft','wemm'].includes(run.kind)&&(taskType==='embedding')===(run.kind==='wemm'||run.config.parameters.task_type==='embedding'):['yolo26', 'rfdetr_medium', 'rfdetr_2xlarge', 'dinov3_vits16_ltdetr'].includes(run.kind))));
     })().catch(() => { if (active) setError('训练任务读取失败，仍可填写服务器已有权重路径'); });
     return () => { active = false; requestState.revision++; };
-  }, [preview,multimodal,taskType]);
+  }, [preview,multimodal,taskType,projectId]);
   useEffect(() => {
     if (source !== 'training' || !trainingId) return;
     let active = true;
@@ -57,9 +57,10 @@ export default function CheckpointFields({ form, busy, preview = false, taskType
     <Alert type="info" showIcon title="直接验证训练权重，无需部署服务" description="独立容器加载权重并生成预测；默认CPU，可读取显卡后选择空闲GPU。权重和镜像固定哈希，不启动训练。" style={{ marginBottom: 16 }} />
     {error && <Alert type="warning" showIcon title={error} style={{ marginBottom: 16 }} />}
     <Form.Item name="weight_source" label="权重来源"><Select aria-label="权重来源" options={[{ value: 'training', label: '平台训练任务的权重产物' }, { value: 'remote', label: '服务器已有权重路径' }]} onChange={() => { form.setFieldValue(['checkpoint', 'training_run_id'], undefined); form.setFieldValue(['checkpoint', 'weight_path'], undefined); clearGpu(); }} /></Form.Item>
+    {runs.some(run=>run.config.execution_backend==='k8s')&&<Alert type="info" title="K8s训练权重暂不支持直接验证；请先接入模型服务，再选择模型服务测试或评估。" style={{marginBottom:16}}/>}
     {source === 'training' && <>
       <Form.Item name={['checkpoint', 'training_run_id']} label="训练任务" rules={[{ required: true, message: '请选择检测训练任务' }]} extra={preview ? '支持运行中任务已保存的 checkpoint；尚未保存权重时，可稍后刷新权重列表。' : '运行中的训练不在候选中；已结束任务仍须实际存在权重产物。'}>
-        <Select aria-label="权重训练任务" showSearch optionFilterProp="label" options={runs.map(run => ({ value: run.id, label: `${run.name} · ${run.kind} · ${statusLabels[run.status] || run.status}` }))} onChange={id => {
+        <Select aria-label="权重训练任务" showSearch optionFilterProp="label" options={runs.map(run => ({ value: run.id, disabled:run.config.execution_backend==='k8s', label: `${run.name} · ${run.kind} · ${statusLabels[run.status] || run.status}` }))} onChange={id => {
           const run = runs.find(item => item.id === id); if (!run) return;
           setLoading(true); setArtifacts([]); setError('');
           let names = run.config.selected_labels || run.source.labels || [];

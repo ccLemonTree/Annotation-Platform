@@ -41,7 +41,7 @@ async(page)=>{
     await page.setViewportSize({width:1440,height:1000});await page.goto('http://localhost:3000/assets');await choose();
     if(await dialog().getByLabel('上传图片文件夹',{exact:true}).getAttribute('webkitdirectory')===null)throw Error('Folder picker missing');
     checks.push('folder picker and ZIP/TAR selection available');
-    await start().click();await dialog().getByText(/已重试.*继续上传/).waitFor();
+    await start().click();await dialog().getByRole('alert').filter({hasText:/已重试.*继续上传/}).waitFor();
     if(parts.join(',')!=='0,1,1,1')throw Error('Interruption fixture failed');
     checks.push('interrupted transfer retains uploaded first part');
     await page.reload();await choose();await start().click();await dialog().getByText(/新增 1，重复 1/).waitFor();

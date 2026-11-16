@@ -17,16 +17,25 @@ from api import (
 
 api_router = APIRouter()
 
+from api.attribute_template_routes import router as attribute_template_router
+api_router.include_router(attribute_template_router,prefix='/attribute-templates',tags=['属性模板'])
+from api.workflow_template_routes import router as workflow_template_router
+api_router.include_router(workflow_template_router,prefix='/workflow-templates',tags=['工作流模板'])
+
 from api.model_preview_routes import router as model_preview_router
 api_router.include_router(model_preview_router,prefix='/model-previews',tags=['模型效果预览'])
 from api.project_work_routes import router as project_work_router
 api_router.include_router(project_work_router,prefix='/projects',tags=['项目标注处理'])
+from api.project_ingest_routes import router as project_ingest_router
+api_router.include_router(project_ingest_router,prefix='/projects',tags=['外部图片接入'])
 from api.gpu_terminal_routes import router as gpu_terminal_router
 api_router.include_router(gpu_terminal_router, prefix='/gpu-terminal', tags=['SSH调试'])
 from api.training_run_routes import router as training_run_router
 api_router.include_router(training_run_router, prefix='/training', tags=['训练管理'])
 from api.model_deployment_routes import router as model_deployment_router
 api_router.include_router(model_deployment_router, prefix='/model-deployments', tags=['模型下发'])
+from api.model_repository_routes import router as model_repository_router
+api_router.include_router(model_repository_router, prefix='/model-repository', tags=['模型仓库'])
 from api.validation_routes import router as validation_router
 api_router.include_router(validation_router, prefix='/validation', tags=['模型验证集'])
 from api.image_semantic_routes import router as image_semantic_router

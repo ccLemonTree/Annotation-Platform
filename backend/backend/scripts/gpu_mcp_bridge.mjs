@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { isIP } from 'node:net';
+import { connectionEnvironment } from './ssh_connection_env.mjs';
 
 const [entry, server] = process.argv.slice(2);
 let client, transport, timer;
@@ -21,15 +21,8 @@ try {
     const input = readFileSync(0, 'utf8');
     if (input.length > 16384) throw new Error('Invalid connection');
     const connection = JSON.parse(input);
-    if (server !== 'platform_gpu' || typeof connection.host !== 'string' || !isIP(connection.host) || connection.host.includes('%')
-      || !Number.isInteger(connection.port) || connection.port < 1 || connection.port > 65535
-      || typeof connection.username !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(connection.username)
-      || typeof connection.password !== 'string' || !connection.password.length || connection.password.length > 1024 || connection.password.includes('\0')) throw new Error('Invalid connection');
-    // The entry is a file, so these children cannot exist: no global SSH config is loaded.
-    environment = { SSH_ENV_PATH: resolve(entry, 'no-platform-env'), SSH_CONFIG_PATH: resolve(entry, 'no-platform-config'),
-      SSH_SERVER_PLATFORM_GPU_HOST: connection.host, SSH_SERVER_PLATFORM_GPU_PORT: String(connection.port),
-      SSH_SERVER_PLATFORM_GPU_USER: connection.username, SSH_SERVER_PLATFORM_GPU_PASSWORD: connection.password,
-      SSH_SERVER_PLATFORM_GPU_DEFAULT_DIR: '/', SSH_SERVER_PLATFORM_GPU_PLATFORM: 'linux', SSH_SERVER_PLATFORM_GPU_MODE: 'readonly' };
+    if (server !== 'platform_gpu') throw new Error('Invalid connection');
+    environment = connectionEnvironment(entry,server,connection,'readonly');
   }
   environment.MCP_SSH_MAX_OUTPUT_LENGTH = '1048576';
   environment.SSH_LOG_LEVEL = 'ERROR';

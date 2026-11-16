@@ -49,6 +49,29 @@ def test_crop_expansion_and_confidence_gate():
 
 
 @pytest.mark.asyncio
+async def test_review_queue_identifies_project_and_image_without_job_page_join(client, auth_headers, ready, test_db, test_project, test_asset):
+    from uuid import UUID
+    from models.automation import AutomationItem
+    job = client.post('/api/automation/jobs', headers=auth_headers, json=ready).json()
+    item = await test_db.scalar(select(AutomationItem).where(AutomationItem.job_id == UUID(job['id'])))
+    item.status = 'needs_review'
+    await test_db.commit()
+    response = client.get('/api/automation/review-queue', headers=auth_headers)
+    assert response.status_code == 200
+    row = response.json()['items'][0]
+    assert row['project_id'] == str(test_project.id)
+    assert row['project_name'] == test_project.project_name
+    assert row['asset_name'] == test_asset.original_name
+    assert row['job_kind'] == 'preannotate'
+    await test_db.delete(test_asset)
+    await test_db.commit()
+    deleted = client.get('/api/automation/review-queue', headers=auth_headers).json()
+    assert deleted['total'] == 1
+    assert deleted['items'][0]['project_name'] == test_project.project_name
+    assert deleted['items'][0]['asset_name'] is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('selected',[['bike'],[]])
 @pytest.mark.parametrize('outside_verdict',['pass','fail'])
 async def test_review_uses_selected_completeness_scope_without_dropping_existing_boxes(client,auth_headers,ready,test_engine,test_db,test_project,test_asset,monkeypatch,selected,outside_verdict):
@@ -182,6 +205,27 @@ async def test_worker_saves_provenance_and_auto_passes_only_strict_positive(clie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('schema',[None,{'labels':[]}])
+async def test_preannotation_registers_model_classes_in_empty_project(client,auth_headers,ready,test_engine,test_db,test_project,monkeypatch,schema):
+    from services import automation
+    from models import Annotation, Project
+    test_project.label_schema=schema
+    await test_db.commit()
+    box=dict(x=1,y=2,width=10,height=20,label='truck',score=.95)
+    async def detect(*args,**kwargs):return dict(boxes=[box],warnings=[])
+    monkeypatch.setattr(automation,'infer',detect)
+    response=client.post('/api/automation/jobs',headers=auth_headers,json={**ready,'config':{'auto_review':False}})
+    assert response.status_code==201,response.text
+    assert await automation.process_one(async_sessionmaker(test_engine,expire_on_commit=False,autoflush=False))
+    current=client.get('/api/automation/jobs/'+response.json()['id'],headers=auth_headers).json()
+    assert current['needs_review_count']==1 and current['label_schema']['labels']==['truck']
+    async with async_sessionmaker(test_engine)() as db:
+        annotation=await db.scalar(select(Annotation))
+        assert annotation.annotation_data['boxes']==[box] and annotation.review_status=='pending'
+        assert (await db.get(Project,test_project.id)).label_schema['labels']==['truck']
+
+
+@pytest.mark.asyncio
 async def test_negative_always_requires_admin_and_keeps_evidence(client,auth_headers,ready,test_engine,monkeypatch):
     from services import automation
     async def detect(*args,**kwargs):return dict(boxes=[],warnings=[])
@@ -240,7 +284,11 @@ async def test_qwen_unavailable_goes_to_admin_and_nonadmin_cannot_approve_negati
     await automation.process_one(async_sessionmaker(test_engine,expire_on_commit=False))
     item=client.get('/api/automation/review-queue',headers=auth_headers).json()['items'][0]
     assert item['status']=='needs_review' and '未能完成判断' in item['evidence']['reason']
-    test_user.role='annotator';await test_db.commit()
+    from models import ProjectMember
+    from uuid import UUID
+    test_user.role='annotator'
+    test_db.add(ProjectMember(project_id=UUID(item['project_id']),user_id=test_user.id))
+    await test_db.commit()
     token=create_access_token({'user_id':test_user.id,'tenant_id':test_user.tenant_id})
     headers={'Authorization':'Bearer '+token}
     assert client.post('/api/annotations/'+item['annotation_id']+'/review',headers=headers,json={'approved':True}).status_code==403

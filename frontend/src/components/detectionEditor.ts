@@ -1,9 +1,10 @@
-export type Box = { x: number; y: number; width: number; height: number; label: string };
-export type Draft = { boxes: Box[]; negative: boolean };
+export type Box = { x: number; y: number; width: number; height: number; label: string; yolo_class_id?: number };
+export type Draft = { boxes: Box[]; negative: boolean;description?:string };
 export type DraftHistory = { past: Draft[]; present: Draft; future: Draft[] };
 export type View = { x: number; y: number; width: number; height: number };
 export const draftHistory = (present: Draft): DraftHistory => ({ past: [], present, future: [] });
 export function changeDraft(history: DraftHistory, next: Draft): DraftHistory {
+  if(next.description===undefined&&history.present.description!==undefined)next={...next,description:history.present.description};
   if (JSON.stringify(history.present) === JSON.stringify(next)) return history;
   return { past: [...history.past, history.present].slice(-100), present: next, future: [] };
 }
@@ -36,4 +37,13 @@ export function zoomView(view: View, point: { x: number; y: number }, factor: nu
   const scale = Math.max(.2, Math.min(8, width / view.width * factor));
   const w = width / scale, h = height / scale;
   return { x: point.x - (point.x - view.x) * w / view.width, y: point.y - (point.y - view.y) * h / view.height, width: w, height: h };
+}
+
+export function labelColor(label: string, labels: string[] = []) {
+  const index = labels.indexOf(label);
+  if (index >= 0) return `hsl(${index * 137.508 % 360} 90% 60%)`;
+  let hash = 2166136261;
+  for (const char of label) hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
+  // shortcut: 32-bit hashes can collide; use project-level color assignments if collisions occur.
+  return `hsl(${(hash >>> 0) / 4294967296 * 360} 90% 60%)`;
 }

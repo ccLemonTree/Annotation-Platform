@@ -29,7 +29,7 @@ def get_all_platforms_from_db():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # 1. 获取所有平台
-            cursor.execute("SELECT id, platform_name, plat_id FROM platforms")
+            cursor.execute("SELECT id, platform_name, plat_id FROM platforms WHERE state <> 'deleted'")
             platforms = cursor.fetchall()
 
             for plat in platforms:
@@ -86,6 +86,7 @@ def save_platform_config_to_db(data):
                     INSERT INTO platforms (platform_name, plat_id)
                     VALUES (%s, %s)
                     ON CONFLICT (plat_id) DO UPDATE SET platform_name = EXCLUDED.platform_name
+                    WHERE platforms.state <> 'deleted' AND NOT platforms.managed
                 """
                 try:
                     cursor.execute(insert_plat_sql, (plat_name, plat_id))
@@ -109,6 +110,8 @@ def save_platform_config_to_db(data):
                     cursor.execute(insert_alarm_sql, (plat_id, a_name, str(a_code)))
 
             conn.commit()
+            from integrations.smarteye.api.platform_enum import refresh_local_cache
+            refresh_local_cache(None)
             logger.info("✅ 数据库配置更新成功")
 
     except Exception as e:
@@ -190,6 +193,7 @@ def sync_remote_platforms(remote_items):
             password = EXCLUDED.password,
             login_url = EXCLUDED.login_url,
             state = EXCLUDED.state
+        WHERE platforms.state <> 'deleted' AND NOT platforms.managed
     """
 
     count = 0
@@ -220,6 +224,8 @@ def sync_remote_platforms(remote_items):
                     logger.warning(f"跳过平台 [{name}]: {row_err}")
 
         conn.commit()
+        from integrations.smarteye.api.platform_enum import refresh_local_cache
+        refresh_local_cache(None)
         logger.info(f"✅ 同步 {count} 个平台到数据库")
         return count
     except Exception as e:
@@ -245,7 +251,7 @@ def get_smart_search_platforms(only_active=True):
             sql = """
                 SELECT plat_id, platform_name, base_url, username, password, login_url, state
                 FROM platforms
-                WHERE base_url IS NOT NULL AND base_url != ''
+                WHERE base_url IS NOT NULL AND base_url != '' AND state <> 'deleted'
             """
             if only_active:
                 sql += " AND state = '1'"
@@ -259,6 +265,44 @@ def get_smart_search_platforms(only_active=True):
     finally:
         if conn:
             conn.close()
+
+
+def list_platform_configs():
+    """Management includes unconfigured platforms; credentials stay server-side."""
+    conn = get_db_connection()
+    if not conn:
+        raise RuntimeError('平台配置数据库不可用')
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SELECT plat_id, platform_name, base_url, username, password, login_url, state FROM platforms WHERE state <> 'deleted' ORDER BY platform_name")
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def write_platform_config(value, create=False):
+    conn = get_db_connection()
+    if not conn:
+        raise RuntimeError('平台配置数据库不可用')
+    keys = ('plat_id', 'platform_name', 'base_url', 'username', 'password', 'login_url', 'state')
+    sql = "INSERT INTO platforms (plat_id, platform_name, base_url, username, password, login_url, state, managed) VALUES (%s,%s,%s,%s,%s,%s,%s,true)"
+    if not create:
+        sql = "UPDATE platforms SET platform_name=%s, base_url=%s, username=%s, password=%s, login_url=%s, state=%s, managed=true WHERE plat_id=%s AND state <> 'deleted'"
+        keys = (*keys[1:], keys[0])
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, tuple(value.get(key, '') for key in keys))
+        conn.commit()
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        raise ValueError('平台ID或名称已存在')
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    from integrations.smarteye.api.platform_enum import refresh_local_cache
+    refresh_local_cache(None)
 
 
 def ensure_ai_image_tables():

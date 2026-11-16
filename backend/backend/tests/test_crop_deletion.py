@@ -1,10 +1,29 @@
 """Deleting a project crop removes live annotations/candidates, preserving its source."""
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from models import Asset,Annotation,Project
 from models.project_work import ProjectWorkJob,ProjectWorkItem,MatchQuery
 from tests.test_project_work import work_env
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+
+@pytest.mark.asyncio
+async def test_crop_label_choices_exclude_deleted_crops_and_project_history(client,auth_headers,work_env):
+    s=work_env
+    s.project.label_schema={'labels':['sam3_person','sam3_truck','person','car']}
+    for i,label in enumerate(['person','person','sam3_car','sam3_truck']):
+        s.db.add(Asset(project_id=s.project.id,original_name=f'crop-{i}.png',blob_path=s.asset.blob_path,
+            content_hash=f'labels-{i}',file_size=1,width=10,height=10,source_type='model_crop',
+            device_info={'crop':{'box':{'label':label}}}))
+    s.asset.device_info={'crop':{'box':{'label':'sam3_boat'}}}
+    await s.db.commit()
+    url=f'/api/projects/{s.project.id}/crop-labels'
+    assert client.get(url,headers=auth_headers).json()==['person','sam3_car','sam3_truck']
+    crop=await s.db.scalar(select(Asset).where(Asset.project_id==s.project.id,Asset.content_hash=='labels-3'))
+    crop_id=crop.id;await s.db.commit()
+    assert client.delete(f'/api/assets/{crop_id}',headers=auth_headers).status_code==204
+    assert client.get(url,headers=auth_headers).json()==['person','sam3_car']
+    assert client.get(url).status_code==401
 
 
 @pytest.mark.asyncio
@@ -65,6 +84,34 @@ async def test_batch_crop_delete_updates_counts_once_and_preserves_source(client
     assert client.get('/api/projects/'+str(s.project.id)+'/matches',headers=auth_headers).json()[0]['hits']==[]
     assert client.get('/api/annotations',headers=auth_headers,params={'project_id':str(s.project.id)}).json()['total']==0
     assert await get_storage().file_exists(s.asset.blob_path)
+
+
+@pytest.mark.asyncio
+async def test_bulk_crop_delete_over_driver_limit(client,auth_headers,work_env,test_engine):
+    s=work_env
+    count=66000
+    ids=[UUID('a'+uuid4().hex[1:]) for _ in range(count)]
+    await s.db.execute(Asset.__table__.insert(),[
+        dict(id=id,project_id=s.project.id,original_name='crop.png',blob_path=s.asset.blob_path,
+            content_hash=f'bulk-{i}',file_size=1,source_type='model_crop')
+        for i,id in enumerate(ids)])
+    s.project.total_assets=count+1
+    await s.db.commit()
+
+    def enforce_driver_limit(conn,cursor,statement,parameters,context,executemany):
+        if not executemany:
+            assert len(parameters)<=32767,'bulk deletion exceeds asyncpg argument limit'
+
+    event.listen(test_engine.sync_engine,'before_cursor_execute',enforce_driver_limit)
+    try:
+        response=client.post('/api/batch/assets/delete',headers=auth_headers,json=[str(id) for id in ids])
+    finally:
+        event.remove(test_engine.sync_engine,'before_cursor_execute',enforce_driver_limit)
+    assert response.status_code==200,response.text
+    assert response.json()['affected_count']==count
+    assert client.get('/api/assets/'+str(s.asset.id),headers=auth_headers).status_code==200
+    stats=client.get('/api/projects/'+str(s.project.id)+'/stats',headers=auth_headers).json()
+    assert stats['total_assets']==1
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 """Standalone Linux image operations. Snapshots containing env stay on that server."""
 import base64
 import copy
+from contextlib import ExitStack
 import hashlib
 import http.client
 import json
@@ -11,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 from urllib.parse import quote
 from uuid import UUID
 
@@ -68,6 +70,124 @@ def compose(value):
     actual=command(prefix+['config','--hash='+service]).split()[-1]
     if actual!=labels.get('com.docker.compose.config-hash'):raise ValueError('Compose配置与当前容器不一致，请先核对原配置，避免更新镜像时带入其他改动')
     return dict(prefix=prefix,service=service,config_hash=digest(rendered),version=match.group(1) if match else None)
+
+
+def image_reference(image,expected):
+    value=json.loads(command(['docker','image','inspect',image]))[0]
+    if value['Id']!=expected:raise ValueError('镜像名称对应的ID已变化，请重新准备镜像')
+    if image.startswith('sha256:'):
+        names=value.get('RepoTags') or value.get('RepoDigests') or []
+        if not names:raise ValueError('旧镜像没有可用名称，请先为旧镜像补充标签')
+        image=names[0]
+    return image
+
+
+def compose_prefix(prefix):
+    root=Path.home()/'.local/share/data-platform/image-updates';result=[];index=0
+    while index<len(prefix):
+        if prefix[index]=='-f':
+            path=Path(prefix[index+1])
+            generated=path.parent.parent==root and re.fullmatch(r'[a-f0-9-]{36}',path.parent.name) and path.name.endswith(('-image.json','-restore.json','-labels.json'))
+            if not generated:result.extend(prefix[index:index+2])
+            index+=2
+        else:result.append(prefix[index]);index+=1
+    return result
+
+
+def compose_image(text,service,value=None):
+    lines=text.splitlines(keepends=True);start=None;indent=None
+    for index,line in enumerate(lines):
+        if re.fullmatch(r'services:\s*(?:#.*)?\r?\n?',line):start=index+1;break
+    if start is None:raise ValueError('主Compose需使用services分块格式以安全更新image字段')
+    for index in range(start,len(lines)):
+        line=lines[index]
+        if not line.strip() or line.lstrip().startswith('#'):continue
+        spaces=len(line)-len(line.lstrip(' '))
+        if spaces==0:break
+        if indent is None:indent=spaces
+        if spaces!=indent:continue
+        if not re.fullmatch(r'\s*(?:'+re.escape(service)+r'|"'+re.escape(service)+r'"|\x27'+re.escape(service)+r'\x27):\s*(?:#.*)?\r?\n?',line):continue
+        end=index+1
+        while end<len(lines) and (not lines[end].strip() or lines[end].lstrip().startswith('#') or len(lines[end])-len(lines[end].lstrip(' '))>indent):end+=1
+        body=[row for row in range(index+1,end) if lines[row].strip() and not lines[row].lstrip().startswith('#')]
+        field_indent=min((len(lines[row])-len(lines[row].lstrip(' ')) for row in body),default=0)
+        matches=[row for row in body if re.match(r'^ {'+str(field_indent)+r'}image\s*:',lines[row])]
+        if len(matches)!=1:break
+        row=matches[0];match=re.fullmatch(r'(\s*image\s*:\s*)([^\r\n]*)(\r?\n)?',lines[row]);old=match.group(2)
+        if value is not None:lines[row]=match.group(1)+value+(match.group(3) or '')
+        return ''.join(lines),old
+    raise ValueError('主Compose所选服务必须有独立的image字段；不支持行内或继承的镜像配置')
+
+
+def replace_compose(path,text):
+    metadata=path.stat()
+    with tempfile.NamedTemporaryFile(dir=str(path.parent),prefix=path.name+'.platform-',delete=False) as out:
+        temp=Path(out.name)
+        try:
+            out.write(text.encode('utf-8'));out.flush();os.fsync(out.fileno())
+            os.chmod(str(temp),metadata.st_mode&0o777)
+            if hasattr(os,'chown'):os.chown(str(temp),metadata.st_uid,metadata.st_gid)
+        except BaseException:temp.unlink();raise
+    try:os.replace(str(temp),str(path))
+    finally:
+        if temp.exists():temp.unlink()
+
+
+def compose_apply(info,stage,name,job,image,rollback):
+    prefix=compose_prefix(info['prefix']);files=[Path(prefix[i+1]) for i in range(len(prefix)-1) if prefix[i]=='-f']
+    if not files:raise ValueError('未找到主Compose配置')
+    for path in files:
+        if path.is_symlink() or any(p.is_symlink() for p in path.parents):raise ValueError('Compose配置不能经过符号链接')
+    state_path=stage/(name+'-compose.json');operation='rollback' if rollback else 'activate'
+    # Stable locks serialize shared Compose files across different update records.
+    with ExitStack() as stack:
+        if os.name=='posix':
+            import fcntl
+            locks=Path.home()/'.local/share/data-platform/image-updates/.locks';locks.mkdir(mode=0o700,parents=True,exist_ok=True)
+            for path in sorted(set(files)):
+                lock=stack.enter_context((locks/(digest(str(path))+'.lock')).open('a'));fcntl.flock(lock,fcntl.LOCK_EX)
+        labels=stage/(name+'-labels.json')
+        run=prefix+['-f',str(labels)]
+        state=json.loads(state_path.read_text()) if state_path.exists() else None
+        if state:
+            if command(run+['config','--hash='+info['service']]).split()[-1]!=state['hash']:raise ValueError('Compose服务配置已被其他操作修改，拒绝覆盖或回滚')
+        else:
+            changes=[]
+            for index,path in enumerate(files):
+                text=path.read_bytes().decode('utf-8')
+                try:_,old=compose_image(text,info['service'])
+                except ValueError:
+                    if index==0:raise
+                    continue
+                backup=stage/('compose-'+digest(str(path))+'.backup')
+                if not backup.exists():
+                    with backup.open('xb') as out:out.write(path.read_bytes())
+                    backup.chmod(0o600)
+                comment=re.search(r'\s+#.*$',old)
+                changes.append(dict(path=str(path),before=old,after=image+(comment.group() if comment else '')))
+            state=dict(changes=changes)
+        previous=[];old_labels=labels.read_bytes() if labels.exists() else None
+        try:
+            for change in state['changes']:
+                path=Path(change['path']);text=path.read_bytes().decode('utf-8');previous.append((path,text))
+                value=change['before'] if rollback else change['after']
+                updated,_=compose_image(text,info['service'],value)
+                replace_compose(path,updated)
+            data=dict(services={info['service']:dict(labels={'data-platform.image-update':job+':'+operation})})
+            if info.get('version'):data['version']=info['version']
+            if prefix[0]=='docker':data['services'][info['service']]['pull_policy']='never'
+            write(labels,data)
+            _,effective=compose_image(command(run+['config']),info['service'])
+            if re.sub(r'\s+#.*$','',effective).strip().strip('\"\x27')!=image:raise ValueError('Compose合并后的镜像与目标不一致，拒绝重建服务')
+            service_hash=command(run+['config','--hash='+info['service']]).split()[-1]
+        except BaseException:
+            for path,text in reversed(previous):replace_compose(path,text)
+            if old_labels is not None:labels.write_bytes(old_labels)
+            elif labels.exists():labels.unlink()
+            raise
+        state.update(hash=service_hash,operation=operation);write(state_path,state)
+        write(stage/(name+'-intent.json'),dict(operation=operation))
+        command(run+['up','-d','--no-deps','--no-build','--force-recreate',info['service']],240)
 
 
 def get_workload(target):return json.loads(command(['kubectl','get',target['workload_kind'],target['workload'],'-n',target['namespace'],'-o','json']))
@@ -212,7 +332,8 @@ def docker_apply(target,instance,job,receipt,rollback):
     stage=folder(job);name=instance['name'];saved=json.loads((stage/(name+'.json')).read_text());current=existing_container(name)
     owner=(current['Config'].get('Labels') or {}).get('data-platform.image-update') if current else None
     expected=saved['Image'] if rollback else receipt['image_id'];token=job+(':rollback' if rollback else ':activate')
-    if owner==token and current['Image']==expected:
+    reference=image_reference(receipt['image'],expected) if not rollback else None
+    if owner==token and current['Image']==expected and (rollback or current['Config']['Image']==reference):
         if not current['State']['Running']:command(['docker','start',current['Id']],120)
         return dict(ok=True,uid=current['Id'])
     info=instance.get('compose');backup=stage/(name+'-backup.json');intent=stage/(name+'-intent.json')
@@ -221,15 +342,14 @@ def docker_apply(target,instance,job,receipt,rollback):
         if current and current['Id']!=saved['Id'] and (owner!=job+':activate' or current['Image']!=receipt['image_id']):raise ValueError('当前Docker实例不属于此更新，拒绝恢复旧记录')
     elif not current or current['Id']!=instance['uid'] or docker_summary(current)['fingerprint']!=instance['fingerprint']:raise ValueError('Docker实例或配置已变化，拒绝覆盖；如果更新被中断，请先恢复旧实例')
     if info:
-        if not rollback and compose(current)!=info:raise ValueError('Compose配置已变化')
-        if rollback and digest(command(info['prefix']+['config']))!=info['config_hash']:raise ValueError('原Compose配置已变化，拒绝将其他配置变更带入恢复')
-        override=stage/(name+('-restore.json' if rollback else '-image.json'))
-        data=dict(services={info['service']:dict(image=expected,labels={'data-platform.image-update':token})})
-        if info.get('version'):data['version']=info['version']
-        if info['prefix'][0]=='docker':data['services'][info['service']]['pull_policy']='never'
-        write(override,data)
-        write(intent,dict(operation='rollback' if rollback else 'activate'))
-        command(info['prefix']+['-f',str(override),'up','-d','--no-deps','--no-build','--force-recreate',info['service']],240)
+        state=stage/(name+'-compose.json')
+        if not state.exists():
+            if not rollback:
+                actual=compose(current)
+                if actual['prefix']!=info['prefix'] or actual['service']!=info['service']:raise ValueError('Compose配置来源已变化')
+            elif digest(command(info['prefix']+['config']))!=info['config_hash']:raise ValueError('原Compose配置已变化，拒绝将其他配置变更带入恢复')
+        reference=reference or image_reference(saved['Config']['Image'],expected)
+        compose_apply(info,stage,name,job,reference,rollback)
     elif rollback:
         old=json.loads(backup.read_text());original=docker_inspect(old['uid'])
         if original['Id']!=saved['Id'] or original['Image']!=saved['Image']:raise ValueError('保留的旧实例身份或镜像已变化')
@@ -244,7 +364,7 @@ def docker_apply(target,instance,job,receipt,rollback):
         engine('POST','/containers/'+quote(old['uid'])+'/update',dict(RestartPolicy=saved['HostConfig'].get('RestartPolicy',{})))
         command(['docker','start',old['uid']],120)
     else:
-        config=clone_config(saved,expected,token)
+        config=clone_config(saved,reference,token)
         backup_name=name+'-platform-old-'+job[:8]
         write(intent,dict(operation='activate'))
         write(stage/(name+'-backup.json'),dict(uid=current['Id'],name=backup_name))

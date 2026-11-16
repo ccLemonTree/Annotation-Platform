@@ -9,7 +9,7 @@ async page=>{
   try{
     await page.goto('http://192.168.1.90:3000/training');
     await page.getByRole('row').filter({hasText:'detr1016烟火训练7'}).getByRole('button',{name:'效果分析与对比',exact:true}).click();
-    await page.getByRole('link',{name:'配置分析大模型 / 默认提示词 →',exact:true}).click();
+    await page.getByRole('link',{name:'管理分析模型 →',exact:true}).click();
     try{await page.waitForURL('**/models',{timeout:4000});}
     catch{throw Error('配置入口应进入 /models，实际进入 '+new URL(page.url()).pathname);}
     const row=page.getByRole('row').filter({hasText:'Qwen3.8-27B'});

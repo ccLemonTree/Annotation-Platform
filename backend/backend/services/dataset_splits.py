@@ -50,8 +50,8 @@ def _components(ids, links):
     return sorted(groups.values())
 
 
-def source_groups(rows):
-    sources = {str(asset.id): source_metadata(asset) for asset, _ in rows}
+def source_groups(rows, fields=SOURCE_FIELDS):
+    sources = {str(asset.id): {key:value for key,value in source_metadata(asset).items() if key in fields} for asset, _ in rows}
     owners, links = {}, []
     for asset, _ in sorted(rows, key=lambda row: str(row[0].id)):
         key = str(asset.id)

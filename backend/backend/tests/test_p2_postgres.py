@@ -122,8 +122,8 @@ async def test_migration_and_concurrent_version_writes(tmp_path, monkeypatch):
             db.add(other);await db.commit()
         async def attach():
             async with sessions() as db:
-                _,added=await attach_images(db,other.id,1,[image.id])
-                await db.commit();return added
+                _,created=await attach_images(db,other.id,1,[image.id])
+                await db.commit();return len(created)
         added=await asyncio.wait_for(asyncio.gather(attach(),attach()),timeout=15)
         assert sorted(added)==[0,1]
         async with sessions() as db:

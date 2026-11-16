@@ -30,11 +30,29 @@ export interface ParameterField {
 }
 export interface TrainingTemplate {
   name: string; image: string; defaults: Record<string, unknown>; environment: Record<string, string>;
+  overrides?: Record<string, unknown>;
   schema: { properties: Record<string, ParameterField> };
 }
+export const saveBuiltinTrainerDefaults = async (kind: string, parameters: Record<string, unknown>): Promise<TrainingTemplate> =>
+  (await apiClient.put(`/api/training/trainers/builtin/${encodeURIComponent(kind)}/defaults`, { parameters })).data;
+export type TrainerDatasetFormat = 'yolo' | 'coco' | 'swift_sft' | 'infonce' | 'contrastive' | 'online_contrastive' | 'cosine_similarity';
+export interface TrainingTrainer {
+  id: string; name: string; image: string; module: string; dataset_format: TrainerDatasetFormat;
+  parameters: Record<string, unknown>;
+}
+export const getTrainingTrainers = async (signal?: AbortSignal): Promise<TrainingTrainer[]> =>
+  (await apiClient.get('/api/training/trainers', { signal })).data;
+export const saveTrainingTrainer = async (input: Omit<TrainingTrainer, 'id'>, id?: string): Promise<TrainingTrainer> =>
+  (id ? await apiClient.put(`/api/training/trainers/${id}`, input) : await apiClient.post('/api/training/trainers', input)).data;
+export const deleteTrainingTrainer = async (id: string): Promise<void> => {
+  await apiClient.delete(`/api/training/trainers/${id}`);
+};
 export interface TrainingInput {
   name: string; kind: string; server_id: string; image: string; gpu_uuids: string[];
+  trainer_id?: string; trainer?: Omit<TrainingTrainer, 'id'>;
+  execution_backend?: 'docker'|'k8s'; k8s?: { nodes: string[]; gpus_per_node: number };
   dataset_path?: string; snapshot_id?: string; model_path: string; output_root: string; output_subdir: string;
+  repository_model_id?: string;
   shm_size_gb: number; accept_platform_model_license: boolean;
   selected_labels?: string[] | null;
   parameters: Record<string, unknown>; environment: Record<string, string>;
@@ -45,20 +63,22 @@ export interface TrainingInput {
   onnx_stage?:{id:string;server:{id:string;name:string};config:TrainingInput};
 }
 export interface ModelOutputInput {
-  format:'onnx'|'tensorrt'|'merge';server_id:string;gpu_uuid:string;source_path:string;base_model_path?:string;
+  format:'onnx'|'tensorrt'|'merge';server_id:string;gpu_uuid?:string;source_path:string;base_model_path?:string;
   output_root:string;image:string;batch:number;dynamic_batch:boolean;min_batch:number;opt_batch:number;max_batch:number;
   image_size?:number|null;fp16:boolean;opset:number;simplify:boolean;input_name:string;output_name:string;
   trust_checkpoint:boolean;model_type:string;torch_dtype:'float16'|'bfloat16'|'float32';
-  source_gpu_uuid?:string;onnx_image?:string;
+  source_gpu_uuid?:string;onnx_image?:string;onnx_server_id?:string;
 }
 export const createModelOutput = async(id:string,input:ModelOutputInput):Promise<TrainingRun> =>
   (await apiClient.post(`/api/training/runs/${id}/outputs`,input)).data;
+export const updateModelOutput = async(id:string,input:ModelOutputInput):Promise<TrainingRun> =>
+  (await apiClient.put(`/api/training/runs/${id}/outputs`,input)).data;
 export interface TrainingCheck {
   ok: boolean; checks: { name: string; ok: boolean; detail: string }[]; image_digest?: string;
 }
 export interface TrainingRun {
   id: string; name: string; kind: string; status: string; config: TrainingInput;
-  source: { kind: string; id?: string; sha256?: string; format?: string; path?: string; project_id?: string; labels?: string[]; run_id?:string;source_path?:string;model_kind?:string };
+  source: { kind: string; id?: string; sha256?: string; format?: string; path?: string; project_id?: string; labels?: string[]; run_id?:string;source_path?:string;model_kind?:string;repository_model_id?:string };
   server: { id: string; name: string }; output_dir: string; error?: string; created_at: string;
   inspection: Partial<TrainingCheck> & { runtime?: unknown;output_phase?:'onnx'|'transferring'|'tensorrt';
     startup?:{state:'queued'|'running'|'complete'|'failed'|'interrupted'|'canceled';phase:string;steps:string[];archive_bytes?:number;events:{phase:string;message:string;time:string}[]} };
@@ -66,17 +86,25 @@ export interface TrainingRun {
 export interface TrainingArtifact { path: string; bytes: number; role: string }
 export interface TrainingSnapshot {
   id: string; format: string; content_hash: string;
-  manifest: { labels?: string[]; assets?: { split: string }[]; distribution?: { images_by_split?: Record<string, number> }; training?:{format:string;source:string;samples:number} };
+  version_label?: string;
+  manifest: { labels?: string[]; approved_only?: boolean; assets?: { split: string; review_status?: string | null }[]; distribution?: { images_by_split?: Record<string, number> }; training?:{format:string;source:string;samples:number;negative_strategy?:'explicit'} };
   created_at: string;
 }
+export interface TrainingK8sInfo {
+  nodes: {name:string;ready:boolean;gpu_capacity:number;gpu_available:number;taints:unknown[]}[];
+  namespace:string; pvc:string; nfs_root:string; output_root:string; images:{detection:string;wemm:string};
+  wemm_defaults?:{model_path?:string;dataset_path?:string;parameters?:Record<string,unknown>;environment?:Record<string,string>};
+}
+export const getTrainingK8sNodes = async (signal?:AbortSignal):Promise<TrainingK8sInfo> =>
+  (await apiClient.get('/api/training/k8s/nodes', {signal})).data;
 export const getTrainingCatalog = async (signal?: AbortSignal): Promise<Record<string, TrainingTemplate>> =>
   (await apiClient.get('/api/training/catalog', { signal })).data;
 export const getTrainingServers = async (signal?: AbortSignal): Promise<GpuServer[]> =>
   (await apiClient.get('/api/training/servers', { signal })).data;
 export const getTrainingDefaults = async (server_id: string, kind: string, signal?: AbortSignal): Promise<{ model_path: string; output_root: string }> =>
   (await apiClient.get('/api/training/defaults', { params: { server_id, kind }, signal })).data;
-export const getTrainingRuns = async (page = 1, signal?: AbortSignal): Promise<{ items: TrainingRun[]; total: number }> =>
-  (await apiClient.get('/api/training/runs', { params: { page, page_size: 20 }, signal })).data;
+export const getTrainingRuns = async (page = 1, signal?: AbortSignal, project_id?: string): Promise<{ items: TrainingRun[]; total: number }> =>
+  (await apiClient.get('/api/training/runs', { params: { page, page_size: 20, project_id }, signal })).data;
 export const getTrainingRun = async (id: string): Promise<TrainingRun> => (await apiClient.get(`/api/training/runs/${id}`)).data;
 export const createTrainingRun = async (input: TrainingInput): Promise<TrainingRun> =>
   (await apiClient.post('/api/training/runs', input)).data;
@@ -99,11 +127,11 @@ export async function downloadTrainingArtifact(id:string,path:string):Promise<vo
 }
 export const trainingAction = async (id: string, action: string): Promise<TrainingRun | TrainingCheck> =>
   (await apiClient.post(`/api/training/runs/${id}/${action}`, {}, { timeout: 360000 })).data;
-export const getTrainingLogs = async (id: string): Promise<{ text: string }> =>
-  (await apiClient.get(`/api/training/runs/${id}/logs`, { timeout: 360000 })).data;
-export const getTrainingArtifacts = async (id: string): Promise<{ files: TrainingArtifact[]; truncated: boolean }> =>
-  (await apiClient.get(`/api/training/runs/${id}/artifacts`, { timeout: 360000 })).data;
-export const getTrainingSnapshots = async (project: string): Promise<TrainingSnapshot[]> =>
-  (await apiClient.get(`/api/export/projects/${project}/snapshots`)).data;
-export const freezeTrainingData = async(project:string,input:{dataset_format:string;sample_source:string;approved_only:boolean;instruction:string}):Promise<TrainingSnapshot> =>
-  (await apiClient.post(`/api/export/projects/${project}/annotation-snapshots`,input,{timeout:120000})).data;
+export const getTrainingLogs = async (id: string, node?:string, options?:{signal?:AbortSignal;skipErrorToast?:boolean}): Promise<{ text: string }> =>
+  (await apiClient.get(`/api/training/runs/${id}/logs`, { timeout: 360000, params: node ? {node} : undefined, ...options })).data;
+export const getTrainingArtifacts = async (id: string, options?:{signal?:AbortSignal;skipErrorToast?:boolean}): Promise<{ files: TrainingArtifact[]; truncated: boolean; cached?: boolean }> =>
+  (await apiClient.get(`/api/training/runs/${id}/artifacts`, { timeout: 360000, ...options })).data;
+export const getTrainingSnapshots = async (project: string, trainingOnly: boolean, signal?: AbortSignal): Promise<TrainingSnapshot[]> =>
+  (await apiClient.get(`/api/export/projects/${project}/snapshots`, {
+    params: trainingOnly ? { training_only: true } : { detection_only: true }, signal, skipErrorToast: true,
+  })).data;

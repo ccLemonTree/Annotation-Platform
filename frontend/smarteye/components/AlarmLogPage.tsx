@@ -26,15 +26,20 @@ const AlarmLogPage: React.FC<AlarmLogPageProps> = ({ record, onBack, onSendToAiI
       const res = await apiFetch(`${API_BASE_URL}/download-images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls, collection_name: record.platform, filename: `报警日志_${record.deviceId || record.device}` }),
+        body: JSON.stringify({ urls, records: images.filter(img => img.backPath).map(img => ({ deviceId: img.deviceId || record.deviceId, deviceName: img.deviceName || record.device, platform: record.platform })), collection_name: record.platform, filename: `报警日志_${record.deviceId || record.device}` }),
       });
-      if (!res.ok) throw new Error('下载失败');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || data.msg || `下载失败 (HTTP ${res.status})`);
+      }
       const blob = await res.blob();
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = `报警日志_${record.deviceId || record.device}.zip`;
       link.click();
       URL.revokeObjectURL(link.href);
+      const filtered = Number(res.headers.get('X-SmartEye-Filtered-Count'));
+      if (filtered > 0) alert(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
     } catch (e: any) {
       alert(e.message || '下载出错');
     } finally {

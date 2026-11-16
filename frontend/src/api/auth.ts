@@ -1,5 +1,6 @@
 // 认证相关API
 import apiClient from './client';
+import { redirectToLogin } from '../utils/authNavigation';
 
 export interface LoginRequest {
   username: string;
@@ -56,7 +57,5 @@ export const getCurrentUser = async (): Promise<User> => {
 
 // 登出（前端清除token）
 export const logout = () => {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
-  window.location.href = '/login';
+  redirectToLogin();
 };

@@ -160,20 +160,60 @@ async def update_target(db,user,id,request):
 
 
 async def create_batch(db,user,request):
-    release=await scoped(db,ModelRelease,request.release_id,user.tenant_id) if request.kind=='model' else None
+    release=await scoped(db,ModelRelease,request.release_id,user.tenant_id) if request.release_id else None
+    model=await repository_model(db,request.repository_id,user.tenant_id) if request.repository_id else None
     if release and release.status!='ready':raise HTTPException(409,'模型归档尚未完成或校验失败')
     batch=uuid4();rows=[]
     for id in request.target_ids:
         target=await scoped(db,DeploymentTarget,id,user.tenant_id)
-        if target.kind!=request.kind or release and target.target['runtime']!=release.runtime:raise HTTPException(422,'所选服务器目标与模型/镜像类型不匹配')
+        if target.kind!=request.kind or release and target.target['runtime']!=release.runtime or model and target.target['runtime']!='triton_plan':raise HTTPException(422,'所选服务器目标与模型/镜像类型不匹配')
         await deployments.validate_connections(SimpleNamespace(target=target.target))
-        rows.append(ModelDeployment(id=uuid4(),tenant_id=user.tenant_id,user_id=user.id,run_id=release.run_id if release else None,
-            release_id=release.id if release else None,target_id=target.id,batch_id=batch,kind=request.kind,status='draft',target_key=target.target_key,
-            source=dict(kind='local_release',release_id=str(release.id),name=release.name,version=release.version,runtime=release.runtime) if release else dict(kind='image',image=request.image),
+        source=dict(kind='local_release',release_id=str(release.id),name=release.name,version=release.version,runtime=release.runtime) if release else dict(kind='image',image=request.image)
+        if model:source=dict(kind='local_repository',repository_id=str(model.id),runtime='triton_plan',**{key:getattr(model,key) for key in REPOSITORY_FIELDS})
+        rows.append(ModelDeployment(id=uuid4(),tenant_id=user.tenant_id,user_id=user.id,run_id=model.run_id if model else release.run_id if release else None,
+            release_id=release.id if release else None,repository_id=model.id if model else None,target_id=target.id,batch_id=batch,kind=request.kind,status='draft',target_key=target.target_key,
+            source=source,
             target=target.target,inspection={},logs=[]))
     db.add_all(rows);await db.commit()
     for row in rows:await db.refresh(row)
     return dict(batch_id=batch,items=[deployments.summary(row) for row in rows])
+
+
+REPOSITORY_FIELDS=('name','version','format','gpu_model','tensorrt_version','batch_profile','entry_file','file_size','files')
+
+
+async def repository_model(db,id,tenant):
+    from services import model_repository as repository
+    row=await repository.scoped(db,id,tenant)
+    if row.status!='ready':raise HTTPException(409,'仓库模型尚未入库完成')
+    if row.format!='tensorrt':raise HTTPException(422,'当前下发入口仅支持TensorRT engine；PT/ONNX请先导出，Python backend请按完整目录部署')
+    if not row.gpu_model.strip() or not row.tensorrt_version.strip():raise HTTPException(422,'TensorRT模型缺少构建GPU型号或TensorRT版本，请补齐后使用新版本入库')
+    if len(row.files) not in (1,2) or {f['path'] for f in row.files}!={row.entry_file}|({'config.pbtxt'} if len(row.files)==2 else set()) or row.entry_file.rsplit('.',1)[-1].lower() not in ('engine','plan'):
+        raise HTTPException(422,'TensorRT更新需要一个engine或plan主文件，可附带config.pbtxt')
+    return row
+
+
+def repository_info(row):
+    from services import model_repository as repository
+    if repository.validate_files(row.files,row.entry_file)!=row.file_size:raise HTTPException(409,'仓库文件大小清单校验失败')
+    root=repository.folder(row)/'files'
+    for info in row.files:
+        file=root/relative(info['path'])
+        if any(p.is_symlink() for p in [file,*file.parents]) or not file.is_file() or file.stat().st_size!=info['bytes'] or sha(file)!=info['sha256']:raise HTTPException(409,'仓库文件SHA256校验失败')
+    item=next(f for f in row.files if f['path']==row.entry_file)
+    return dict(bytes=item['bytes'],gpu_name=row.gpu_model,versions={'tensorrt_runtime':row.tensorrt_version},batch_profile=row.batch_profile,
+        files=[dict(path='1/model.plan',bytes=item['bytes'],sha256=item['sha256'])])
+
+
+def pack_repository(row,archive):
+    from services import model_repository as repository
+    info=repository_info(row)
+    if shutil.disk_usage(archive.parent).free<row.file_size+64*1024**2:raise HTTPException(409,'平台本地磁盘空间不足以生成临时部署包')
+    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_STORED,allowZip64=True) as out:
+        out.write(repository.folder(row)/'files'/row.entry_file,'1/model.plan')
+        out.writestr('bundle.json',json.dumps(info,ensure_ascii=False))
+    verify_bundle(archive)
+    return dict(bytes=archive.stat().st_size,sha256=sha(archive))
 
 
 def resources(row):
@@ -231,6 +271,13 @@ async def target_summary(db,row):
 async def observe(db,row):
     if row.target_id is None:return
     target=await scoped(db,DeploymentTarget,row.target_id,row.tenant_id,lock=True)
+    if target.kind=='platform':
+        state=await deployments.remote(db,row,'audit');marker=state.get('deployment_id')
+        current=await db.scalar(select(ModelDeployment).where(ModelDeployment.id==UUID(marker),ModelDeployment.tenant_id==row.tenant_id,ModelDeployment.target_key==row.target_key)) if marker else None
+        versions=dict(target.observation.get('versions',{}))
+        versions[row.target_key]=dict(state='verified' if row.status in ('active','rolled_back') and current and current.status=='active' else 'unknown',
+            version=current.source.get('version') if current else None,name=current.source.get('name') if current else None,checked_at=datetime.now(timezone.utc).isoformat())
+        target.observation={**target.observation,'versions':versions};await db.commit();return
     if target.target_key!=row.target_key or target.kind!=row.kind:return
     if row.kind=='image':
         target.observation=dict(state='verified' if row.status in ('active','rolled_back') else 'unknown',job_id=str(row.id),
@@ -240,7 +287,7 @@ async def observe(db,row):
         marker=state.get('deployment_id')
         current=await db.scalar(select(ModelDeployment).where(ModelDeployment.id==UUID(marker),ModelDeployment.tenant_id==row.tenant_id,ModelDeployment.target_key==row.target_key)) if marker else None
         target.observation=dict(state='verified' if row.status in ('active','rolled_back') and current and current.status=='active' else 'unknown' if marker else 'unmanaged',
-            job_id=marker,release_id=str(current.release_id) if current and current.release_id else None,version=current.source.get('version') if current else None,
+            job_id=marker,release_id=str(current.release_id) if current and current.release_id else None,repository_id=str(current.repository_id) if current and current.repository_id else None,version=current.source.get('version') if current else None,
             name=current.source.get('name') if current else None,checked_at=datetime.now(timezone.utc).isoformat(),instances=row.inspection.get('instances',[]))
     await db.commit()
 
@@ -257,5 +304,5 @@ async def inspect_target(db,user,row):
         marker=state.get('deployment_id')
         current=await db.scalar(select(ModelDeployment).where(ModelDeployment.id==UUID(marker),ModelDeployment.tenant_id==user.tenant_id,ModelDeployment.target_key==row.target_key)) if marker else None
         row.observation=dict(state='recorded' if current else 'unmanaged',job_id=marker,version=current.source.get('version') if current else None,
-            release_id=str(current.release_id) if current and current.release_id else None,name=current.source.get('name') if current else None,checked_at=datetime.now(timezone.utc).isoformat())
+            release_id=str(current.release_id) if current and current.release_id else None,repository_id=str(current.repository_id) if current and current.repository_id else None,name=current.source.get('name') if current else None,checked_at=datetime.now(timezone.utc).isoformat())
     await db.commit();return await target_summary(db,row)

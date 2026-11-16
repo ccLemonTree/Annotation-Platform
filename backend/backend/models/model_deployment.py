@@ -52,6 +52,7 @@ class ModelDeployment(Base):
     user_id:Mapped[int]=mapped_column(Integer)
     run_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey('training_runs.id',ondelete='RESTRICT'),nullable=True)
     release_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey('model_releases.id',ondelete='RESTRICT'),nullable=True)
+    repository_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey('model_repository_items.id',ondelete='RESTRICT'),nullable=True)
     target_id:Mapped[uuid.UUID|None]=mapped_column(ForeignKey('deployment_targets.id',ondelete='RESTRICT'),nullable=True)
     batch_id:Mapped[uuid.UUID|None]=mapped_column(UUID(as_uuid=True),nullable=True,index=True)
     kind:Mapped[str]=mapped_column(String(10),default='model',server_default='model')

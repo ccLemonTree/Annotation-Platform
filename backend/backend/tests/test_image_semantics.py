@@ -61,12 +61,20 @@ def payload(s, **changes):
 
 
 @pytest.mark.asyncio
-async def test_pre_prompt_snapshot_defaults_remain_compatible_and_edits_are_rejected(semantic):
+async def test_pre_prompt_snapshot_defaults_remain_compatible_and_edits_are_rejected(semantic,monkeypatch):
+    from sqlalchemy.dialects import postgresql
     from services.image_semantics import model_snapshot, validate_snapshots
     from fastapi import HTTPException
     s=semantic;db=s['db']
     snapshot=await model_snapshot(db,1,s['caption'].id,'caption')
     snapshot['config'].pop('chat_prompts')
+    scalar=db.scalar
+
+    async def check_read_lock(statement,*args,**kwargs):
+        assert str(statement.compile(dialect=postgresql.dialect())).endswith('FOR SHARE')
+        return await scalar(statement,*args,**kwargs)
+
+    monkeypatch.setattr(db,'scalar',check_read_lock)
     await validate_snapshots(db,1,[snapshot])
     model=await db.get(type(s['caption']),s['caption'].id)
     model.chat_prompts={'caption':'修改后的描述'};model.revision+=1;await db.commit()

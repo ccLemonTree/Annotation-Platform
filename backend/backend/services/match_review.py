@@ -56,7 +56,7 @@ async def create_review_jobs(db,project,request,user_id):
     snapshot=await model_snapshot(db,project.tenant_id,request.model_id,'caption')
     if snapshot['config']['protocol']!='openai_chat':raise HTTPException(400,'请选择OpenAI视觉对话审核模型')
     await db.scalar(select(Project).where(Project.id==project.id).with_for_update())
-    query=select(MatchQuery).where(MatchQuery.project_id==project.id).order_by(MatchQuery.id)
+    query=select(MatchQuery).where(MatchQuery.project_id==project.id,MatchQuery.is_retrieval_query()).order_by(MatchQuery.id)
     if request.query_ids:query=query.where(MatchQuery.id.in_(request.query_ids))
     queries=(await db.scalars(query.limit(1001).with_for_update())).all()
     if request.query_ids and len(queries)!=len(set(request.query_ids)):raise HTTPException(404,'部分查询不属于当前项目')
@@ -74,7 +74,7 @@ async def create_review_jobs(db,project,request,user_id):
         total+=len(hits)
         if total>5000:raise HTTPException(400,'单批最多5000条匹配关系，请缩小查询范围')
         job=ProjectWorkJob(project_id=project.id,user_id=user_id,operation='match_review',model=snapshot,
-            options={'query_id':str(query.id),'query':deepcopy(query.query),'prompt':request.prompt})
+            options={'query_id':str(query.id),'query':deepcopy(query.query),'prompt':request.prompt,'review_prompt':request.review_prompt})
         db.add(job);await db.flush();jobs.append(job)
         db.add_all([ProjectWorkItem(job_id=job.id,asset_id=UUID(h['asset_id']),content_hash=h['content_hash'],base_version=0,
             result={'match_baseline':baseline(h)}) for h in hits])
@@ -121,7 +121,9 @@ async def process(sessions,work,client):
             _,asset,_,_,reference=await context(db,work)
             await validate_snapshots(db,work['tenant_id'],[work['model']],lock=False)
             content=await read_content(asset);reference_content=await read_content(reference) if reference else None
-        verdict=await audit_match(ModelServiceConfig(**work['model']['config']),content,work['options']['query'],reference_content,work['options']['prompt'],client)
+        config=ModelServiceConfig(**work['model']['config'])
+        if work['options'].get('review_prompt','').strip():config=config.model_copy(update={'chat_prompts':config.chat_prompts.model_copy(update={'match_review':work['options']['review_prompt'].strip()})})
+        verdict=await audit_match(config,content,work['options']['query'],reference_content,work['options']['prompt'],client)
     except HTTPException as exc:failure=str(exc.detail)[:500]
     except (ValueError,OSError,Image.DecompressionBombError):failure='匹配审核图片无法解码，转人工复核'
     async with sessions() as db:

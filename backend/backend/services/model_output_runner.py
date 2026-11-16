@@ -174,11 +174,11 @@ def export_onnx(config,output):
             model=YOLO(str(local))
             path=Path(model.export(format='onnx',imgsz=options['image_size'] or 640,
                 opset=options['opset'],simplify=options['simplify'],batch=batch,
-                dynamic=options['dynamic_batch'],half=False,device=0))
+                dynamic=options['dynamic_batch'],half=False,device='cpu'))
         finally:local.unlink(missing_ok=True)
     else:
         from rfdetr import RFDETR
-        model=RFDETR.from_checkpoint(str(source),trust_checkpoint=options['trust_checkpoint'])
+        model=RFDETR.from_checkpoint(str(source),trust_checkpoint=options['trust_checkpoint'],device='cpu')
         size=options['image_size'] or model.model_config.resolution
         print('RF-DETR:',type(model).__name__,'resolution:',size,flush=True)
         model.export(format='onnx',output_dir=str(output),shape=(size,size),batch_size=batch,
@@ -227,8 +227,8 @@ def run(config):
     files=[]
     for path in output.rglob('*'):
         if path.is_file():files.append({'path':str(path.relative_to(output)),'bytes':path.stat().st_size,'sha256':sha(path)})
-    gpu=subprocess.run(['nvidia-smi','--query-gpu=name','--format=csv,noheader'],capture_output=True,text=True,check=True).stdout.strip()
+    gpu='' if options['format']=='onnx' else subprocess.run(['nvidia-smi','--query-gpu=name','--format=csv,noheader'],capture_output=True,text=True,check=True).stdout.strip()
     manifest=dict(format=options['format'],source=before,options=options,onnx=details,versions=versions,
-        gpu_uuid=config['gpu_uuids'][0],gpu_name=gpu,files=files)
+        gpu_uuid='' if options['format']=='onnx' else config['gpu_uuids'][0],gpu_name=gpu,files=files)
     (output/'result.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
     print('模型输出成功：',str(output),flush=True)

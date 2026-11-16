@@ -17,6 +17,7 @@ const theme: ThemeConfig = {
     colorBgElevated: styles.getPropertyValue('--ui-surface-raised').trim(),
     colorText: styles.getPropertyValue('--ui-text').trim(),
     colorTextSecondary: styles.getPropertyValue('--ui-muted').trim(),
+    colorTextDescription: styles.getPropertyValue('--ui-muted').trim(),
     colorBorder: styles.getPropertyValue('--ui-border').trim(),
     colorBorderSecondary: styles.getPropertyValue('--ui-border').trim(),
     colorTextPlaceholder: styles.getPropertyValue('--ui-muted').trim(),
@@ -36,5 +37,5 @@ const theme: ThemeConfig = {
 };
 
 export default function PlatformProvider({ children }: { children: ReactNode }) {
-  return <ConfigProvider locale={zhCN} theme={theme}>{children}</ConfigProvider>;
+  return <ConfigProvider locale={zhCN} theme={theme} select={{showSearch:{optionFilterProp:['label','children','value']}}}>{children}</ConfigProvider>;
 }

@@ -40,6 +40,33 @@ class Verdict(BaseModel):
 
 
 async def read_metrics(db,run):
+    if run.config.get('execution_backend')=='k8s':
+        result=await training_runs.remote(db,run,'metric_files')
+        def collect():
+            import base64,math,os,tempfile
+            from pathlib import Path,PurePosixPath
+            from services.training_metrics import collect_metrics,NAMES
+            files=result.get('files',[])
+            if not isinstance(files,list) or len(files)>12:raise HTTPException(502,'集群指标文件数量无效')
+            with tempfile.TemporaryDirectory(prefix='k8s-metrics-') as folder:
+                total=0
+                for item in files:
+                    name=item.get('path','');path=PurePosixPath(name)
+                    if not name or path.is_absolute() or '\\' in name or any(p in ('','.', '..') for p in name.split('/')) or path.name not in NAMES:
+                        raise HTTPException(502,'集群指标路径无效')
+                    encoded=item.get('data','')
+                    if not isinstance(encoded,str) or len(encoded)>6*1024**2:raise HTTPException(502,'集群指标文件过大')
+                    try:raw=base64.b64decode(encoded,validate=True)
+                    except (ValueError,TypeError):raise HTTPException(502,'集群指标内容无效') from None
+                    total+=len(raw)
+                    if len(raw)>4*1024**2 or total>8*1024**2:raise HTTPException(502,'集群指标超过读取限制')
+                    target=Path(folder).joinpath(*path.parts);target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+                    mtime=item.get('mtime')
+                    if isinstance(mtime,(int,float)) and math.isfinite(mtime):os.utime(target,(mtime,mtime))
+                metrics=collect_metrics(Path(folder))
+                if result.get('truncated'):metrics['warnings'].append('集群指标已达到读取上限，完整文件请从模型产物下载。')
+                return metrics
+        return await asyncio.to_thread(collect)
     conn=await training_runs.connection(db,run)
     return await asyncio.to_thread(training_runs.bridge,'platform_training' if conn else run.server['name'],
         dict(connection=conn,executor='training_metrics',payload=dict(run_id=str(run.id),config=run.config)))
@@ -52,11 +79,13 @@ def compare_evidence(current,previous):
         a,b=current['source'],old['source']
         if a.get('kind')!='snapshot' or b.get('kind')!='snapshot':warnings.append('服务器路径不能证明数据内容及验证划分相同，需核对独立验证集。')
         elif not a.get('sha256') or a.get('sha256')!=b.get('sha256'):warnings.append('冻结数据快照不同，指标不能直接判定模型优劣。')
-        if current['kind']!=old['kind']:warnings.append('训练器不同，评测实现、IoU阈值和预处理可能不同。')
+        if current['kind']!=old['kind'] or current.get('trainer')!=old.get('trainer'):
+            warnings.append('训练器不同，评测实现、IoU阈值和预处理可能不同。')
         if not current.get('image_digest') or current.get('image_digest')!=old.get('image_digest'):
             warnings.append('训练镜像版本不同或未记录，需核对评测代码版本。')
         detection={'yolo26','rfdetr_medium','rfdetr_2xlarge','dinov3_vits16_ltdetr'}
-        if current['kind'] in detection or old['kind'] in detection:
+        if (current['kind'] in detection or old['kind'] in detection
+                or any((row.get('trainer') or {}).get('dataset_format') in ('yolo','coco') for row in (current,old))):
             if not current.get('labels') or not old.get('labels'):warnings.append('缺少完整类别顺序，需核对训练类别与评测范围。')
             elif current['labels']!=old['labels']:warnings.append('类别或类别顺序不同，不能直接排名。')
         if old.get('metrics_origin')=='saved_report':warnings.append('历史指标来自已保存报告快照，非本次服务器读取。')
@@ -93,6 +122,8 @@ async def evidence(db,user,run_id,request):
             source={k:v for k,v in run.source.items() if k in ('kind','id','sha256','path','format')},
             labels=config.get('selected_labels') or run.source.get('labels',[]),parameters=config.get('parameters',{}),
             model_path=config.get('model_path',''),image_digest=run.inspection.get('launched_image_digest')))
+        if config.get('trainer'):
+            snapshots[-1]['trainer']={key:config['trainer'][key] for key in ('name','module','dataset_format')}
     for run,snapshot in zip(runs,snapshots):
         try:snapshot.update(await read_metrics(db,run))
         except HTTPException as exc:snapshot.update(metrics=[],files=[],warnings=['无法读取指标：'+str(exc.detail)])

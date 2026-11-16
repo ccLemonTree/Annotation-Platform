@@ -44,10 +44,13 @@ export interface GpuServer {
   port: number | null;
   username: string | null;
   enabled: boolean;
+  training_enabled: boolean;
+  duplicate_of_default?: boolean;
   has_password: boolean;
   revision: number;
   source: 'ssh_manager' | 'password';
   created_at?: string;
+  jump?: { host: string; port: number; username: string; has_password: boolean } | null;
 }
 
 export interface GpuServerInput {
@@ -57,7 +60,9 @@ export interface GpuServerInput {
   username: string;
   password?: string;
   enabled: boolean;
+  training_enabled?: boolean;
   clear_password?: boolean;
+  jump?: { host: string; port: number; username: string; password?: string } | null;
 }
 
 export async function getGpuServers(signal?: AbortSignal): Promise<GpuServer[]> {
@@ -76,7 +81,11 @@ export async function deleteGpuServer(id: string): Promise<void> {
   await apiClient.delete(`/api/gpu-resources/servers/${encodeURIComponent(id)}`);
 }
 
-export async function testGpuServer(input: Omit<GpuServerInput, 'enabled' | 'clear_password'>, signal?: AbortSignal): Promise<GpuResources> {
+export async function importGpuServers(servers: GpuServerInput[]): Promise<{ imported: number; items: GpuServer[] }> {
+  return (await apiClient.post('/api/gpu-resources/servers/import', { servers }, { skipErrorToast: true })).data;
+}
+
+export async function testGpuServer(input: Omit<GpuServerInput, 'enabled' | 'training_enabled' | 'clear_password'>, signal?: AbortSignal): Promise<GpuResources> {
   return (await apiClient.post('/api/gpu-resources/servers/test', input, { timeout: 45000, signal })).data;
 }
 

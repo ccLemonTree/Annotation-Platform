@@ -116,13 +116,25 @@ class BatchCreate(BaseModel):
     kind:Literal['model','image']
     target_ids:list[UUID]=Field(min_length=1,max_length=50)
     release_id:UUID|None=None
+    repository_id:UUID|None=None
     image:str=Field(default='',max_length=500)
 
     @model_validator(mode='after')
     def selection(self):
         if len(self.target_ids)!=len(set(self.target_ids)):raise ValueError('服务器目标不能重复选择')
         if self.kind=='model':
-            if not self.release_id or self.image:raise ValueError('模型下发请选择一个已归档版本')
-        elif self.release_id or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,499}',self.image) or not (':' in self.image.rsplit('/',1)[-1] or '@sha256:' in self.image):
+            if bool(self.release_id)==bool(self.repository_id) or self.image:raise ValueError('模型更新请选择一个仓库模型或完整目录归档版本')
+        elif self.release_id or self.repository_id or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._/:@-]{0,499}',self.image) or not (':' in self.image.rsplit('/',1)[-1] or '@sha256:' in self.image):
             raise ValueError('镜像须含明确的版本tag或sha256摘要，不能包含命令或凭据')
         return self
+
+
+class DeploymentDelete(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    ids:list[UUID]=Field(min_length=1,max_length=1000)
+
+    @field_validator('ids')
+    @classmethod
+    def unique_ids(cls,value):
+        if len(value)!=len(set(value)):raise ValueError('删除记录不能重复')
+        return value

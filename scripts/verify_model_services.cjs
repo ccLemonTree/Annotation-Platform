@@ -82,7 +82,7 @@ async (page) => {
   try {
     await goto(false);
     await page.getByRole('button',{name:'添加模型',exact:true}).waitFor();
-    for(const title of ['ID','KEY','名称','URL','ENDPOINT','类型','状态','操作']) await page.getByRole('columnheader',{name:title,exact:true}).waitFor();
+    for(const title of ['ID','KEY','名称','URL','ENDPOINT','类型','启用状态','连接状态','操作']) await page.getByRole('columnheader',{name:title,exact:true}).waitFor();
     const rerankerTrial=page.getByRole('row').filter({hasText:'重排序配置'}).getByRole('button',{name:'试运行',exact:true});
     if(await rerankerTrial.isEnabled())throw Error('Configuration-only reranker can run inference');
     await rerankerTrial.locator('..').hover();

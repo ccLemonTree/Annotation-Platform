@@ -10,6 +10,7 @@ from database import get_db_session
 from models.user import User
 from schemas.analytics import ActivityHeartbeat, ActivityReceipt, AnalyticsRange
 from services.annotation_analytics import annotation_analytics, record_activity
+from api.asset_routes import scoped_project
 
 router = APIRouter()
 
@@ -26,6 +27,7 @@ async def analytics(project_id: UUID | None = None, start: datetime | None = Non
 
 @router.post('/activity', response_model=ActivityReceipt)
 async def activity(data: ActivityHeartbeat, db: AsyncSession = Depends(get_db_session), user: User = Depends(get_current_user)):
+    await scoped_project(db,data.project_id,user.tenant_id)
     result = await record_activity(db, user, data)
     await db.commit()
     return result

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Drawer, Empty, InputNumber, Select, Space, Table, Tag } from 'antd';
 import { ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import ImageIngestSettings from '../src/components/ImageIngestSettings';
@@ -6,9 +6,12 @@ import { getImageCollections } from '../src/api/images';
 import { apiFetch, setDestination } from './network';
 import type { ImageCollection } from '../src/api/images';
 import type { Destination } from './network';
+import { allProjects, taskKinds } from './managementApi';
+import type {Project} from '../src/api/projects';
+import CreateProjectDialog from './components/CreateProjectDialog';
+import {openProjectAutomation,withCreatedProjects} from './projectActions';
 
-type Project = { id: string; project_name: string };
-type Task = { filtered_count?: number; task_id: string; status: string; kind: string; message?: string };
+type Task = { filtered_count?: number; task_id: string; status: string; kind: string; message?: string; project_id?:string };
 const statuses: Record<string, { label: string; color: string }> = {
   pending: { label: '等待中', color: 'default' }, running: { label: '运行中', color: 'processing' },
   processing: { label: '处理中', color: 'processing' }, completed: { label: '已完成', color: 'success' },
@@ -20,12 +23,18 @@ const kinds: Record<string, string> = { detection: '检测下载', ledger: '台�
 export default function IntegrationBar() {
   const [collections,setCollections]=useState<ImageCollection[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [choice, setChoice] = useState<Destination>({ purpose: 'download', projectId: '' });
+  const createdProjects=useRef<Project[]>([]);
+  const [choice, setChoice] = useState<Destination>(() => {
+    const projectId = new URLSearchParams(location.search).get('project_id') || '';
+    return { purpose: projectId ? 'annotation' : 'download', projectId };
+  });
+  useEffect(() => { setDestination(choice); }, [choice]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [showTasks, setShowTasks] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [acting, setActing] = useState('');
+  const [creating,setCreating]=useState(false);
   const refresh = async () => {
     setLoading(true);
     try {
@@ -39,11 +48,7 @@ export default function IntegrationBar() {
   useEffect(() => {
     let active = true;
     getImageCollections().then(items=>{if(active)setCollections(items);}).catch(()=>{if(active)setError('图片集读取失败，请刷新页面');});
-    apiFetch('/api/projects?page_size=100').then(async response => {
-      if (!response.ok) throw new Error('项目读取失败');
-      const data = await response.json();
-      if (active) setProjects(data.items || []);
-    }).catch(() => { if (active) setError('项目读取失败，请刷新页面'); });
+    allProjects().then(items => { if (active) setProjects(withCreatedProjects(items,createdProjects.current)); }).catch(() => { if (active) setError('项目读取失败，请刷新页面'); });
     return () => { active = false; };
   }, []);
   useEffect(() => {
@@ -53,6 +58,17 @@ export default function IntegrationBar() {
     return () => clearInterval(timer);
   }, [showTasks]);
   const change = (value: Destination) => { setChoice(value); setDestination(value); };
+  const selectedProject=projects.find(project=>project.id===choice.projectId);
+  const created=(project:Project)=>{
+    createdProjects.current=[project,...createdProjects.current];
+    setProjects(previous=>[project,...previous.filter(item=>item.id!==project.id)]);
+    change({...choice,purpose:'annotation',projectId:project.id});setCreating(false);
+    window.dispatchEvent(new CustomEvent('smarteye:projects-updated',{detail:project}));
+  };
+  const openAutomation=()=>{
+    if(choice.purpose!=='annotation'||selectedProject?.task_type!=='detection')return;
+    openProjectAutomation(selectedProject.id);
+  };
   const action = async (task: Task, operation: 'cancel' | 'retry') => {
     setActing(task.task_id); setError('');
     try {
@@ -73,6 +89,8 @@ export default function IntegrationBar() {
         optionFilterProp="label" value={choice.projectId || undefined}
         onChange={projectId => change({ ...choice, projectId })}
         options={projects.map(p => ({ value: p.id, label: p.project_name }))} />}
+      <Button onClick={()=>setCreating(true)}>新建项目</Button>
+      <Button disabled={choice.purpose!=='annotation'||selectedProject?.task_type!=='detection'} title="请选择检测项目后进行预标注与AI审核" onClick={openAutomation}>预标注与AI审核</Button>
       <label>目标图片集</label>
       <Select aria-label="拉取目标图片集" allowClear showSearch optionFilterProp="label" placeholder="按平台名自动归类" value={choice.collectionId}
         onChange={collectionId=>change({...choice,collectionId,minLongEdge:undefined})} options={collections.map(group=>({value:group.id,label:group.name}))}/>
@@ -86,6 +104,7 @@ export default function IntegrationBar() {
     <Button icon={<UnorderedListOutlined />} onClick={() => setShowTasks(true)}>任务记录</Button>
     {choice.purpose === 'annotation' && !choice.projectId && <Alert type="warning" showIcon title="请选择标注项目后再启动拉取任务" />}
     {error && !showTasks && <Alert type="error" showIcon title={error} />}
+    {creating&&<CreateProjectDialog onClose={()=>setCreating(false)} onCreated={created}/>}
     <Drawer title="SmartEye 任务记录" open={showTasks} onClose={() => setShowTasks(false)} size={720}
       extra={<Button aria-label="刷新任务记录" icon={<ReloadOutlined />} onClick={refresh} />}>
       {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
@@ -94,7 +113,8 @@ export default function IntegrationBar() {
         locale={{ emptyText: <Empty description="暂无拉取任务，启动下载后在这里查看进度" /> }}
         pagination={{ pageSize: 8, showTotal: total => `共 ${total} 个任务` }}
         columns={[
-          { title: '任务类型', dataIndex: 'kind', width: 110, render: (kind: string) => kinds[kind] || kind },
+          { title: '任务类型', dataIndex: 'kind', width: 110, render: (kind: string) => taskKinds[kind] || kinds[kind] || kind },
+          { title: '关联项目', dataIndex: 'project_id', render: (id?:string) => id ? projects.find(project=>project.id===id)?.project_name || id : '仅入图片库' },
           { title: '状态', dataIndex: 'status', width: 100, render: (status: string) => <Tag color={statuses[status]?.color}>{statuses[status]?.label || status}</Tag> },
           { title: '任务信息', render: (_: unknown, task: Task) => <div><span>{task.message || '—'}</span>{!!task.filtered_count&&<div>按分辨率规则跳过 {task.filtered_count} 张</div>}<div className="smarteye-task-id">{task.task_id}</div></div> },
           { title: '操作', width: 90, render: (_: unknown, task: Task) => <Space>

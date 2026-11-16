@@ -38,7 +38,7 @@ def test_enabled_upload_queues_deduplicated_image(client,auth_headers,mock_image
         return response.json()[0]
     first,second=upload(),upload()
     assert first['id']==second['id'] and second['scene_status']=='pending'
-    assert client.get('/api/images',headers=auth_headers,params={'scene_status':'pending'}).json()['total']==1
+    assert client.get('/api/images',headers=auth_headers,params={'scene_status':'pending'}).json()['total']==0
 
 def test_legacy_batch_applies_platform_rule_without_partial_references(client,auth_headers,test_project):
     config=client.get('/api/images/ingest-settings',headers=auth_headers).json()

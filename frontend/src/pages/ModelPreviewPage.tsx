@@ -3,9 +3,11 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert,Button,Card,Checkbox,Empty,Form,InputNumber,Pagination,Popconfirm,Progress,Select,Space,Tag,Tabs } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
-import { getModelServices,hasDetectionConfidence,hasDetectionNms } from '../api/modelServices';
+import type { Project } from '../api/projects';
+import ProjectTestImages,{type ProjectTestImage} from '../components/ProjectTestImages';
+import { DEFAULT_DETECTION_CONFIDENCE, getModelServices,isModelOffline,hasDetectionConfidence,hasDetectionNms } from '../api/modelServices';
 import type { ModelService } from '../api/modelServices';
-import { listModelPreviews,getModelPreview,createModelPreview,changeModelPreview,deleteModelPreview,getPreviewConfig } from '../api/modelPreview';
+import { listModelPreviews,getModelPreview,createModelPreview,changeModelPreview,deleteModelPreview,getPreviewConfig,getPreviewVideo } from '../api/modelPreview';
 import type { ModelPreview,PreviewInput,PreviewConfig } from '../api/modelPreview';
 import { activeValidationRun,validationError,validationStatusLabels } from '../api/validation';
 import type { CheckpointInput,ValidationRun,ValidationItem } from '../api/validation';
@@ -14,9 +16,20 @@ import PreviewDetectionImage from '../components/PreviewDetectionImage';
 import useImageNavigation from '../components/useImageNavigation';
 import './ModelPreviewPage.css';
 import MultimodalWorkspace from '../components/validation/MultimodalWorkspace';
+import ValidationPage from './ValidationPage';
 
-export default function ModelPreviewPage(){
+export default function ModelPreviewPage({embeddedProject}:{embeddedProject?:Project}){
   const [params,setParams]=useSearchParams();
+  const view=params.get('view')==='validation'?'validation':'preview';
+  return <Tabs activeKey={view} onChange={value=>setParams(previous=>{const next=new URLSearchParams(previous);next.set('view',value);next.delete('run_id');next.delete('semantic_run_id');next.delete('page');return next;},{preventScrollReset:true})} items={[
+    {key:'preview',label:'快速测试',children:<ModelPreviewWorkspace embeddedProject={embeddedProject}/>},
+    {key:'validation',label:'数据集评估',children:<ValidationPage embeddedProject={embeddedProject}/>},
+  ]} destroyOnHidden/>;
+}
+
+function ModelPreviewWorkspace({embeddedProject}:{embeddedProject?:Project}){
+  const [params,setParams]=useSearchParams();
+  if(embeddedProject)return embeddedProject.task_type==='detection'?<DetectionModelPreviewPage embeddedProject={embeddedProject}/>:<MultimodalWorkspace kind={embeddedProject.task_type==='vector'?'embedding':'caption'} preview embeddedProject={embeddedProject}/>;
   const kind=params.get('task_type')||'detection';
   return <Tabs activeKey={kind} onChange={value=>setParams(previous=>{const next=new URLSearchParams(previous);next.set('task_type',value);next.delete('semantic_run_id');return next;},{preventScrollReset:true})} items={[
     {key:'detection',label:'目标检测',children:<DetectionModelPreviewPage/>},
@@ -25,15 +38,17 @@ export default function ModelPreviewPage(){
   ]} destroyOnHidden/>;
 }
 
-type Values={source:'service'|'checkpoint';model_id?:string;labels?:string[];checkpoint:CheckpointInput;weight_source:string;confidence:number;iou:number};
-const imageFile=/\.(jpe?g|png|bmp|webp)$/i,acceptedFile=/\.(jpe?g|png|bmp|webp|zip|tar|tar\.gz|tgz)$/i;
+type Values={source:'service'|'checkpoint';model_id?:string;labels?:string[];checkpoint:CheckpointInput;weight_source:string;confidence:number;iou:number;video_interval:number};
+const imageFile=/\.(jpe?g|png|bmp|webp)$/i,videoFile=/\.(mp4|webm|mov)$/i,acceptedFile=/\.(jpe?g|png|bmp|webp|zip|tar|tar\.gz|tgz|mp4|webm|mov)$/i;
 const formatBytes=(bytes:number)=>bytes>=1024**3?`${(bytes/1024**3).toFixed(1)} GiB`:`${(bytes/1024**2).toFixed(0)} MiB`;
-function DetectionModelPreviewPage(){
+function DetectionModelPreviewPage({embeddedProject}:{embeddedProject?:Project}){
   const [params,setParams]=useSearchParams(),[form]=Form.useForm<Values>();
+  const projectId=embeddedProject?.id;
+  const [imageSource,setImageSource]=useState(embeddedProject?'project':'upload'),[projectImages,setProjectImages]=useState<ProjectTestImage[]>([]);
   const [models,setModels]=useState<ModelService[]>([]),[history,setHistory]=useState<ValidationRun[]>([]);
   const [files,setFiles]=useState<File[]>([]),[loaded,setDetail]=useState<ModelPreview>();
   const [shown,setShown]=useState<{runId:string;item:ValidationItem}>();
-  const [admin,setAdmin]=useState(false),[ready,setReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [admin,setAdmin]=useState(false),[ready,setReady]=useState(false),[busy,setBusy]=useState(false),[downloading,setDownloading]=useState(false),[error,setError]=useState('');
   const [refresh,setRefresh]=useState(0),[showBoxes,setShowBoxes]=useState(true);
   const [config,setConfig]=useState<PreviewConfig>(),[selectionNote,setSelectionNote]=useState(''),[uploadProgress,setUploadProgress]=useState<number>();
   const picker=useRef<HTMLInputElement>(null),folder=useRef<HTMLInputElement>(null),uploadController=useRef<AbortController|null>(null),mounted=useRef(false),writing=useRef(false);
@@ -53,9 +68,9 @@ function DetectionModelPreviewPage(){
   },[refresh,form]);
   useEffect(()=>{
     const controller=new AbortController();
-    listModelPreviews(controller.signal).then(result=>setHistory(result.items)).catch(e=>{if(!controller.signal.aborted)setError(validationError(e,'读取最近预览失败'));});
+    listModelPreviews(controller.signal,projectId).then(result=>setHistory(result.items)).catch(e=>{if(!controller.signal.aborted)setError(validationError(e,'读取最近预览失败'));});
     return()=>controller.abort();
-  },[refresh,runId]);
+  },[refresh,runId,projectId]);
   useEffect(()=>{
     if(!runId)return;
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
@@ -83,21 +98,23 @@ function DetectionModelPreviewPage(){
   const choose=(incoming:File[],fromFolder=false)=>{
     if(writing.current||!config)return;
     const valid=fromFolder?incoming.filter(file=>imageFile.test(file.name)):incoming;
-    if(valid.some(file=>!file.size||!acceptedFile.test(file.name))){setError('请选择非空图片或 ZIP / TAR / TAR.GZ / TGZ 压缩包');return;}
+    if(valid.some(file=>!file.size||!acceptedFile.test(file.name))){setError('请选择非空图片、视频或支持的压缩包');return;}
     if(!valid.length){setError('文件夹中没有支持的图片');return;}
     const next=[...files,...valid];
+    if(next.some(file=>videoFile.test(file.name))&&next.length!==1){setError('视频预览每次只能上传一个视频，不能与图片混用');return;}
+    if(next.some(file=>videoFile.test(file.name)&&file.size>config.max_video_size)){setError(`视频不能超过${formatBytes(config.max_video_size)}`);return;}
     if(next.length>config.max_images||next.reduce((sum,file)=>sum+file.size,0)>config.max_upload_size){setError(`最多选择${config.max_images}个文件，上传合计不超过${formatBytes(config.max_upload_size)}`);return;}
     if(valid.some(file=>imageFile.test(file.name)&&file.size>config.max_image_size)){setError(`单张图片不能超过${formatBytes(config.max_image_size)}`);return;}
     setSelectionNote(fromFolder&&valid.length<incoming.length?`已忽略 ${incoming.length-valid.length} 个非图片文件`:'');
     setError('');setFiles(next);
   };
   const start=async(values:Values)=>{
-    if(writing.current)return;if(!files.length){setError('请先选择图片');return;}
+    if(writing.current)return;if(!files.length&&!projectImages.length){setError('请先选择上传文件或项目图片');return;}
     writing.current=true;setBusy(true);setError('');setUploadProgress(0);
     const controller=new AbortController();uploadController.current=controller;
-    const config={...(hasConfidence?{confidence:values.confidence}:{}),...(hasNms?{iou:values.iou}:{})};
+    const config={...(hasConfidence?{confidence:values.confidence}:{}),...(hasNms?{iou:values.iou}:{}),...(files.length===1&&videoFile.test(files[0].name)?{video_interval:values.video_interval}:{})};
     const input:PreviewInput=values.source==='checkpoint'?{...config,checkpoint:{...values.checkpoint,...(values.weight_source==='remote'?{training_run_id:undefined}:{})}}:{...config,model_id:values.model_id!,...(values.labels?.length?{labels:values.labels}:{})};
-    try{const run=await createModelPreview(files,input,controller.signal,setUploadProgress);if(mounted.current){open(run.id);setFiles([]);setSelectionNote('');setRefresh(n=>n+1);}}
+    try{const run=await createModelPreview(files,{...input,project_id:projectId,...(imageSource==='project'?{asset_ids:projectImages.map(image=>image.id)}:{})},controller.signal,setUploadProgress);if(mounted.current){open(run.id);setFiles([]);setProjectImages([]);setSelectionNote('');setRefresh(n=>n+1);}}
     catch(e){if(mounted.current){setError(controller.signal.aborted?'上传请求已停止，所选文件已保留；已提交任务可从最近预览查看':validationError(e,'上传或启动推理失败，所选文件已保留'));setRefresh(n=>n+1);}}
     finally{writing.current=false;uploadController.current=null;if(mounted.current){setBusy(false);setUploadProgress(undefined);}}
   };
@@ -110,16 +127,24 @@ function DetectionModelPreviewPage(){
     }catch(e){if(mounted.current)setError(validationError(e,'预览操作失败，请重试'));}
     finally{writing.current=false;if(mounted.current)setBusy(false);}
   };
+  const download=async()=>{
+    if(!detail||downloading)return;setDownloading(true);setError('');
+    try{
+      const blob=await getPreviewVideo(detail.id),url=URL.createObjectURL(blob),link=document.createElement('a');
+      link.href=url;link.download=detail.name.replace(/\.[^.]+$/,'')+'-检测结果.mp4';link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
+    }catch(e){setError(validationError(e,'生成或下载检测视频失败'));}
+    finally{setDownloading(false);}
+  };
   return <div className="model-preview-page">
     {error&&<Alert type="error" showIcon title={error} action={<Button disabled={busy} onClick={()=>{setError('');setRefresh(n=>n+1);}}>刷新重试</Button>}/>}
     <div className="model-preview-layout">
-      <Card title="上传并推理" className="model-preview-setup">
-        <Form form={form} layout="vertical" disabled={busy} onFinish={start} initialValues={{source:'service',model_id:params.get('model_id')||undefined,confidence:.25,iou:.45,weight_source:'training',
+      <Card title={embeddedProject?'选择图片并测试':'上传并推理'} className="model-preview-setup">
+        <Form form={form} layout="vertical" disabled={busy} onFinish={start} initialValues={{source:'service',model_id:params.get('model_id')||undefined,confidence:DEFAULT_DETECTION_CONFIDENCE,iou:.45,video_interval:5,weight_source:'training',
           checkpoint:{server_id:'default',kind:'yolo26',device:'cpu',image:'aisfh5.com:9091/ai/jashan_train:yolo-rfdetr',class_names:[],accept_platform_model_license:false}}}>
           <Form.Item name="source" label="模型来源"><Select aria-label="预览模型来源" options={[{value:'service',label:'模型管理中的检测接口'},{value:'checkpoint',label:'YOLO / RF-DETR / DINOv3 训练权重',disabled:!admin}]} /></Form.Item>
           {source==='service'?<>
             <Form.Item name="model_id" label="检测模型" rules={[{required:true,message:'请选择检测模型'}]}>
-              <Select aria-label="预览检测模型" loading={!ready} showSearch optionFilterProp="label" placeholder="选择已启用的检测模型" options={models.map(model=>({value:model.id,label:model.name}))} onChange={id=>form.setFieldValue('labels',models.find(row=>row.id===id)?.labels||[])}/>
+              <Select aria-label="预览检测模型" loading={!ready} showSearch optionFilterProp="label" placeholder="选择已启用的检测模型" options={models.map(model=>({value:model.id,disabled:isModelOffline(model),label:model.name}))} onChange={id=>form.setFieldValue('labels',models.find(row=>row.id===id)?.labels||[])}/>
             </Form.Item>
             <Form.Item name="labels" label="检测标签" normalize={(labels:string[])=>labels.map(label=>label.trim()).filter(Boolean)}
               rules={[{validator:(_,labels:string[]=[])=>labels.length<=100&&labels.every(label=>label.length<=100)?Promise.resolve():Promise.reject(Error('最多100个标签，每个不超过100字符'))}]}
@@ -127,35 +152,40 @@ function DetectionModelPreviewPage(){
               <Select aria-label="预览检测标签" mode="tags" tokenSeparators={[';','；',',','，']} open={false} placeholder="如 electric bicycle；person" options={(model?.labels||[]).map(label=>({value:label,label}))}/>
             </Form.Item>
             {ready&&!models.length&&<Alert type="info" title="暂无可用检测模型" action={<Link to="/models">配置检测模型</Link>}/>}
-          </>:<CheckpointFields form={form} busy={busy} preview/>}
+          </>:<CheckpointFields form={form} busy={busy} preview projectId={projectId}/>}
           <div className="model-preview-thresholds">
-            {hasConfidence&&<Form.Item name="confidence" label="置信度阈值" rules={[{required:true}]}><InputNumber aria-label="预览置信度" min={0} max={1} step={.05}/></Form.Item>}
-            {hasNms&&<Form.Item name="iou" label="NMS IoU" rules={[{required:true}]}><InputNumber aria-label="预览NMS IoU" min={0} max={1} step={.05}/></Form.Item>}
+            {hasConfidence&&<Form.Item name="confidence" label="置信度阈值" extra="越高越严格，显示的框越少；不确定时保留默认值。" rules={[{required:true}]}><InputNumber aria-label="预览置信度" min={0} max={1} step={.05}/></Form.Item>}
+            {hasNms&&<Form.Item name="iou" label="NMS IoU" extra="去除重叠框的阈值；越低越容易去重，通常保留默认值。" rules={[{required:true}]}><InputNumber aria-label="预览NMS IoU" min={0} max={1} step={.05}/></Form.Item>}
           </div>
           {!hasConfidence&&<Alert type="info" showIcon style={{marginBottom:16}} title="此模型不提供检测置信度，也不执行 NMS；保留全部检测结果。"/>}
           {hasConfidence&&!hasNms&&<p className="workspace-help">此接口不支持单独设置 NMS IoU。</p>}
-          <input type="file" ref={picker} className="model-preview-picker" hidden multiple accept=".jpg,.jpeg,.png,.bmp,.webp,.zip,.tar,.tar.gz,.tgz" aria-label="选择模型预览图片" onChange={event=>{choose(Array.from(event.target.files||[]));event.target.value='';}}/>
+          {embeddedProject&&<Form.Item label="测试图片来源"><Select aria-label="测试图片来源" value={imageSource} options={[{value:'upload',label:'上传图片或文件'},{value:'project',label:'项目已有图片'}]} onChange={value=>{setError('');setImageSource(value);setFiles([]);setProjectImages([]);setSelectionNote('');}}/></Form.Item>}
+          {imageSource==='project'&&embeddedProject?<ProjectTestImages projectId={embeddedProject.id} value={projectImages} onChange={setProjectImages} disabled={busy}/>:<>
+          <input type="file" ref={picker} className="model-preview-picker" hidden multiple accept=".jpg,.jpeg,.png,.bmp,.webp,.zip,.tar,.tar.gz,.tgz,.mp4,.webm,.mov" aria-label="选择模型预览图片或视频" onChange={event=>{choose(Array.from(event.target.files||[]));event.target.value='';}}/>
           <input type="file" ref={element=>{folder.current=element;element?.setAttribute('webkitdirectory','');}} className="model-preview-picker" hidden multiple aria-label="选择模型预览文件夹" onChange={event=>{choose(Array.from(event.target.files||[]),true);event.target.value='';}}/>
           <Button className="model-preview-drop" icon={<UploadOutlined/>} disabled={busy} onClick={()=>picker.current?.click()}
-            onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();choose(Array.from(event.dataTransfer.files));}}>选择图片或压缩包</Button>
+            onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();choose(Array.from(event.dataTransfer.files));}}>选择图片、视频或压缩包</Button>
           <Button disabled={busy||!ready} onClick={()=>folder.current?.click()}>选择文件夹</Button>
-          <p className="workspace-help">支持 JPG / PNG / BMP / WebP 和 ZIP / TAR / TAR.GZ / TGZ；文件夹请用“选择文件夹”。{config&&`每批最多${config.max_images}张（含解包后），上传合计${formatBytes(config.max_upload_size)}，展开图片合计${formatBytes(config.max_expanded_size)}，单图${formatBytes(config.max_image_size)}。`}压缩包仅提取图片，其他文件忽略。</p>
+          {files.length===1&&videoFile.test(files[0].name)&&<Form.Item name="video_interval" label="每隔几秒分析一帧" rules={[{required:true,message:'请设置分析间隔'}]}><InputNumber min={.1} max={60} step={.1} precision={2} aria-label="视频分析间隔秒数" addonAfter="秒"/></Form.Item>}
+          <p className="workspace-help">支持 JPG / PNG / BMP / WebP、MP4 / WebM / MOV 和 ZIP / TAR / TAR.GZ / TGZ；文件夹请用“选择文件夹”。{config&&`每批最多${config.max_images}张（含解包后），上传合计${formatBytes(config.max_upload_size)}，展开图片合计${formatBytes(config.max_expanded_size)}，单图${formatBytes(config.max_image_size)}，单视频${formatBytes(config.max_video_size)}。`}视频最长10分钟、分辨率不超过1920×1080；压缩包仅提取图片。</p>
           {selectionNote&&<p className="workspace-help">{selectionNote}</p>}
           {!!files.length&&<><div>已选择 {files.length} 个文件 <Button type="link" onClick={()=>{setFiles([]);setSelectionNote('');}}>清空所选</Button></div>
             <ul className="model-preview-files">{files.slice(0,50).map((file,index)=><li key={index}>{file.webkitRelativePath||file.name}<Button type="text" size="small" aria-label={`移除预览文件 ${index+1}`} onClick={()=>setFiles(current=>current.filter((_,i)=>i!==index))}>移除</Button></li>)}{files.length>50&&<li>另有 {files.length-50} 个文件待上传</li>}</ul></>}
+          </>}
           {uploadProgress!==undefined&&<><Progress percent={uploadProgress} size="small"/><p className="workspace-help">{uploadProgress<100?'正在上传文件…':'上传完成，正在检查压缩包并准备推理…'}</p><Button onClick={()=>uploadController.current?.abort()} disabled={false}>停止上传请求</Button></>}
-          <Button aria-label="开始模型预览" type="primary" block htmlType="submit" loading={busy} disabled={!ready||!files.length||busy}>开始模型预览</Button>
-          <p className="workspace-help model-preview-note">上传后展示检测框；模型提供有效置信度时同时显示分数。图片仅用于预览，不进入图片库，不生成标注、描述或分类。</p>
+          <Button aria-label="开始模型预览" type="primary" block htmlType="submit" loading={busy} disabled={!ready||(!files.length&&!projectImages.length)||busy}>开始模型预览</Button>
+          <p className="workspace-help model-preview-note">结果不修改项目图片或标注；快速测试未提供真值，不计算准确率。视频按设定间隔抽帧，上传内容仅用于预览，不进入图片库。</p>
         </Form>
       </Card>
       <Card title="检测效果" className="model-preview-results" extra={<Checkbox checked={showBoxes} onChange={event=>setShowBoxes(event.target.checked)}>显示检测框</Checkbox>}>
         <Select aria-label="打开最近模型预览" placeholder="打开最近预览（刷新页面后可继续查看）" value={runId||undefined} disabled={busy} onChange={open} className="model-preview-history"
           options={history.map(run=>({value:run.id,label:`${run.name} · ${run.model.name} · ${validationStatusLabels[run.status]} · ${new Date(run.created_at).toLocaleString()}`}))}/>
-        {!detail?<Empty description={runId?'正在读取预览…':'选择模型并上传图片，即可查看检测效果'}/>:<>
+        {!detail?<Empty description={runId?'正在读取预览…':'选择模型和测试图片，即可查看检测效果'}/>:<>
           <div className="model-preview-summary"><Space wrap><strong>{detail.model.name}</strong><Tag>{validationStatusLabels[detail.status]}</Tag><span>{detail.model.score_type==='uncalibrated'?'置信度：未提供':`置信度 ≥ ${detail.config.inference_confidence}`}</span></Space>
             {!!detail.config.labels?.length&&<p className="workspace-help">本次标签：{detail.config.labels.join('；')}</p>}
             {detail.model.source==='checkpoint'&&<p className="workspace-help">权重：{detail.model.weight_path} · 设备：{detail.model.device}</p>}
             <Space wrap><Button disabled={busy} onClick={()=>setRefresh(n=>n+1)}>刷新结果</Button>
+              {detail.video&&<Button disabled={detail.status!=='completed'} loading={downloading} onClick={()=>void download()}>下载画框视频 MP4</Button>}
               {(activeValidationRun(detail)||detail.remote_active)&&<Button disabled={busy} onClick={()=>void change('cancel')}>取消 / 确认停止</Button>}
               {!activeValidationRun(detail)&&detail.failed_count>0&&<Button disabled={busy} onClick={()=>void change('retry')}>重试失败图片</Button>}
               <Popconfirm title="删除本次预览和临时图片？" description="运行中会先取消；远端停止确认后才删除。" onConfirm={()=>change('delete')}><Button danger disabled={busy}>删除预览</Button></Popconfirm>

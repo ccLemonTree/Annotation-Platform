@@ -2,28 +2,85 @@
 import json
 from pathlib import Path
 from fastapi import HTTPException
-from schemas.training_run import PARAMETERS,ENVIRONMENT,DETECTION_IMAGE,SWIFT_IMAGE,LIGHTLY_IMAGE
+from pydantic import ValidationError
+from schemas.training_run import PARAMETERS,ENVIRONMENT,DETECTION_IMAGE,SWIFT_IMAGE,LIGHTLY_IMAGE,absolute_path,trainer_parameters
 
 NAMES={'yolo26':'YOLO26','rfdetr_medium':'RF-DETR Medium','rfdetr_2xlarge':'RF-DETR 2XLarge',
        'swift_sft':'Swift 大模型SFT','wemm':'WeMM 向量微调','dinov3_vits16_ltdetr':'DINOv3 ViT-S/16 · LTDETR 检测微调'}
 
 
-def catalog():
-    return {kind:dict(name=NAMES[kind],schema=model.model_json_schema(),defaults=model().model_dump(),
+def catalog(overrides=None):
+    overrides=overrides or {}
+    return {kind:dict(name=NAMES[kind],schema=model.model_json_schema(),
+        defaults={**model().model_dump(),**overrides.get(kind,{})},overrides=overrides.get(kind,{}),
         image=LIGHTLY_IMAGE if kind=='dinov3_vits16_ltdetr' else SWIFT_IMAGE if kind in ('swift_sft','wemm') else DETECTION_IMAGE,
         environment=ENVIRONMENT if kind in ('swift_sft','wemm') else {'CUDA_VISIBLE_DEVICES':'auto'})
         for kind,model in PARAMETERS.items()}
 
 
+def validate_defaults(kind,parameters):
+    if kind not in PARAMETERS:
+        raise HTTPException(404,'内置训练器不存在')
+    try:
+        params=PARAMETERS[kind].model_validate(parameters).model_dump(exclude_unset=True)
+        full=PARAMETERS[kind].model_validate(params)
+        if kind=='dinov3_vits16_ltdetr' and full.warmup_steps>=full.steps:
+            raise ValueError('学习率预热步数必须小于总训练步数')
+        if kind in ('swift_sft','wemm'):
+            if full.val_dataset:absolute_path(full.val_dataset)
+            if full.eval_strategy!='no' and not full.val_dataset:
+                raise ValueError('启用评估需要服务器验证JSONL路径')
+            if full.task_type=='causal_lm' and full.loss_type:
+                raise ValueError('向量损失函数只适用于embedding任务')
+        return params
+    except ValidationError as error:
+        raise HTTPException(422,error.errors(include_url=False,include_context=False,include_input=False)) from None
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from None
+
+
 def effective_config(request):
     config=request.model_dump(mode='json')
+    if config.get('trainer_id') is None:config.pop('trainer_id',None)
     environment=dict(ENVIRONMENT) if request.kind in ('swift_sft','wemm') else {}
+    if config.get('execution_backend')=='k8s' and request.kind=='wemm':
+        from services.k8s_training_recipes import recipe_defaults
+        environment.update(recipe_defaults('wemm')['environment'])
     environment.update(request.environment)
-    if environment.get('NPROC_PER_NODE')=='auto':environment['NPROC_PER_NODE']=str(len(request.gpu_uuids))
-    if environment.get('CUDA_VISIBLE_DEVICES','auto')=='auto':environment['CUDA_VISIBLE_DEVICES']=','.join(str(i) for i in range(len(request.gpu_uuids)))
+    count=config['k8s']['gpus_per_node'] if config.get('execution_backend')=='k8s' else len(request.gpu_uuids)
+    if environment.get('NPROC_PER_NODE')=='auto':environment['NPROC_PER_NODE']=str(count)
+    if environment.get('CUDA_VISIBLE_DEVICES','auto')=='auto':environment['CUDA_VISIBLE_DEVICES']=','.join(str(i) for i in range(count))
     config['environment']={k:v for k,v in environment.items() if v!=''}
     config['adapter_version']=1
     return config
+
+
+def configure_trainer(config,definition,format,manifest):
+    if format!=definition['dataset_format']:
+        raise HTTPException(400,'所选冻结数据格式与训练器登记格式不匹配')
+    detection=format in ('yolo','coco')
+    if not detection and config.get('selected_labels') is not None:
+        raise HTTPException(422,'仅检测数据支持选择训练标签')
+    parameters=definition['parameters']
+    for key,value in config['parameters'].items():
+        default=parameters.get(key)
+        compatible=type(value) is type(default) or (type(default) is float and type(value) is int)
+        if key not in parameters or not compatible:
+            raise HTTPException(422,f'训练参数 {key} 未登记或类型与默认值不符')
+    try:
+        config['parameters']=trainer_parameters({**parameters,**config['parameters']})
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from error
+    if config['image'] and config['image']!=definition['image']:
+        raise HTTPException(422,'训练镜像由登记配置指定')
+    config['image']=definition['image']
+    config['trainer']=definition
+    if detection:
+        validate_snapshot('yolo26' if format=='yolo' else 'rfdetr_medium',format,manifest)
+        return '/output/prepared-dataset/data.yaml' if format=='yolo' else '/output/prepared-dataset'
+    validate_snapshot('swift_sft',format,manifest,
+                      {'task_type':'causal_lm' if format=='swift_sft' else 'embedding','loss_type':format})
+    return '/output/dataset/train.jsonl'
 
 
 def validate_snapshot(kind,format,manifest,parameters=None):
@@ -36,15 +93,37 @@ def validate_snapshot(kind,format,manifest,parameters=None):
         return
     if format not in ('yolo','coco') or (kind=='yolo26' and format!='yolo'):
         raise HTTPException(400,'所选冻结导出格式不适用于此训练器；YOLO需YOLO格式，RF-DETR/DINOv3支持YOLO/COCO')
-    splits={a.get('split') for a in manifest.get('assets',[])}
-    if not {'train','val'}<=splits or splits-{'train','val','test'} or not manifest.get('approved_only'):
-        raise HTTPException(400,'请选择仅已审核标注且包含明确train/val划分的冻结导出，不自动拆分或混用测试集')
+    assets=manifest.get('assets',[])
+    splits={a.get('split') for a in assets}
+    if not {'train','val'}<=splits or splits-{'train','val','test'}:
+        raise HTTPException(400,'冻结导出必须包含train和val划分，且只允许train/val/test；不会自动拆分或混用测试集')
+    approved_only=manifest.get('approved_only')
+    for asset in assets:
+        status=asset.get('review_status')
+        if status=='approved' or (status=='pending' and approved_only is False):
+            continue
+        if 'review_status' not in asset and approved_only is True:
+            continue
+        raise HTTPException(400,'冻结导出包含已驳回、超出所选审核范围或缺少审核状态的标注，请重新冻结')
 
 
 def build_script(config):
+    if config['kind']=='custom':
+        format=config['trainer']['dataset_format']
+        lines=['import subprocess, sys', "if __name__ == '__main__':"]
+        if format in ('yolo','coco'):
+            helper=Path(__file__).with_name('training_dataset.py').read_text(encoding='utf-8')
+            lines.insert(0,helper)
+            source,kind=('/output/dataset/data.yaml','yolo26') if format=='yolo' else ('/output/dataset/rfdetr','coco')
+            lines.append(f'    prepare_detection({source!r}, "/output/prepared-dataset", {kind!r}, {config.get("selected_labels")!r})')
+        lines.append(f'    subprocess.run([sys.executable, "-I", "-u", "-m", {config["trainer"]["module"]!r}, "--config", "/output/run_config.json"], check=True)')
+        return '\n'.join(lines)+'\n'
     if config['kind'] in ('model_export','model_merge'):
         from services.model_output import build_script as output_script
         return output_script(config)
+    if config.get('execution_backend')=='k8s':
+        from services.k8s_training_recipes import build_script as k8s_script
+        return k8s_script(config)
     params=dict(config['parameters']);kind=config['kind']
     dataset=config.get('runtime_dataset',config['dataset_path'])
     output='/output/'+config['output_subdir']

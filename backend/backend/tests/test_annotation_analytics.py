@@ -1,17 +1,17 @@
 """Analytics uses isolated SQLite only; no business timing records are written."""
 from datetime import datetime, timedelta, timezone
 from importlib.util import find_spec
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select, func
+from sqlalchemy import select, func, event
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from database import get_db_session
-from models import Annotation, AnnotationEvent, Asset, Project, Tenant
+from models import Annotation, AnnotationEvent, Asset, Project, Tenant, User
 
 
 def test_activity_model_contract():
@@ -116,6 +116,58 @@ def test_half_open_utc_time_filters_and_empty_period(analytics_client, auth_head
     assert empty['workload']['human_annotation_events'] == 0
 
 
+@pytest.mark.asyncio
+async def test_human_images_deduplicate_per_user_and_mode_with_filtered_totals(
+        analytics_client, auth_headers, test_db, test_asset, test_user, evidence):
+    test_db.add(User(id=2, tenant_id=test_user.tenant_id, username='second',
+                     email='second@example.com', password_hash='unused'))
+    excluded = Asset(project_id=test_asset.project_id, original_name='excluded.jpg', blob_path='excluded.jpg',
+                     content_hash='excluded', file_size=10, source_type='upload')
+    test_db.add(excluded)
+    await test_db.flush()
+    for user_id, asset_id, action, source in [
+        (1, test_asset.id, 'update', 'manual'),
+        (1, test_asset.id, 'reject', 'manual'),
+        (1, test_asset.id, 'approve', 'manual'),
+        (2, test_asset.id, 'create', 'manual'),
+        (2, test_asset.id, 'reject', 'manual'),
+        (1, excluded.id, 'create', 'ai'),
+        (1, excluded.id, 'approve', 'model'),
+        (1, excluded.id, 'update', 'reuse'),
+        (1, excluded.id, 'reject', 'reuse'),
+        (1, None, 'update', 'manual'),
+        (1, None, 'approve', 'manual'),
+    ]:
+        test_db.add(AnnotationEvent(project_id=test_asset.project_id, asset_id=asset_id,
+            user_id=user_id, action=action, detail={'source': source}, created_at=evidence+timedelta(seconds=10)))
+    await test_db.commit()
+
+    result = summary(analytics_client, auth_headers, test_asset.project_id,
+                     start='2026-10-10T00:00:00Z', end='2026-10-11T00:00:00Z')
+    workload = result['workload']
+    assert workload['human_annotation_events'] == 5
+    assert workload['human_review_events'] == 5
+    assert workload['human_annotation_images'] == 2
+    assert workload['human_review_images'] == 1
+    users = {row['user_id']: row for row in result['efficiency']['users']}
+    assert users[1]['annotation_images'] == 2
+    assert users[1]['review_images'] == 1
+    assert users[1]['annotation_events'] == 4 and users[1]['review_events'] == 4
+    assert users[2]['annotation_images'] == users[2]['review_images'] == 1
+    assert result['efficiency']['annotation_per_hour'] is None
+
+    before = summary(analytics_client, auth_headers, test_asset.project_id,
+                     start='2026-10-10T12:00:00+08:00', end='2026-10-10T12:00:10+08:00')
+    assert before['workload']['human_annotation_images'] == 1
+    assert before['workload']['human_review_images'] == 0
+    assert len(before['efficiency']['users']) == 1
+    assert before['efficiency']['users'][0]['annotation_images'] == 1
+    assert before['efficiency']['users'][0]['review_images'] == 0
+    empty = summary(analytics_client, auth_headers, test_asset.project_id, start='2026-10-11T00:00:00Z')
+    assert empty['workload']['human_annotation_images'] == empty['workload']['human_review_images'] == 0
+    assert empty['efficiency']['users'] == []
+
+
 @pytest.mark.parametrize('params', [
     {'start': '2026-10-11T00:00:00Z', 'end': '2026-10-10T00:00:00Z'},
     {'start': '2026-10-11T00:00:00'}, {'start': 'bad-date'},
@@ -124,6 +176,47 @@ def test_invalid_time_filters(analytics_client, auth_headers, test_project, para
     response = analytics_client.get('/api/analytics', headers=auth_headers,
                                     params={'project_id': str(test_project.id), **params})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize('timed', [False, True])
+@pytest.mark.asyncio
+async def test_manual_match_images_and_events_use_window_without_inventing_time(
+        analytics_client, auth_headers, test_db, test_asset, timed):
+    from models.work_session import WorkActivityInterval
+    at = datetime(2026, 10, 10, 4)
+    excluded = Asset(project_id=test_asset.project_id, original_name='excluded.jpg', blob_path='excluded.jpg',
+                     content_hash='excluded-match', file_size=10, source_type='upload')
+    test_db.add(excluded)
+    await test_db.flush()
+    for action in ('match_judgment', 'match_review'):
+        for offset, asset_id, source in [
+            (0, test_asset.id, None), (5, test_asset.id, 'manual'),
+            (0, excluded.id, 'ai'), (0, excluded.id, 'reuse'),
+        ]:
+            test_db.add(AnnotationEvent(project_id=test_asset.project_id, asset_id=asset_id, user_id=1,
+                action=action, detail={'query_id': str(uuid4()), **({'source': source} if source else {})},
+                created_at=at+timedelta(seconds=offset)))
+    for action, offset in [('match_judgment', -1), ('match_review', 10), ('match_ai_review', 0)]:
+        test_db.add(AnnotationEvent(project_id=test_asset.project_id, asset_id=excluded.id, user_id=1,
+            action=action, detail={}, created_at=at+timedelta(seconds=offset)))
+    if timed:
+        for activity in ('annotation', 'review'):
+            test_db.add(WorkActivityInterval(project_id=test_asset.project_id, asset_id=test_asset.id, user_id=1,
+                session_id=uuid4(), sequence=1, activity=activity, started_at=at, ended_at=at+timedelta(seconds=5)))
+    await test_db.commit()
+    result = summary(analytics_client, auth_headers, test_asset.project_id,
+                     start='2026-10-10T12:00:00+08:00', end='2026-10-10T12:00:10+08:00')
+    assert result['workload']['human_annotation_events'] == result['workload']['human_review_events'] == 2
+    assert result['workload']['human_annotation_images'] == result['workload']['human_review_images'] == 1
+    assert result['workload']['automatic_annotation_events'] == result['workload']['automatic_review_events'] == 1
+    row = result['efficiency']['users'][0]
+    for activity in ('annotation', 'review'):
+        assert row[f'{activity}_events'] == 2
+        assert row[f'{activity}_images'] == 1
+        assert row[f'timed_{activity}_events'] == (1 if timed else 0)
+        assert row[f'{activity}_seconds'] == (5 if timed else None)
+        assert row[f'{activity}_per_hour'] == (720 if timed else None)
+    assert result['efficiency']['active_seconds'] == (5 if timed else None)
 
 
 @pytest_asyncio.fixture
@@ -268,3 +361,44 @@ async def test_quality_review_origin_prefers_explicit_event_source_over_comment(
     await test_db.commit()
     result = summary(analytics_client, auth_headers, test_asset.project_id)
     assert result['quality']['review_origins']['human'] == 1
+
+
+@pytest.mark.asyncio
+async def test_tenant_summary_over_asyncpg_argument_limit_remains_complete(
+        test_db, test_engine, test_project, test_user, activity_table):
+    """A normal tenant can exceed asyncpg's 32767 bind limit without any filters."""
+    from services.annotation_analytics import annotation_analytics
+    from schemas.analytics import AnalyticsRange
+    count=33000
+    # PostgreSQL UUID columns have SQLite numeric affinity; keep bulk fixture IDs textual.
+    asset_ids=[UUID('a'+uuid4().hex[1:]) for _ in range(count)]
+    annotation_ids=[UUID('a'+uuid4().hex[1:]) for _ in range(count)]
+    at=datetime(2026,10,10,4)
+    await test_db.execute(Asset.__table__.insert(),[{
+        'id':asset_id,'project_id':test_project.id,'original_name':f'{index}.jpg','blob_path':f'{index}.jpg',
+        'content_hash':f'scale-{index}','file_size':10,'source_type':'upload'} for index,asset_id in enumerate(asset_ids)])
+    await test_db.execute(Annotation.__table__.insert(),[{
+        'id':annotation_id,'asset_id':asset_id,'annotation_data':{'boxes':[]},'version':1,'is_latest':True,
+        'annotation_source':'manual','review_status':'approved','reviewer_id':test_user.id,'created_at':at}
+        for asset_id,annotation_id in zip(asset_ids,annotation_ids)])
+    await test_db.execute(AnnotationEvent.__table__.insert(),[{
+        'id':UUID('a'+uuid4().hex[1:]),'project_id':test_project.id,'asset_id':asset_id,'user_id':test_user.id,'action':'update',
+        'detail':{'annotation_id':str(annotation_id),'source':'manual','previous_version':0},'created_at':at}
+        for asset_id,annotation_id in zip(asset_ids,annotation_ids)])
+    await test_db.commit()
+    parameter_counts=[]
+    def enforce_driver_limit(conn,cursor,statement,parameters,context,executemany):
+        if not executemany:
+            parameter_counts.append(len(parameters))
+            assert len(parameters)<=32767,'analytics exceeds asyncpg query argument limit'
+    event.listen(test_engine.sync_engine,'before_cursor_execute',enforce_driver_limit)
+    try:
+        result=await annotation_analytics(test_db,test_user,None,AnalyticsRange())
+    finally:
+        event.remove(test_engine.sync_engine,'before_cursor_execute',enforce_driver_limit)
+    assert result['quality']['total']==result['quality']['approved']==count
+    assert result['quality']['negative_samples']==count
+    assert result['workload']['human_annotation_events']==count and result['workload']['rework_events']==0
+    assert result['efficiency']['active_seconds'] is None
+    assert result['efficiency']['users'][0]['annotation_events']==count
+    assert max(parameter_counts)<=32767

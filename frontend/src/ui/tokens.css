@@ -34,6 +34,8 @@ button, a, input, select, textarea, summary { -webkit-tap-highlight-color: trans
 :focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; }
 table, .ant-statistic, .ant-tag { font-variant-numeric: tabular-nums; }
+/* Empty-table instructions are readable content, not disabled controls. */
+.ant-table-wrapper .ant-table .ant-table-tbody > tr.ant-table-placeholder { color: var(--ui-muted); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--ui-background); }
 ::-webkit-scrollbar-thumb { background: var(--ui-border); border-radius: 4px; }

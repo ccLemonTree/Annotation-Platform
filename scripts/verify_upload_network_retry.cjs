@@ -55,7 +55,7 @@ async page=>{
     checks.push('connection reset retries only the failed part and completes without an error toast');
 
     stage='persistent failure and resume';await choose('persistent');
-    await dialog().getByText(/已重试.*继续上传/).waitFor();
+    await dialog().getByRole('alert').filter({hasText:/已重试.*继续上传/}).waitFor();
     if(parts.join(',')!=='0,1,1,1'||completions)throw Error('Retry limit did not preserve uploaded parts');
     mode='normal';await start().click();await dialog().getByText(/新增 1，重复 0/).waitFor();
     if(parts.join(',')!=='0,1,1,1,1,2')throw Error('Resume retransmitted an acknowledged part');
@@ -69,7 +69,7 @@ async page=>{
     if(parts.join(',')!=='0,1,1,2')throw Error('Temporary HTTP failure was not recovered');
     checks.push('temporary HTTP 503 retries and recovers');
 
-    stage='HTTP 422';await choose('invalid');await dialog().getByText('Request failed with status code 422',{exact:true}).waitFor();
+    stage='HTTP 422';await choose('invalid');await dialog().getByRole('alert').filter({hasText:'分片校验不匹配'}).waitFor();
     if(parts.join(',')!=='0,1'||completions)throw Error('Validation failure must not retry');
     checks.push('HTTP 422 validation errors stop immediately');
 

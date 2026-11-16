@@ -1,17 +1,17 @@
 import hashlib,subprocess
 from uuid import UUID
 import pytest
-from tests.test_training_runs import training_tables,spec
+from tests.test_training_runs import training_tables,spec,platform_payload,platform_wemm_payload
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state',['draft','completed','failed','canceled','running','starting','stopping','unknown'])
-async def test_delete_only_inactive_records_never_remote_files(client,auth_headers,test_db,monkeypatch,state):
+async def test_delete_only_inactive_records_never_remote_files(client,auth_headers,test_db,monkeypatch,state,platform_payload):
     from services import training_runs
     from models.training_run import TrainingRun
     async def forbidden(*args,**kwargs):raise AssertionError('Delete must not touch remote files or containers')
     monkeypatch.setattr(training_runs,'remote',forbidden)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     row=await test_db.get(TrainingRun,UUID(run['id']));row.status=state;await test_db.commit()
     response=client.delete('/api/training/runs/'+run['id'],headers=auth_headers)
     assert response.status_code==(409 if state in training_runs.ACTIVE else 204),response.text
@@ -19,9 +19,9 @@ async def test_delete_only_inactive_records_never_remote_files(client,auth_heade
 
 
 @pytest.mark.asyncio
-async def test_delete_refuses_unreleased_gpu_hold_and_requires_admin(client,auth_headers,test_db,test_user):
+async def test_delete_refuses_unreleased_gpu_hold_and_requires_admin(client,auth_headers,test_db,test_user,platform_payload):
     from models.training_run import TrainingGpuHold
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json();url='/api/training/runs/'+run['id']
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json();url='/api/training/runs/'+run['id']
     assert client.delete(url).status_code==401
     test_user.role='annotator';await test_db.commit()
     assert client.delete(url,headers=auth_headers).status_code==403
@@ -29,7 +29,7 @@ async def test_delete_refuses_unreleased_gpu_hold_and_requires_admin(client,auth
     assert client.delete(url,headers=auth_headers).status_code==409
 
 
-def test_artifact_download_checks_remote_hash_and_cleans_local_copy(client,auth_headers,monkeypatch,tmp_path):
+def test_artifact_download_checks_remote_hash_and_cleans_local_copy(client,auth_headers,monkeypatch,tmp_path,platform_payload):
     from services import training_runs
     content=b'checkpoint-content';local=[]
     async def remote(db,run,action,**values):
@@ -40,7 +40,7 @@ def test_artifact_download_checks_remote_hash_and_cleans_local_copy(client,auth_
         dest=Path(input['download']['localPath']);dest.write_bytes(content);local.append(dest)
         return {}
     monkeypatch.setattr(training_runs,'remote',remote);monkeypatch.setattr(training_runs,'bridge',bridge)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     response=client.get('/api/training/runs/'+run['id']+'/artifacts/download',params={'path':'weights/best.pt'},headers=auth_headers)
     assert response.status_code==200,response.text
     assert response.content==content and 'best.pt' in response.headers['content-disposition']

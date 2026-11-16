@@ -1,0 +1,29 @@
+.image-annotation-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.image-annotation-workspace > .ant-card-head { flex-shrink: 0; }
+.image-annotation-workspace > .ant-card-head .ant-card-head-wrapper { flex-wrap: wrap; gap: 8px; }
+.image-annotation-workspace > .ant-card-head .ant-card-extra { margin-inline-start: auto; }
+.image-annotation-workspace > .ant-card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.image-annotation-toolbar { flex-shrink: 0; margin-bottom: 16px; }
+.image-annotation-panels { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 24px; }
+.image-annotation-picture, .image-annotation-fields { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.image-annotation-picture .ant-image-img { max-height: 50dvh; object-fit: contain; }
+.annotation-image-viewer .workspace-canvas { height: auto; max-height: none !important; cursor: zoom-in !important; }
+.image-annotation-source { flex-shrink: 0; margin-top: 8px; color: var(--ui-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.image-annotation-fields { padding: 0 4px 12px; }
+.image-annotation-sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.image-annotation-sidebar .image-annotation-fields { flex: 1; }
+.image-annotation-review-actions { display: grid; flex-shrink: 0; gap: 8px; padding: 12px 4px 0; border-top: 1px solid var(--ui-border); background: var(--ui-surface); }
+.image-annotation-review-actions summary { cursor: pointer; font-size: 12px; }
+.image-annotation-attribute-heading, .image-annotation-review-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.image-annotation-review-meta > details[open] { flex-basis: 100%; }
+.image-annotation-fields .attribute-editor-details summary { margin-bottom: 0; }
+.image-annotation-fields .attribute-editor-details details[open] > summary { margin-bottom: 8px; }
+.image-annotation-fields summary { cursor: pointer; margin-bottom: 12px; }
+@media (max-width: 991px) {
+  .image-annotation-workspace { height: auto; }
+  .image-annotation-panels { flex: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; gap: 16px; }
+  .image-annotation-picture { overflow: visible; }
+  .image-annotation-sidebar .image-annotation-fields { flex: none; overflow: visible; }
+  .image-annotation-picture .ant-image-img { max-height: 20dvh; }
+  .image-annotation-picture .ant-typography { margin-bottom: 4px; font-size: 12px; }
+}

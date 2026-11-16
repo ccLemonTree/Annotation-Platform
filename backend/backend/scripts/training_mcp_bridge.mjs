@@ -4,10 +4,10 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { isIP } from 'node:net';
+import { connectionEnvironment } from './ssh_connection_env.mjs';
 
 const [entry, server] = process.argv.slice(2);
-let client, transport, timer;
+let client, transport, timer, phase = 'connect', reason = 'transport';
 try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   const monitoring = input.executor === 'deployment_logs';
@@ -17,15 +17,10 @@ try {
   const { StdioClientTransport } = await import(pathToFileURL(require.resolve('@modelcontextprotocol/sdk/client/stdio.js')).href);
   let env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('SSH_') || key === 'PREFER_TOML_CONFIG'));
   if (input.connection) {
-    const c = input.connection;
-    if (server !== 'platform_training' || !isIP(c.host) || c.host.includes('%') || !Number.isInteger(c.port) || c.port < 1 || c.port > 65535
-      || !/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/.test(c.username) || typeof c.password !== 'string' || !c.password || c.password.includes('\0')) throw Error('Invalid connection');
-    env = { SSH_ENV_PATH: resolve(entry, 'no-training-env'), SSH_CONFIG_PATH: resolve(entry, 'no-training-config'),
-      SSH_SERVER_PLATFORM_TRAINING_HOST: c.host, SSH_SERVER_PLATFORM_TRAINING_PORT: String(c.port),
-      SSH_SERVER_PLATFORM_TRAINING_USER: c.username, SSH_SERVER_PLATFORM_TRAINING_PASSWORD: c.password,
-      SSH_SERVER_PLATFORM_TRAINING_DEFAULT_DIR: '/', SSH_SERVER_PLATFORM_TRAINING_PLATFORM: 'linux', SSH_SERVER_PLATFORM_TRAINING_MODE: 'unrestricted' };
+    if (server !== 'platform_training') throw Error('Invalid connection');
+    env = connectionEnvironment(entry,server,input.connection,'unrestricted');
   }
-  env.MCP_SSH_MAX_OUTPUT_LENGTH = '1048576'; env.SSH_LOG_LEVEL = 'ERROR';
+  env.MCP_SSH_MAX_OUTPUT_LENGTH = input.executor === 'k8s_training' && input.payload?.action === 'metric_files' ? '16777216' : '1048576'; env.SSH_LOG_LEVEL = 'ERROR';
   transport = new StdioClientTransport({ command: process.execPath, args: [resolve(entry)], cwd: dirname(dirname(resolve(entry))), stderr: 'pipe', env });
   transport.stderr?.on('data', () => {});
   client = new Client({ name: 'data-platform-training', version: '1.0.0' });
@@ -39,28 +34,56 @@ try {
       if (!Array.isArray(servers)) throw Error('Invalid server list');
       process.stdout.write(JSON.stringify({ success: true, result: servers.map(({ name, host, user, port, group, description }) => ({ name, host, user, port, group, description })) }));
     } else if (input.upload || input.download) {
+      phase = 'transfer';
       const transfer = input.upload || input.download;
       result = await client.callTool({ name: input.upload ? 'ssh_upload' : 'ssh_download', arguments: { server, localPath: transfer.localPath, remotePath: transfer.remotePath } }, undefined, { timeout: timeoutMs - 40000 });
-      if (result.isError) throw Error('Upload failed');
+      if (result.isError) { reason = 'mcp_is_error'; throw Error('Upload failed'); }
       const body = result.content?.filter(c => c.type === 'text').map(c => c.text).join('');
       let data; try { data = JSON.parse(body); } catch { data = {}; }
       const receipt = input.upload ? /^✅ File uploaded successfully/m : /^✅ File downloaded successfully/m;
-      if (data.success === false || /"error"\s*:/.test(body) || !(data.success === true || receipt.test(body))) throw Error('File transfer failed');
+      if (data.success === false || /"error"\s*:/.test(body) || !(data.success === true || receipt.test(body))) { reason = 'mcp_is_error'; throw Error('File transfer failed'); }
       process.stdout.write(JSON.stringify({ success: true }));
     } else {
-      const executor = monitoring ? 'deployment_logs_executor.py' : input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
-      const code = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/' + executor)).toString('base64');
+      phase = 'ssh_execute';
+      const executor = input.executor === 'k8s_training' ? 'k8s_training_executor.py' : monitoring ? 'deployment_logs_executor.py' : input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
+      let source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/' + executor), 'utf8');
+      if (input.executor === 'k8s_training' && ['merge_cache_probe','merge_cache_publish'].includes(input.payload.action)) {
+        const cacheCode = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/training_executor.py'), 'utf8');
+        const marker = "if __name__ == '__main__':";
+        if (!source.includes(marker)) throw Error('K8s executor entry point missing');
+        const start = cacheCode.indexOf('def merge_cache(');
+        const end = cacheCode.indexOf('def repository_metadata(', start);
+        if (start < 0 || end < 0) throw Error('Model cache executor missing');
+        const functions = ['safe_child', 'artifacts', 'artifact_file'].map(name => {
+          const from = cacheCode.indexOf('def ' + name + '(');
+          if (from < 0) throw Error('Model cache dependency missing');
+          const to = cacheCode.indexOf('\ndef ', from);
+          return cacheCode.slice(from, to);
+        });
+        const program = 'import errno, os, shutil, stat, tempfile, zipfile\nfrom pathlib import Path, PurePosixPath\nfile_hash = cache_file_hash\n' + functions.join('\n') + '\n' + cacheCode.slice(start, end);
+        source = source.replace(marker, () => `MODEL_CACHE_SOURCE = ${JSON.stringify(program)}\n${marker}`);
+      }
+      const code = Buffer.from(source).toString('base64');
       const payload = Buffer.from(JSON.stringify(input.payload)).toString('base64');
-      const command = `python3 -c "import base64;PLATFORM_SOURCE=base64.b64decode('${code}');exec(PLATFORM_SOURCE)" '${payload}'`;
+      const python = input.executor === 'k8s_training' ? '/usr/local/bin/python3' : 'python3';
+      const command = `${python} -c "import base64;PLATFORM_SOURCE=base64.b64decode('${code}');exec(PLATFORM_SOURCE)" '${payload}'`;
       result = await client.callTool({ name: 'ssh_execute', arguments: { server, command, timeout: monitoring ? 20000 : 300000 } }, undefined, { timeout: monitoring ? 25000 : 310000 });
+      if (result.isError) { reason = 'mcp_is_error'; throw Error('Remote execution failed'); }
+      phase = 'parse_mcp'; reason = 'invalid_mcp_json';
       const data = JSON.parse(result.content?.filter(c => c.type === 'text').map(c => c.text).join(''));
-      if (result.isError || typeof data.stdout !== 'string') throw Error('Remote execution failed');
+      if (typeof data?.stdout !== 'string' || !data.stdout.trim()) {
+        if (typeof data?.error === 'string' && /timeout|timed out/i.test(data.error)) { phase = 'ssh_execute'; reason = 'timeout'; }
+        else reason = 'missing_stdout';
+        throw Error('Missing stdout');
+      }
+      phase = 'parse_remote'; reason = 'invalid_remote_json';
       const response = JSON.parse(data.stdout.trim());
       process.stdout.write(JSON.stringify(response));
     }
   })(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Timeout')), timeoutMs - 10000); })]);
-} catch {
-  process.stdout.write(JSON.stringify({ success: false, error: 'SSH/MCP通信失败，执行状态需要核对' }));
+} catch (error) {
+  if (reason === 'transport' && (error?.name === 'TimeoutError' || /timeout|timed out/i.test(String(error?.message || '')))) reason = 'timeout';
+  process.stdout.write(JSON.stringify({ success: false, error: `SSH/MCP执行失败，执行状态需要核对（阶段：${phase}，类型：${reason}）` }));
   process.exitCode = 1;
 } finally {
   clearTimeout(timer);

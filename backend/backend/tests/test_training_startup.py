@@ -6,11 +6,62 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from fastapi import HTTPException
 from models import TrainingRun
 from models.training_run import TrainingGpuHold
-from tests.test_training_runs import training_tables,spec
+from tests.test_training_runs import training_tables,spec,platform_payload,platform_wemm_payload
 
 
 @pytest.mark.asyncio
-async def test_start_acknowledges_without_remote_work_and_worker_records_progress(client,auth_headers,test_engine,monkeypatch):
+@pytest.mark.parametrize('outcome',['ready','failed','canceled'])
+async def test_k8s_async_unpack_controls_training_start(monkeypatch,outcome):
+    from types import SimpleNamespace
+    from services import training_runs
+    run=SimpleNamespace(status='starting',config={'execution_backend':'k8s'},source={'sha256':'a'*64},inspection={'startup':{'state':'running','phase':'unpack'}},error=None)
+    class DB:
+        async def refresh(self,run): pass
+        async def commit(self): pass
+        async def rollback(self): pass
+    calls=[];states=iter(['running','running',outcome])
+    async def remote(db,run,action,**values):
+        calls.append(action)
+        if action=='unpack_begin':return {'state':'running'}
+        if action=='unpack_status':return {'state':next(states),'error':'准备失败'}
+        if action=='start':return {'status':'running'}
+        return {}
+    async def ensure(db,run):
+        if run.status!='starting':raise HTTPException(409,'已取消')
+    async def sleep(seconds):
+        if outcome=='canceled':run.status='canceled'
+    async def transfer(db,run):await training_runs.prepare_snapshot(db,run)
+    async def progress(*args,**kwargs):pass
+    async def check(*args):return {'ok':True}
+    monkeypatch.setattr(training_runs,'remote',remote)
+    monkeypatch.setattr(training_runs,'ensure_starting',ensure)
+    monkeypatch.setattr(training_runs,'transfer_snapshot',transfer)
+    monkeypatch.setattr(training_runs,'startup_progress',progress)
+    monkeypatch.setattr(training_runs,'check',check)
+    monkeypatch.setattr(training_runs,'build_script',lambda config:'script')
+    monkeypatch.setattr(training_runs.asyncio,'sleep',sleep)
+    if outcome=='ready':
+        await training_runs.prepare_start(DB(),run)
+        assert calls.count('unpack_status')==3 and calls.count('start')==1
+    else:
+        with pytest.raises(HTTPException):await training_runs.prepare_start(DB(),run)
+        assert 'start' not in calls
+        if outcome=='canceled':assert run.status=='canceled'
+
+
+@pytest.mark.asyncio
+async def test_docker_snapshot_unpack_remains_synchronous(monkeypatch):
+    from types import SimpleNamespace
+    from services import training_runs
+    calls=[]
+    async def remote(db,run,action,**values):calls.append((action,values))
+    monkeypatch.setattr(training_runs,'remote',remote)
+    await training_runs.prepare_snapshot(None,SimpleNamespace(config={'execution_backend':'docker'},source={'sha256':'a'*64}))
+    assert calls==[('unpack',{'snapshot_hash':'a'*64})]
+
+
+@pytest.mark.asyncio
+async def test_start_acknowledges_without_remote_work_and_worker_records_progress(client,auth_headers,test_engine,monkeypatch,platform_payload):
     from services import training_runs
     calls=[]
     async def remote(db,run,action,**values):
@@ -18,7 +69,7 @@ async def test_start_acknowledges_without_remote_work_and_worker_records_progres
         assert run.inspection['startup']['state']=='running'
         return dict(ok=True,checks=[]) if action=='precheck' else dict(status='running')
     monkeypatch.setattr(training_runs,'remote',remote)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     response=client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     assert response.status_code==202,response.text
     assert response.json()['status']=='starting' and response.json()['inspection']['startup']['state']=='queued'
@@ -35,13 +86,13 @@ async def test_start_acknowledges_without_remote_work_and_worker_records_progres
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure',['precheck','ssh'])
-async def test_background_failure_is_persisted_and_gpu_holds_stay_safe(client,auth_headers,test_engine,monkeypatch,failure):
+async def test_background_failure_is_persisted_and_gpu_holds_stay_safe(client,auth_headers,test_engine,monkeypatch,failure,platform_payload):
     from services import training_runs
     async def remote(db,run,action,**values):
         if failure=='ssh':raise HTTPException(503,'SSH状态待核对')
         return dict(ok=False,checks=[dict(name='GPU',ok=False,detail='busy')])
     monkeypatch.setattr(training_runs,'remote',remote)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     sessions=async_sessionmaker(test_engine,expire_on_commit=False)
     await training_runs.process_start(UUID(run['id']),sessions)
@@ -53,11 +104,11 @@ async def test_background_failure_is_persisted_and_gpu_holds_stay_safe(client,au
 
 
 @pytest.mark.asyncio
-async def test_cancel_queued_start_never_contacts_ssh_or_launches(client,auth_headers,test_engine,monkeypatch):
+async def test_cancel_queued_start_never_contacts_ssh_or_launches(client,auth_headers,test_engine,monkeypatch,platform_payload):
     from services import training_runs
     async def no_remote(*args,**kwargs):raise AssertionError('queued cancellation must not launch SSH')
     monkeypatch.setattr(training_runs,'remote',no_remote)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     stopped=client.post('/api/training/runs/'+run['id']+'/stop',headers=auth_headers)
     assert stopped.status_code==200 and stopped.json()['status']=='canceled'
@@ -65,9 +116,9 @@ async def test_cancel_queued_start_never_contacts_ssh_or_launches(client,auth_he
 
 
 @pytest.mark.asyncio
-async def test_recovery_does_not_relaunch_an_interrupted_start(client,auth_headers,test_engine):
+async def test_recovery_does_not_relaunch_an_interrupted_start(client,auth_headers,test_engine,platform_payload):
     from services import training_runs
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     sessions=async_sessionmaker(test_engine,expire_on_commit=False)
     async with sessions() as db:
@@ -81,18 +132,64 @@ async def test_recovery_does_not_relaunch_an_interrupted_start(client,auth_heade
 
 
 @pytest.mark.asyncio
-async def test_refresh_during_preparation_never_marks_a_missing_container_unknown(client,auth_headers,monkeypatch):
+async def test_refresh_during_preparation_never_marks_a_missing_container_unknown(client,auth_headers,monkeypatch,platform_payload):
     from services import training_runs
     async def no_remote(*args,**kwargs):raise AssertionError('preparation is not a missing-container failure')
     monkeypatch.setattr(training_runs,'remote',no_remote)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     response=client.post('/api/training/runs/'+run['id']+'/refresh',headers=auth_headers)
     assert response.status_code==200 and response.json()['status']=='starting'
 
 
 @pytest.mark.asyncio
-async def test_stop_during_stage_prevents_late_container_start(client,auth_headers,test_engine,monkeypatch):
+@pytest.mark.parametrize('remote_failure',[False,True])
+async def test_inflight_refresh_does_not_overwrite_resumed_preparation(monkeypatch,remote_failure):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from services import training_runs
+    class DB:
+        async def refresh(self,run):
+            run.status='starting'
+            run.inspection={'startup':{'state':'running'}}
+        async def commit(self): pytest.fail('stale status must not be saved')
+    async def remote(db,run,action):
+        assert run.status=='unknown' and action=='status'
+        if remote_failure:raise HTTPException(503,'通信失败')
+        return {'status':'missing'}
+    monkeypatch.setattr(training_runs,'remote',remote)
+    run=SimpleNamespace(status='unknown',config={'execution_backend':'k8s'},inspection={},error=None)
+    await training_runs.refresh(DB(),run)
+    assert run.status=='starting' and run.inspection['startup']['state']=='running'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('backend','startup','previous_error','remote_status','expected'),[
+    ('k8s',{'state':'failed','events':[{'phase':'stage','message':'SSH/MCP通信失败'}]},'容器不存在','missing','SSH/MCP通信失败'),
+    ('k8s',{'state':'interrupted','events':[]},'启动准备中断','created','启动准备中断'),
+    ('k8s',{},None,'missing','训练Job/Pod不存在或尚未启动，请点击停止核对'),
+    ('docker',{},None,'missing','容器不存在或尚未启动，请点击停止核对并释放占用'),
+])
+async def test_refresh_missing_preserves_startup_error_and_uses_backend_name(monkeypatch,backend,startup,previous_error,remote_status,expected):
+    from types import SimpleNamespace
+    from services import training_runs
+    class DB:
+        async def refresh(self,run): pass
+        async def commit(self): pass
+    async def remote(db,run,action,**kwargs):
+        assert action=='status'
+        return {'status':remote_status}
+    async def release(*args): pytest.fail('missing state must not release resources')
+    monkeypatch.setattr(training_runs,'remote',remote)
+    monkeypatch.setattr(training_runs,'release',release)
+    run=SimpleNamespace(status='unknown',config={'execution_backend':backend},
+        inspection={'startup':startup},error=previous_error)
+    await training_runs.refresh(DB(),run)
+    assert run.status=='unknown' and run.error==expected
+
+
+@pytest.mark.asyncio
+async def test_stop_during_stage_prevents_late_container_start(client,auth_headers,test_engine,monkeypatch,platform_payload):
     from services import training_runs
     calls=[]
     async def remote(db,run,action,**values):
@@ -105,7 +202,7 @@ async def test_stop_during_stage_prevents_late_container_start(client,auth_heade
         if action=='stop':return dict(status='canceled')
         raise AssertionError('late training start after cancellation')
     monkeypatch.setattr(training_runs,'remote',remote)
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     await training_runs.process_start(UUID(run['id']),async_sessionmaker(test_engine,expire_on_commit=False))
     current=client.get('/api/training/runs/'+run['id'],headers=auth_headers).json()
@@ -114,7 +211,7 @@ async def test_stop_during_stage_prevents_late_container_start(client,auth_heade
 
 
 @pytest.mark.asyncio
-async def test_worker_claims_durable_queue_without_an_http_background_task(client,auth_headers,test_engine,monkeypatch):
+async def test_worker_claims_durable_queue_without_an_http_background_task(client,auth_headers,test_engine,monkeypatch,platform_payload):
     import asyncio
     from services import training_runs
     calls=[]
@@ -123,7 +220,7 @@ async def test_worker_claims_durable_queue_without_an_http_background_task(clien
         return dict(ok=True,checks=[]) if action=='precheck' else dict(status='running')
     monkeypatch.setattr(training_runs,'remote',remote)
     monkeypatch.setattr(training_runs,'AsyncSessionLocal',async_sessionmaker(test_engine,expire_on_commit=False))
-    run=client.post('/api/training/runs',headers=auth_headers,json=spec().model_dump(mode='json')).json()
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     await training_runs.start_worker()
     try:

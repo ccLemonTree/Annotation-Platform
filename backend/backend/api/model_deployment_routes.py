@@ -1,6 +1,7 @@
 from uuid import UUID
 from typing import Literal
 from types import SimpleNamespace
+import asyncio
 from fastapi import APIRouter,Depends,Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,15 +10,24 @@ from api.deps import get_current_superuser
 from models import User
 from models.model_deployment import ModelDeployment,ModelRelease,DeploymentTarget
 from models.training_run import TrainingRun
-from schemas.model_deployment import DeploymentCreate,ReleaseCreate,TargetCreate,BatchCreate
+from schemas.model_deployment import DeploymentCreate,ReleaseCreate,TargetCreate,BatchCreate,DeploymentDelete
 from services import model_deployments as service
 from services import distribution_center as center
+from services import deployment_platforms as platforms_service
+from schemas.deployment_platform import PlatformCreate,PlatformBatch
 
 router=APIRouter(dependencies=[Depends(get_current_superuser)])
 
 
 @router.get('/servers')
 async def servers():return await service.servers()
+
+
+@router.get('/servers/discover')
+async def discover_server(server:str=Query(...,min_length=1,max_length=100),repository:str|None=Query(None,max_length=450),model_name:str|None=Query(None,max_length=100)):
+    from fastapi import HTTPException
+    if server not in {item['name'] for item in await service.servers()}:raise HTTPException(422,'请选择ssh-manager配置中的服务器')
+    return await asyncio.to_thread(service.training_runs.bridge,server,dict(executor='model_deployment',payload=dict(action='discover',target=dict(repository=repository,model_name=model_name))))
 
 
 @router.get('/sources')
@@ -49,7 +59,7 @@ async def retry_archive(id:UUID,db:AsyncSession=Depends(get_db_session),user:Use
 
 @router.get('/targets')
 async def targets(db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
-    rows=(await db.scalars(select(DeploymentTarget).where(DeploymentTarget.tenant_id==user.tenant_id).order_by(DeploymentTarget.name,DeploymentTarget.id))).all()
+    rows=(await db.scalars(select(DeploymentTarget).where(DeploymentTarget.tenant_id==user.tenant_id,DeploymentTarget.kind.in_(('model','image'))).order_by(DeploymentTarget.name,DeploymentTarget.id))).all()
     return dict(items=[await center.target_summary(db,row) for row in rows])
 
 
@@ -99,10 +109,13 @@ async def batch_detail(id:UUID,db:AsyncSession=Depends(get_db_session),user:User
 
 
 @router.get('')
-async def records(run_id:UUID|None=None,batch_id:UUID|None=None,page:int=Query(1,ge=1),db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+async def records(run_id:UUID|None=None,batch_id:UUID|None=None,kind:Literal['model','image']|None=None,version:str|None=Query(None,max_length=100),server:str|None=Query(None,max_length=100),page:int=Query(1,ge=1),db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
     query=select(ModelDeployment).where(ModelDeployment.tenant_id==user.tenant_id)
     if run_id:query=query.where(ModelDeployment.run_id==run_id)
     if batch_id:query=query.where(ModelDeployment.batch_id==batch_id)
+    if kind:query=query.where(ModelDeployment.kind==kind)
+    if version:query=query.where(ModelDeployment.source['version'].as_string().ilike('%'+version+'%') | ModelDeployment.source['image'].as_string().ilike('%'+version+'%'))
+    if server:query=query.where(ModelDeployment.target['control_server'].as_string().ilike('%'+server+'%') | ModelDeployment.target['file_server'].as_string().ilike('%'+server+'%'))
     rows=(await db.scalars(query.order_by(ModelDeployment.created_at.desc(),ModelDeployment.id.desc()).offset((page-1)*20).limit(21))).all()
     return dict(items=[service.summary(row) for row in rows[:20]],has_more=len(rows)>20)
 
@@ -110,6 +123,48 @@ async def records(run_id:UUID|None=None,batch_id:UUID|None=None,page:int=Query(1
 @router.post('',status_code=201)
 async def create(request:DeploymentCreate,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
     return service.summary(await service.create(db,user,request))
+
+
+@router.delete('')
+async def delete_records(request:DeploymentDelete,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return await service.delete_records(db,user,request.ids)
+
+
+@router.get('/platforms')
+async def list_platforms(db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    rows=(await db.scalars(select(DeploymentTarget).where(DeploymentTarget.tenant_id==user.tenant_id,DeploymentTarget.kind=='platform').order_by(DeploymentTarget.name,DeploymentTarget.id))).all()
+    return dict(items=[platforms_service.summary(row) for row in rows])
+
+
+@router.post('/platforms',status_code=201)
+async def add_platform(request:PlatformCreate,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return platforms_service.summary(await platforms_service.save(db,user,request))
+
+
+@router.post('/platforms/import-targets')
+async def import_platforms(db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return dict(imported=await platforms_service.import_legacy(db,user.tenant_id))
+
+
+@router.put('/platforms/{id}')
+async def edit_platform(id:UUID,request:PlatformCreate,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return platforms_service.summary(await platforms_service.save(db,user,request,id))
+
+
+@router.post('/platforms/{id}/discover')
+async def discover_platform(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return platforms_service.summary(await platforms_service.discover(db,user,await platforms_service.scoped(db,id,user.tenant_id,True)))
+
+
+@router.post('/platforms/preview')
+async def preview_platforms(request:PlatformBatch,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    items,_,_=await platforms_service.plan(db,user,request)
+    return dict(items=items)
+
+
+@router.post('/platforms/batches',status_code=201)
+async def platform_batch(request:PlatformBatch,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_superuser)):
+    return await platforms_service.create_batch(db,user,request)
 
 
 @router.get('/{id}')

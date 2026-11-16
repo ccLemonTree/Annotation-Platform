@@ -44,6 +44,10 @@ class AssetResponse(BaseModel):
     annotation_status: str
     quality_score: Optional[int]
     device_info: Optional[dict] = None
+    scene_labels: list[str] = Field(default_factory=list)
+    scene_status: str = 'unclassified'
+    scene_error: str | None = None
+    scene_metadata: dict | None = None
     created_at: datetime
     updated_at: datetime
 

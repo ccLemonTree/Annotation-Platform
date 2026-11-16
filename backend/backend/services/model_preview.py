@@ -1,5 +1,7 @@
 """Upload-only predictions reuse the durable validation queue without creating human truth."""
 from io import BytesIO
+from tempfile import TemporaryDirectory
+from pathlib import Path
 import asyncio,tarfile,zipfile
 from uuid import UUID,uuid4
 from typing import Annotated
@@ -8,14 +10,16 @@ from fastapi import HTTPException,UploadFile
 from pydantic import BaseModel,ConfigDict,Field,model_validator
 from sqlalchemy import select
 from PIL import Image,ImageOps
-from api.asset_routes import validate_image_upload,calculate_file_hash
+from api.asset_routes import validate_image_upload,calculate_file_hash,scoped_project
 from config.settings import settings
 from models.validation import ValidationSet,ValidationRun,ValidationItem
+from models import Asset
+from schemas.model_service import DEFAULT_DETECTION_CONFIDENCE
 from schemas.validation import CheckpointInput,ValidationConfig
 from services import validation
 from services.automation import model_snapshot
-from services.storage import get_storage
-from services import image_uploads
+from services.storage import get_storage,LocalStorage
+from services import image_uploads,model_preview_video
 
 MAX_IMAGES=5000
 
@@ -79,9 +83,11 @@ async def preview_images(files):
 
 class PreviewInput(BaseModel):
     model_config=ConfigDict(extra='forbid',allow_inf_nan=False,str_strip_whitespace=True)
+    project_id: UUID | None = None
+    asset_ids: list[UUID] | None = Field(default=None,min_length=1,max_length=MAX_IMAGES)
     model_id: UUID | None = None
     checkpoint: CheckpointInput | None = None
-    confidence: float = Field(default=.25,ge=0,le=1)
+    confidence: float = Field(default=DEFAULT_DETECTION_CONFIDENCE,ge=0,le=1)
     iou: float = Field(default=.45,ge=0,le=1)
     labels: list[Annotated[str,Field(min_length=1,max_length=100)]] | None = Field(default=None,max_length=100)
     task_type: Literal['detection','caption','embedding'] = 'detection'
@@ -89,24 +95,74 @@ class PreviewInput(BaseModel):
     max_tokens: int = Field(default=512,ge=1,le=4096)
     query_text: str = Field(default='',max_length=2000)
     query_image_index: int | None = Field(default=None,ge=0,le=4999)
+    video_interval: float | None = Field(default=None,ge=.1,le=60)
 
     @model_validator(mode='after')
     def one_model(self):
+        if self.asset_ids is not None and (self.project_id is None or len(set(self.asset_ids))!=len(self.asset_ids)):raise ValueError('项目图片需要项目且不能重复')
+        if self.asset_ids is not None and self.video_interval is not None:raise ValueError('项目图片不支持视频模式')
         if (self.model_id is None)==(self.checkpoint is None):raise ValueError('请选择一个检测模型来源')
         if self.checkpoint and self.labels is not None:raise ValueError('训练权重使用训练类别顺序，不支持覆盖检测标签')
         if self.task_type=='detection' and (self.prompt or self.query_text or self.query_image_index is not None):raise ValueError('检测预览不支持描述提示词或向量查询参数')
         if self.checkpoint and (self.checkpoint.kind if self.checkpoint.kind in ('caption','embedding') else 'detection')!=self.task_type:raise ValueError('预览用途与权重类型不一致')
         if self.task_type=='embedding' and bool(self.query_text)==(self.query_image_index is not None):raise ValueError('向量预览请选择文本查询或一张查询图片')
+        if self.video_interval is not None and self.task_type!='detection':raise ValueError('仅检测预览支持视频')
         return self
 
 
+async def video_frames(paths,interval):
+    for index,path in enumerate(paths):
+        with path.open('rb') as stream:
+            yield UploadFile(filename=f'{index:06d}-{index * interval:g}s.jpg',file=stream)
+
+
+async def asset_images(assets,storage):
+    for asset in assets:
+        try:stream=await storage.get_file(asset.blob_path)
+        except (FileNotFoundError,ValueError):
+            legacy=Path(asset.blob_path).resolve()
+            if not isinstance(storage,LocalStorage) or not legacy.is_relative_to(Path(settings.UPLOAD_DIR).resolve()) or not legacy.is_file():
+                raise HTTPException(404,'项目图片文件不存在') from None
+            stream=legacy.open('rb')
+        with stream:
+            yield UploadFile(filename=asset.original_name,file=stream)
+
+
 async def create(db,user,request,files):
-    if not 1<=len(files)<=MAX_IMAGES:raise HTTPException(400,f'每次最多选择{MAX_IMAGES}个文件')
+    if request.asset_ids is not None and files:raise HTTPException(400,'不能同时选择项目图片和上传文件')
+    project=await scoped_project(db,request.project_id,user.tenant_id) if request.project_id else None
+    project_type=project.task_type if project else None
+    if project and {'detection':'detection','caption':'caption','vector':'embedding'}.get(project_type)!=request.task_type:
+        raise HTTPException(400,'预览用途与项目类型不一致')
+    assets=[]
+    if request.asset_ids is not None:
+        rows=(await db.scalars(select(Asset).where(Asset.project_id==project.id,Asset.id.in_(request.asset_ids)))).all()
+        by_id={row.id:row for row in rows}
+        if len(by_id)!=len(request.asset_ids):raise HTTPException(404,'部分图片不属于当前项目')
+        assets=[by_id[id] for id in request.asset_ids]
+    if request.asset_ids is None and not 1<=len(files)<=MAX_IMAGES:raise HTTPException(400,f'每次最多选择{MAX_IMAGES}个文件')
     if sum(file.size for file in files)>settings.MAX_ARCHIVE_UPLOAD_SIZE:raise HTTPException(413,'上传文件合计超过大小限制')
     if request.checkpoint and user.role!='admin':raise HTTPException(403,'服务器权重推理仅管理员可启动')
     id=uuid4();samples=[];size=0;storage=get_storage()
-    images=preview_images(files)
+    video=request.video_interval is not None
+    if video and (len(files)!=1 or not (files[0].filename or '').lower().endswith(('.mp4','.webm','.mov'))):
+        raise HTTPException(400,'视频预览每次仅支持一个 MP4 / WebM / MOV 文件')
+    if not video and any((file.filename or '').lower().endswith(('.mp4','.webm','.mov')) for file in files):
+        raise HTTPException(400,'请设置视频分析间隔')
+    if video and files[0].size>model_preview_video.MAX_VIDEO_SIZE:raise HTTPException(413,'视频不能超过 512 MiB')
+    temporary=TemporaryDirectory() if video else None
+    video_path=f'previews/{user.tenant_id}/{id}/source.video' if video else None
+    video_info=None
+    stored=[]
     try:
+        if video:
+            pending=asyncio.create_task(asyncio.to_thread(model_preview_video.prepare,files[0].file,temporary.name,request.video_interval))
+            try:video_info,paths=await asyncio.shield(pending)
+            except asyncio.CancelledError:await pending;raise
+            with (Path(temporary.name)/'source').open('rb') as source:await storage.save_file(source,video_path)
+            stored.append(video_path)
+            images=video_frames(paths,request.video_interval)
+        else:images=asset_images(assets,storage) if request.asset_ids is not None else preview_images(files)
         async for file in images:
             content,values=await validate_image_upload(file)
             name=image_uploads.safe_name(file.filename)
@@ -124,6 +180,7 @@ async def create(db,user,request,files):
             samples.append(dict(asset_id=str(image_id),original_name=values['original_name'],blob_path=path,
                 content_hash=values['content_hash'],width=values['width'],height=values['height'],truth=[]))
             await storage.save_file(BytesIO(content),path)
+            stored.append(path)
         if request.checkpoint:
             from services.checkpoint_validation import snapshot as checkpoint_snapshot
             snapshot=await checkpoint_snapshot(db,user,request.checkpoint,preview=True)
@@ -132,11 +189,13 @@ async def create(db,user,request,files):
             snapshot=await (model_snapshot(db,request.model_id,user.tenant_id,'detection') if request.task_type=='detection' else multimodal_validation.model_snapshot(db,request.model_id,user.tenant_id,request.task_type))
             snapshot['name']=snapshot['config']['name']
         snapshot['preview']=True
+        if video:snapshot['video']=dict(name=image_uploads.safe_name(files[0].filename),interval=request.video_interval,duration=video_info['duration'])
         if request.task_type!='detection':snapshot['task_type']=request.task_type
         policy=ValidationConfig(inference_confidence=request.confidence,confidence=request.confidence,nms_iou=request.iou,prompt=request.prompt,max_tokens=request.max_tokens).model_dump()
         if not request.checkpoint:
             policy.update(labels=request.labels if request.labels is not None else snapshot['config']['labels'],label_mapping=snapshot['config']['label_mapping'])
         source={'kind':'upload_preview'}
+        if video:source['video_path']=video_path
         if request.task_type!='detection':source['task_type']=request.task_type
         if request.task_type=='embedding':
             query=dict(id=str(uuid4()),kind='text' if request.query_text else 'image',text=request.query_text,positives=[],negatives=[])
@@ -145,7 +204,11 @@ async def create(db,user,request,files):
                 if request.query_image_index>=len(samples):raise HTTPException(400,'查询图片序号超出展开后的图片数量')
                 anchor=samples[request.query_image_index];query.update(asset_id=anchor['asset_id'],content_hash=anchor['content_hash'])
             source['queries']=[query]
-        dataset=ValidationSet(tenant_id=user.tenant_id,user_id=user.id,project_id=None,name=samples[0]['original_name'][:180],
+        if project:
+            current=await scoped_project(db,project.id,user.tenant_id,for_update=True)
+            if current.task_type!=project_type:
+                raise HTTPException(409,'项目任务类型已变化，请刷新后再创建预览')
+        dataset=ValidationSet(tenant_id=user.tenant_id,user_id=user.id,project_id=request.project_id,name=(snapshot['video']['name'] if video else samples[0]['original_name'])[:180],
             labels=[],samples=samples,source=source,total=len(samples))
         db.add(dataset);await db.flush()
         run=ValidationRun(id=id,set_id=dataset.id,tenant_id=user.tenant_id,user_id=user.id,name=dataset.name,
@@ -157,9 +220,11 @@ async def create(db,user,request,files):
         await db.commit();return run
     except BaseException:
         await db.rollback()
-        for sample in samples:await storage.delete_file(sample['blob_path'])
+        for path in stored:await storage.delete_file(path)
         raise
-    finally:await images.aclose()
+    finally:
+        if 'images' in locals():await images.aclose()
+        if temporary:temporary.cleanup()
 
 
 async def scoped(db,id,user,lock=False):
@@ -180,4 +245,5 @@ async def remove(db,run):
         raise HTTPException(409,'预览已重新运行，请先确认停止')
     dataset=await db.get(ValidationSet,run.set_id)
     for sample in dataset.samples:await get_storage().delete_file(sample['blob_path'])
+    if dataset.source.get('video_path'):await get_storage().delete_file(dataset.source['video_path'])
     await db.delete(dataset);await db.commit()

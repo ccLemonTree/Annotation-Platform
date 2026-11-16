@@ -1,10 +1,11 @@
 """Local storage with root confinement and atomic writes."""
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import quote
-import aiofiles
+from starlette.concurrency import run_in_threadpool
 from .base import StorageBackend
 
 class LocalStorage(StorageBackend):
@@ -20,17 +21,21 @@ class LocalStorage(StorageBackend):
 
     async def save_file(self, file_data: BinaryIO, path: str) -> dict:
         target = self.resolve_path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        content = file_data.read()
-        descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".upload-")
-        os.close(descriptor)
-        try:
-            async with aiofiles.open(temporary, "wb") as file:
-                await file.write(content)
-            os.replace(temporary, target)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-        return {"url": await self.get_file_url(path), "path": str(target), "size": len(content)}
+
+        def save():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".upload-")
+            try:
+                with os.fdopen(descriptor, "wb") as file:
+                    shutil.copyfileobj(file_data, file, length=1024 * 1024)
+                    size = file.tell()
+                os.replace(temporary, target)
+                return size
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+
+        size = await run_in_threadpool(save)
+        return {"url": await self.get_file_url(path), "path": str(target), "size": size}
 
     async def get_file(self, path: str) -> BinaryIO:
         return self.resolve_path(path).open("rb")

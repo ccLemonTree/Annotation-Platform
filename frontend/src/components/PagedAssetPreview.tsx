@@ -5,9 +5,9 @@ import type { PaginatedResponse } from '../api/assets';
 import type { ImageFilters } from '../api/images';
 
 type PreviewRow = { id: string; original_name: string };
-export default function PagedAssetPreview({ rows, index, page, pageSize, total, projectId, imageKind, filters, onClose }: {
+export default function PagedAssetPreview({ rows, index, page, pageSize, total, projectId, workJobId, imageKind, filters, onClose }: {
   rows: PreviewRow[]; index: number; page: number; pageSize: number; total: number;
-  projectId?: string; filters: ImageFilters; onClose: () => void;
+  projectId?: string; workJobId?:string; filters: ImageFilters; onClose: () => void;
   imageKind?: 'all'|'originals'|'crops';
 }) {
   const [current, setCurrent] = useState({ rows, index: (page - 1) * pageSize + index, page, total });
@@ -48,11 +48,15 @@ export default function PagedAssetPreview({ rows, index, page, pageSize, total, 
     setPending(true);
     try {
       const { data,headers } = await apiClient.get<PaginatedResponse<PreviewRow>>(projectId ? '/api/assets' : '/api/images', {
-        params: { ...(projectId ? { project_id: projectId, image_kind:imageKind,q:filters.q } : filters), page: nextPage, page_size: pageSize },
+        params: { ...(projectId ? { project_id: projectId, work_job_id:workJobId, image_kind:imageKind,q:filters.q,collection_id:filters.collection_id,label:filters.label,scene:filters.scene } : filters), page: nextPage, page_size: pageSize },
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
+      if(workJobId&&headers['x-asset-work-filter']!=='1')throw Error('后台尚未启用处理结果筛选');
       if(projectId&&filters.q&&headers['x-asset-filename-filter']!=='1')throw Error('后台尚未启用文件名搜索');
+      if(projectId&&filters.collection_id&&headers['x-asset-collection-filter']!=='1')throw Error('后台尚未启用图片集筛选');
+      if(projectId&&filters.label&&headers['x-annotation-label-filter']!=='1')throw Error('后台尚未启用标签筛选');
+      if(projectId&&filters.scene&&headers['x-asset-scene-filter']!=='1')throw Error('后台尚未启用场景筛选');
       if (!data.items[next % pageSize] || next >= data.total) {
         setError('图片列表已变化，请关闭预览后刷新列表');
         return;
@@ -63,7 +67,7 @@ export default function PagedAssetPreview({ rows, index, page, pageSize, total, 
     } finally {
       if (!controller.signal.aborted) { request.current = null; setPending(false); }
     }
-  }, [current, pageSize, projectId, imageKind, filters]);
+  }, [current, pageSize, projectId, workJobId, imageKind, filters]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

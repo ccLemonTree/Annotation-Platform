@@ -334,6 +334,49 @@ def test_selected_download_failure_is_not_empty_success(client, auth_headers, mo
     assert response.status_code == 502
     assert get_runtime().list()[0]['status'] == 'failed'
 
+@pytest.mark.parametrize('widths,network_failure', [([720, 719], False), ([719], False), ([719], True)])
+def test_selected_download_distinguishes_filtering_from_failure(client, auth_headers, monkeypatch, tmp_path, widths, network_failure):
+    import zipfile
+    from integrations.smarteye import app
+    monkeypatch.setattr(app, 'DOWNLOAD_PATH', str(tmp_path / 'storage/smarteye'))
+    monkeypatch.setattr(app, 'DOWNLOAD_DELAY', 0)
+    contents = {}
+    for index, width in enumerate(widths):
+        content = BytesIO()
+        Image.new('RGB', (width, 30), 'blue').save(content, format='JPEG')
+        contents[f'http://fixture/{index}.jpg'] = content.getvalue()
+    class Response:
+        def __init__(self, content): self.content = content
+        def raise_for_status(self): pass
+        def iter_content(self, size): yield self.content
+    def fetch(session, url, **kwargs):
+        if url not in contents:
+            raise app.requests.ConnectionError('fixture unavailable')
+        return Response(contents[url])
+    monkeypatch.setattr(app.requests.Session, 'get', fetch)
+    urls = list(contents) + (['http://fixture/missing.jpg'] if network_failure else [])
+
+    response = client.post('/api/smarteye/download-images',
+        headers={**auth_headers, 'X-SmartEye-Min-Long-Edge': '720'},
+        json={'urls': urls, 'collection_name': '选择下载平台'})
+
+    job, = get_runtime().list()
+    filtered = sum(width < 720 for width in widths)
+    saved = len(widths) - filtered
+    assert job['filtered_count'] == filtered
+    if network_failure:
+        assert response.status_code == 502
+        assert f'按阈值过滤{filtered}张' in response.json()['message']
+        assert job['status'] == 'failed'
+    else:
+        assert response.status_code == 200, response.text
+        assert response.headers['X-SmartEye-Downloaded-Count'] == str(saved)
+        assert response.headers['X-SmartEye-Filtered-Count'] == str(filtered)
+        with zipfile.ZipFile(BytesIO(response.content)) as archive:
+            assert len(archive.namelist()) == saved
+        assert job['status'] == 'completed'
+
+
 def test_watch_progress_survives_memory_clear(client, monkeypatch):
     from integrations.smarteye.api import ledger_watch_downloader as watch
     from integrations.smarteye.runtime import execution

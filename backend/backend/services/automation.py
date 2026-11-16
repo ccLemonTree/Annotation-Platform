@@ -11,11 +11,13 @@ from models.automation import AutomationJob, AutomationItem
 from models.model_service import ModelService
 from schemas.automation import AutomationConfig
 from schemas.model_service import ModelServiceConfig
-from services.annotations import save_annotation, review, record_event, detection_boxes
-from services.model_inference import infer
+from services.annotations import save_annotation, review, record_event, detection_boxes, register_detection_labels
+from services.model_inference import infer,reject_offline_model
 from services.automation_review import audit_image, auto_pass
 from services.storage import get_storage
 from config.settings import settings
+from services.preannotation_examples import validate_example,read_example_content
+from services.detection_preannotation import detect_from_example
 
 logger=logging.getLogger(__name__)
 _worker=None
@@ -32,7 +34,17 @@ async def model_snapshot(db, model_id, tenant_id, kind):
     model=await db.scalar(select(ModelService).where(ModelService.id==model_id,ModelService.tenant_id==tenant_id))
     if model is None or not model.enabled or model.kind!=kind or (kind=='caption' and model.protocol!='openai_chat'):
         raise HTTPException(400,'请选择已启用且用途正确的检测模型或OpenAI视觉审核模型')
+    reject_offline_model(model)
     return dict(id=str(model.id),revision=model.revision,config=ModelServiceConfig.model_validate(model).model_dump())
+
+
+def automation_schema_matches(job,project):
+    current=project.label_schema or {}
+    saved=job.label_schema or {}
+    if job.kind!='preannotate' or job.config.get('example'):
+        return current==saved
+    labels=saved.get('labels') or []
+    return {**current,'labels':(current.get('labels') or [])[:len(labels)]}=={**saved,'labels':labels}
 
 
 async def validate_context(db, job, asset, item, lock=False):
@@ -41,11 +53,12 @@ async def validate_context(db, job, asset, item, lock=False):
     query=select(Project).where(Project.id==job.project_id,Project.tenant_id==job.tenant_id)
     if lock:query=query.with_for_update()
     project=await db.scalar(query)
-    if project is None or project.label_schema!=job.label_schema:
+    if project is None or not automation_schema_matches(job,project):
         raise HTTPException(409,'项目类别已更改，请按新类别重新创建任务')
     actor=await db.get(User,job.user_id)
     if actor is None or not actor.is_active or actor.role!='admin' or actor.tenant_id!=job.tenant_id:
         raise HTTPException(403,'任务创建人已失去管理员权限，停止写入')
+    await validate_example(db,project,job.config.get('example'))
     for snapshot in job.models.values():
         query=select(ModelService).where(ModelService.id==UUID(snapshot['id']),ModelService.tenant_id==job.tenant_id)
         if lock:query=query.with_for_update()
@@ -89,8 +102,9 @@ async def process_one(sessions):
         original_data=annotation.annotation_data if annotation else None
         await db.commit()
     result={};evidence={};failure=None;stage='detection'
-    policy=AutomationConfig.model_validate(job.config)
-    review_labels=policy.labels if job.kind=='review' and policy.labels else job.label_schema['labels']
+    policy=AutomationConfig.model_validate({key:value for key,value in job.config.items() if key!='example'})
+    labels=(job.label_schema or {}).get('labels') or []
+    review_labels=policy.labels if job.kind=='review' and policy.labels else labels
     async def still_current():
         async with sessions() as check:
             return bool(await check.scalar(select(AutomationItem.id).join(AutomationJob).where(
@@ -100,22 +114,29 @@ async def process_one(sessions):
         with await get_storage().get_file(path) as stream:content=stream.read(settings.MAX_UPLOAD_SIZE+1)
         if len(content)>settings.MAX_UPLOAD_SIZE or hashlib.sha256(content).hexdigest()!=item.content_hash:
             raise HTTPException(409,'原图内容或大小发生变化，请重新创建任务')
-        labels=job.label_schema['labels']
         if job.kind=='preannotate':
             detector=ModelServiceConfig.model_validate(job.models['detector']['config']).model_copy(update={
                 'confidence':policy.confidence,'iou':policy.iou})
             if policy.labels:detector.labels=policy.labels
             detector.label_mapping={**detector.label_mapping,**policy.label_mapping}
-            result=await infer(detector,content,width,height)
+            if job.config.get('example'):
+                async with sessions() as check:
+                    reference=await validate_example(check,await check.get(Project,job.project_id),job.config['example'])
+                    example_content=await read_example_content(reference)
+                result=await detect_from_example(detector,content,width,height,policy.labels or labels,example_content,job.config['example'],
+                    prompt=policy.preannotation_prompt,detection_prompt=policy.detection_prompt)
+            else:result=await infer(detector,content,width,height)
             boxes=result['boxes']
         else:boxes=original_data.get('boxes',[]);result={'boxes':boxes,'warnings':[]}
         if not await still_current():return True
         unknown=any(box.get('label') not in labels for box in boxes)
         high=all(box.get('score',-1)>policy.auto_approve_confidence for box in boxes)
         if unknown:
-            evidence={'boxes':[],'completeness':'uncertain','negative':'uncertain','reason':'模型类别未映射到项目类别，请人工修正映射或标注'}
+            evidence={'boxes':[],'completeness':'uncertain','negative':'uncertain','reason':
+                '检测到新类别，检测框交由人工审核' if job.kind=='preannotate' and not job.config.get('example') else '模型类别未映射到项目类别，请人工修正映射或标注'}
         elif policy.auto_review and (job.kind=='review' or high or not boxes):
             reviewer=ModelServiceConfig.model_validate(job.models['reviewer']['config'])
+            if policy.review_prompt.strip():reviewer=reviewer.model_copy(update={'chat_prompts':reviewer.chat_prompts.model_copy(update={'review':policy.review_prompt.strip()})})
             stage='audit'
             evidence=await audit_image(reviewer,content,boxes,review_labels,policy.crop_expansion,policy.prompt,should_continue=still_current)
         else:evidence={'boxes':[],'completeness':'uncertain','negative':'uncertain',
@@ -145,18 +166,24 @@ async def process_one(sessions):
         else:
             evidence={**evidence,'provenance':dict(content_hash=current.content_hash,
                 models={kind:dict(id=value['id'],revision=value['revision'],name=value['config']['name'],model_name=value['config']['model_name']) for kind,value in current_job.models.items()},
-                project_labels=current_job.label_schema['labels'],review_labels=review_labels,crop_expansion=policy.crop_expansion,
+                project_labels=labels,review_labels=review_labels,crop_expansion=policy.crop_expansion,
                 auto_approve_confidence=policy.auto_approve_confidence,reviewed_at=datetime.utcnow().isoformat()+'Z')}
             current.result=result;current.evidence=evidence;current.reason=reason[:1000]
             if failure:current.status='failed'
             else:
-                boxes=result['boxes'];unknown=any(box.get('label') not in current_job.label_schema['labels'] for box in boxes)
-                if current_job.kind=='preannotate' and not unknown:
-                    annotation=await save_annotation(db,asset,{'boxes':boxes,'negative':not boxes},0,current_job.user_id,source='model')
+                boxes=result['boxes']
+                unknown=any(box['label'] not in ((current_job.label_schema or {}).get('labels') or []) for box in boxes)
+                if current_job.kind=='preannotate' and (not unknown or not current_job.config.get('example')):
+                    if unknown:
+                        project=await db.get(Project,current_job.project_id)
+                        await register_detection_labels(db,project,boxes)
+                        current_job.label_schema=project.label_schema
+                    annotation=await save_annotation(db,asset,{'boxes':boxes,'negative':not boxes},current.annotation_version,
+                        current_job.user_id,source='model',kind='detection')
                     current.annotation_id=annotation.id;current.annotation_version=annotation.version
                     current.review_baseline=review_state(annotation)
-                if approved and annotation:
-                    await review(db,annotation,asset,True,'AI审核通过：'+reason,current_job.user_id,source='ai')
+                if approved and annotation and not any(annotation.annotation_data.get(key) for key in ('description','labels','attributes','skipped')):
+                    await review(db,annotation,asset,True,'AI审核通过：'+reason,current_job.user_id,source='ai',kind='detection')
                     current.status='approved'
                 else:current.status='needs_review'
                 record_event(db,asset,current_job.user_id,'ai_review',dict(job_id=str(job_id),item_id=str(item_id),

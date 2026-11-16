@@ -1,7 +1,8 @@
 """Tenant-scoped inference configuration and one-image previews."""
 from uuid import UUID
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user, get_current_superuser
@@ -12,14 +13,16 @@ from schemas.model_service import ModelServiceConfig, ModelServiceResponse, Pred
 from services.model_inference import infer, test_connection
 from services.storage import get_storage
 from config.settings import settings
-from schemas.prompts import ChatPrompts, SCENE_PROMPT
+from schemas.prompts import ChatPrompts, SCENE_PROMPT, ATTRIBUTES_PROMPT, DETECTION_PREANNOTATION_PROMPT
 
 router = APIRouter()
 
 
 @router.get('/prompt-defaults')
 async def prompt_defaults(user: User = Depends(get_current_user)):
-    return {**ChatPrompts().model_dump(), 'scene': SCENE_PROMPT}
+    from services.image_quality import QUALITY_PROMPT
+    return {**ChatPrompts().model_dump(), 'scene': SCENE_PROMPT,
+        'attributes':ATTRIBUTES_PROMPT,'quality':QUALITY_PROMPT,'detection_preannotation':DETECTION_PREANNOTATION_PROMPT}
 
 
 async def scoped(db, service_id, tenant_id, lock=False):
@@ -94,6 +97,7 @@ async def update_model(service_id: UUID, request: ModelServiceConfig, db: AsyncS
     for key, value in request.model_dump().items():
         setattr(row, key, value)
     row.revision += 1
+    row.connection_check = None
     await commit_config(db); await db.refresh(row)
     return row
 
@@ -108,8 +112,25 @@ async def delete_model(service_id: UUID, db: AsyncSession = Depends(get_db_sessi
 async def check_model(service_id: UUID, db: AsyncSession = Depends(get_db_session), user: User = Depends(get_current_superuser)):
     row = await scoped(db, service_id, user.tenant_id)
     config = ModelServiceConfig.model_validate(row)
+    revision, tenant_id = row.revision, user.tenant_id
     await db.rollback()
-    return await test_connection(config)
+    error = None
+    try:
+        result = await test_connection(config)
+    except HTTPException as exc:
+        error = exc
+        result = {'ok': False, 'detail': exc.detail}
+    check = {'status': 'online' if result['ok'] else 'offline', 'detail': result['detail'],
+             'checked_at': datetime.now(timezone.utc).isoformat(), 'checked_revision': revision}
+    saved = await db.execute(update(ModelService).where(ModelService.id == service_id,
+        ModelService.tenant_id == tenant_id, ModelService.revision == revision).values(connection_check=check))
+    if saved.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(409, '检测期间模型配置已变化，请重新检测')
+    await db.commit()
+    if error:
+        raise error
+    return result
 
 
 @router.post('/{service_id}/predict')

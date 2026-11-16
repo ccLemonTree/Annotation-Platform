@@ -24,7 +24,7 @@ export default function DashboardQueue({ admin }: { admin: boolean }) {
         getSemanticJobs(undefined, 1, controller.signal).then(data => data.slice(0, 3).map(job => ({ id: job.id, name: '图片库生成历史', detail: `${job.total} 张图片`, status: (['running', 'pending', 'failed', 'cancelled'] as const).find(status => (job.counts[status] || 0) > 0) || (job.counts.completed === job.total ? 'completed' : 'unknown'), created: job.created_at, to: '/image-semantics/history', kind: 'semantic' as const, progress: job.total ? ((job.counts.completed || 0) + (job.counts.failed || 0) + (job.counts.cancelled || 0)) / job.total * 100 : undefined }))),
         getValidationRuns({ page: 1, page_size: 3 }, controller.signal).then(data => data.items.map(run => ({ id: run.id, name: '模型验证', detail: run.name, status: run.status, created: run.created_at, to: '/validation', kind: 'validation' as const, progress: run.total ? run.processed / run.total * 100 : undefined }))),
       ];
-      if (admin) sources.push(getTrainingRuns(1, controller.signal).then(data => data.items.slice(0, 3).map(run => ({ id: run.id, name: '模型训练', detail: run.name, status: run.status, created: run.created_at, to: '/training', kind: 'training' as const }))));
+      if (admin) sources.push(getTrainingRuns(1, controller.signal).then(data => data.items.slice(0, 3).map(run => ({ id: run.id, name: '模型训练', detail: run.name, status: run.status, created: run.created_at, to: run.source.project_id ? `/projects/${encodeURIComponent(run.source.project_id)}/deliver` : '/projects', kind: 'training' as const }))));
       const results = await Promise.allSettled(sources);
       if (controller.signal.aborted) return;
       setFailed(results.some(result => result.status === 'rejected'));

@@ -10,8 +10,8 @@ from models.image import LibraryImage
 from models.image_collection import ImageCollection, ImageCollectionMember
 from models.model_service import ModelService
 from models.image_semantic import ImageSemanticJob, ImageSemanticItem, ImageSemanticVector
-from schemas.model_service import ModelServiceConfig
-from services.model_inference import headers, response_json, image_content
+from schemas.model_service import DEFAULT_DETECTION_CONFIDENCE, ModelServiceConfig
+from services.model_inference import headers, response_json, image_content,reject_offline_model
 from services.storage import get_storage
 
 PREPROCESSING = 'rgb-jpeg90-thumbnail1024-image-prompt-v1'
@@ -36,16 +36,21 @@ async def model_snapshot(db, tenant_id, model_id, kind):
         raise HTTPException(404, '模型配置不存在')
     if not row.enabled or row.kind != kind:
         raise HTTPException(400, '请选择已启用且用途匹配的模型')
+    reject_offline_model(row)
     return dict(id=str(row.id), revision=row.revision, config=ModelServiceConfig.model_validate(row).model_dump())
 
 
 async def validate_snapshots(db, tenant_id, snapshots, lock=True):
-    # Lock model rows against configuration edits until the write commits.
+    # Concurrent inference results can share the lock while blocking configuration edits.
     for snapshot in sorted((value for value in snapshots if value), key=lambda value: value['id']):
         statement=select(ModelService).where(ModelService.id == UUID(snapshot['id']), ModelService.tenant_id == tenant_id)
-        if lock:statement=statement.with_for_update()
+        if lock:statement=statement.with_for_update(read=True)
         row = await db.scalar(statement.execution_options(populate_existing=True))
-        if row is None or row.revision != snapshot['revision'] or ModelServiceConfig.model_validate(row).model_dump() != ModelServiceConfig.model_validate(snapshot['config']).model_dump():
+        if row is None or row.revision != snapshot['revision']:
+            raise HTTPException(409, '模型配置已变更，请按当前配置新建批次')
+        # The default-only migration keeps queued detection jobs on their frozen thresholds.
+        exclude={'confidence'} if row.kind=='detection' and row.confidence==DEFAULT_DETECTION_CONFIDENCE else None
+        if ModelServiceConfig.model_validate(row).model_dump(exclude=exclude) != ModelServiceConfig.model_validate(snapshot['config']).model_dump(exclude=exclude):
             raise HTTPException(409, '模型配置已变更，请按当前配置新建批次')
 
 
@@ -59,6 +64,7 @@ async def create_job(db, tenant_id, request):
     if not images or (request.image_ids and len(images) != len(set(request.image_ids))):
         raise HTTPException(404, '部分图片不存在或不属于所选图片集')
     caption = await model_snapshot(db, tenant_id, request.caption_model_id, 'caption') if request.caption_model_id else None
+    if caption and caption['config']['protocol']=='jev_decide':raise HTTPException(400,'JEV choice模型仅用于目标属性分析')
     embedding = await model_snapshot(db, tenant_id, request.embedding_model_id, 'embedding') if request.embedding_model_id else None
     job = ImageSemanticJob(tenant_id=tenant_id, collection_id=request.collection_id, caption_model=caption,
                            embedding_model=embedding, dimensions=request.dimensions, preprocessing=PREPROCESSING, prompt=request.prompt)
@@ -131,6 +137,7 @@ async def embedding(config, *, content=None, text=None, client):
 
 
 async def caption(config, content, prompt, client):
+    if config.protocol=='jev_decide':raise HTTPException(400,'JEV choice模型仅用于目标属性分析')
     kwargs = dict(headers=headers(config), timeout=config.timeout_seconds)
     if config.protocol == 'model_service':
         kwargs['files'] = {'image':('image.bin',content,'application/octet-stream')}

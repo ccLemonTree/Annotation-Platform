@@ -1,7 +1,7 @@
 import { Alert, Space, Steps, Typography } from 'antd';
 import type { TrainingRun } from '../api/training';
 
-const labels:Record<string,string>={precheck:'重新预检查',stage:'准备任务目录',archive:'校验冻结包',upload:'传输冻结包',unpack:'远端解包与校验',container:'创建并启动容器'};
+const labels:Record<string,string>={precheck:'重新预检查',stage:'准备任务目录',checkpoint:'传输训练权重',archive:'校验冻结包',upload:'传输冻结包',unpack:'远端解包与校验',container:'创建并启动容器'};
 
 export default function TrainingStartup({run}:{run:TrainingRun}){
   const progress=run.inspection.startup;

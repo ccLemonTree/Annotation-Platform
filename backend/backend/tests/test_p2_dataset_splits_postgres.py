@@ -95,8 +95,11 @@ async def test_jsonb_source_freeze_evidence_and_source_edit_lock(tmp_path, monke
             fresh = await db.get(Asset, assets[0].id)
             assert fresh.device_info == {'vendor': 'keep', 'group_id': '0', 'parent_image_id': 'verified-parent'}
             snapshot = await db.scalar(select(ExportSnapshot))
-            assert snapshot.manifest == frozen['manifest']
-            assert 'parent_image_id' not in snapshot.manifest['split_evidence']['sources'][str(fresh.id)]
+            from services.snapshot_manifests import read_manifest
+            assert snapshot.manifest is None
+            manifest = await read_manifest(snapshot.manifest_path)
+            assert manifest == frozen['manifest']
+            assert 'parent_image_id' not in manifest['split_evidence']['sources'][str(fresh.id)]
     finally:
         reset_storage()
         if engine:

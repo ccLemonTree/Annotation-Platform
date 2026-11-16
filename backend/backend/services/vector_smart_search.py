@@ -15,6 +15,7 @@ from models.project_work import MatchQuery
 from integrations.smarteye.api.db_utils import get_smart_search_platforms
 from integrations.smarteye.api import smart_search as remote
 from services.storage import get_storage
+from services.project_access import project_condition
 
 
 def image_url(value,base_url):
@@ -54,7 +55,7 @@ def crop_image(content,record,identity):
 
 
 async def original(db,project,query_id,asset_id):
-    query=await db.scalar(select(MatchQuery).where(MatchQuery.id==query_id,MatchQuery.project_id==project.id))
+    query=await db.scalar(select(MatchQuery).where(MatchQuery.id==query_id,MatchQuery.project_id==project.id,MatchQuery.is_retrieval_query()))
     if not query or not any(h['asset_id']==str(asset_id) for h in query.hits):raise HTTPException(404,'图片不属于此查询')
     asset=await db.scalar(select(Asset).where(Asset.id==asset_id,Asset.project_id==project.id))
     info=(asset.device_info or {}).get('smart_search') if asset else None
@@ -129,7 +130,7 @@ async def search(db,project,request,client):
             except (httpx.HTTPError,OSError,ValueError,TypeError,KeyError,Image.DecompressionBombError) as exc:
                 return dict(index=index+1,error='图片下载失败' if isinstance(exc,httpx.HTTPError) else '图片或目标框无法读取')
     prepared=await asyncio.gather(*(prepare(i,row) for i,row in enumerate(records[:request.limit])))
-    project=await db.scalar(select(Project).where(Project.id==project_id,Project.tenant_id==tenant_id).with_for_update())
+    project=await db.scalar(select(Project).where(Project.id==project_id,Project.tenant_id==tenant_id,project_condition(db)).with_for_update())
     if not project:raise HTTPException(404,'项目已删除')
     hits=[];failures=[];seen=set()
     for item in prepared:

@@ -40,8 +40,7 @@ async def access(db,user,server_id):
     except ValueError:raise HTTPException(400,'服务器ID格式无效') from None
     server=await gpu_servers.scoped_server(db,id,user.tenant_id)
     if not server.enabled:raise HTTPException(409,'服务器已停用')
-    return dict(id=server_id,name=server.name,revision=server.revision,connection=dict(host=server.host,port=server.port,
-        username=server.username,password=gpu_servers.decrypt_password(server.password_encrypted)))
+    return dict(id=server_id,name=server.name,revision=server.revision,connection=gpu_servers.connection(server))
 
 
 async def remote(server,action,**values):

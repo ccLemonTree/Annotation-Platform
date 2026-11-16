@@ -5,6 +5,8 @@ async page=>{
   const react=src.match(/["'](\/node_modules\/\.vite\/deps\/react\.js\?[^"']+)["']/)[1],router=src.match(/["'](\/node_modules\/\.vite\/deps\/react-router-dom\.js\?[^"']+)["']/)[1];
   const project={id:'11111111-1111-4111-8111-111111111111',project_name:'标签筛选测试',task_type:'detection',label_schema:{labels:['fire','smoke','star']}};
   const assets=Array.from({length:4},(_,i)=>({id:`aaaaaaaa-0000-4000-8000-${String(i).padStart(12,'0')}`,project_id:project.id,original_name:`image-${i}.jpg`,width:640,height:480,source_type:'upload'}));
+  const first='cccccccc-0000-4000-8000-000000000001',second='cccccccc-0000-4000-8000-000000000002';
+  const groups=[{id:first,name:'第一批'},{id:second,name:'第二批'}];
   const records=assets.map((a,i)=>({id:`bbbbbbbb-0000-4000-8000-${String(i).padStart(12,'0')}`,asset_id:a.id,version:1,is_latest:true,review_status:'pending',annotation_data:{boxes:i?[{label:i===2?'smoke':'fire',x:10,y:20,width:50,height:60}]:[]}}));
   let reviews=0,hold=false,release,failure=false;
   const api='**/api/**',app='**/src/App.tsx*';
@@ -15,15 +17,19 @@ async page=>{
     if(path==='/api/model-services')return route.fulfill({json:[]});
     if(path.startsWith('/api/analytics/'))return route.fulfill({json:{}});
     if(path==='/api/projects/'+project.id)return route.fulfill({json:project});
-    const matching=assets.filter((a,i)=>!url.searchParams.get('label')||records[i].annotation_data.boxes.some(b=>b.label===url.searchParams.get('label')));
+    if(path==='/api/assets/collections')return route.fulfill({json:groups});
+    const collection=url.searchParams.get('collection_id');
+    const matching=assets.filter((a,i)=>(!collection||(collection===first?[0,3].includes(i):[1,2].includes(i)))&&
+      (!url.searchParams.get('label')||records[i].annotation_data.boxes.some(b=>b.label===url.searchParams.get('label'))));
+    const headers={'X-Annotation-Label-Filter':'1',...(collection?{'X-Asset-Collection-Filter':'1'}:{})};
     if(path==='/api/assets'){
       requests.push(Object.fromEntries(url.searchParams));const offset=(Number(url.searchParams.get('page')||1)-1)*Number(url.searchParams.get('page_size')||20);
-      return route.fulfill({headers:{'X-Annotation-Label-Filter':'1'},json:{items:matching.slice(offset,offset+Number(url.searchParams.get('page_size')||20)),total:matching.length}});
+      return route.fulfill({headers,json:{items:matching.slice(offset,offset+Number(url.searchParams.get('page_size')||20)),total:matching.length}});
     }
     if(path.startsWith('/api/assets/')){
       const asset=assets.find(a=>path.split('/')[3]===a.id);if(!asset)throw Error('Unknown asset');
       if(path.endsWith('/content'))return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jUKcAAAAASUVORK5CYII=','base64')});
-      if(path.endsWith('/neighbors')){const i=matching.indexOf(asset);return route.fulfill({json:{position:i+1,total:matching.length,previous_id:matching[i-1]?.id||null,next_id:matching[i+1]?.id||null}});}
+      if(path.endsWith('/neighbors')){const i=matching.indexOf(asset);return route.fulfill({headers,json:{position:i+1,total:matching.length,previous_id:matching[i-1]?.id||null,next_id:matching[i+1]?.id||null,...(collection?{matched:i>=0}:{})}});}
       return route.fulfill({json:asset});
     }
     if(path.endsWith('/events'))return route.fulfill({json:[]});
@@ -40,6 +46,18 @@ async page=>{
   const canvas=page.getByRole('img',{name:'检测画框区域'}),select=async(name,text)=>{await page.getByRole('combobox',{name,exact:true}).click();await page.getByText(text,{exact:true}).last().click();};
   try{
     await page.goto(origin+'/annotate/'+assets[0].id);await page.evaluate(()=>localStorage.setItem('user',JSON.stringify({role:'admin'})));await page.reload();await canvas.waitFor();
+    await select('筛选图片集','第二批');await page.waitForURL(url=>url.pathname==='/annotate/'+assets[1].id&&url.searchParams.get('collection_id')===second);await canvas.waitFor();
+    await page.getByText('/ 2',{exact:true}).waitFor();await page.getByRole('button',{name:'下一张',exact:true}).click();await page.waitForURL(url=>url.pathname==='/annotate/'+assets[2].id&&url.searchParams.get('collection_id')===second);
+    await canvas.waitFor();await page.waitForFunction(()=>document.querySelector('input[aria-label="跳转图片序号"]')?.value==='2');await page.getByRole('spinbutton',{name:'跳转图片序号'}).fill('1');await page.getByRole('spinbutton',{name:'跳转图片序号'}).press('Enter');
+    await page.waitForURL(url=>url.pathname==='/annotate/'+assets[1].id&&url.searchParams.get('collection_id')===second);
+    if(!requests.some(r=>r.collection_id===second&&r.page==='1'))throw Error('Collection ordinal jump omitted collection_id');
+    await page.waitForFunction(()=>document.querySelector('input[aria-label="跳转图片序号"]')?.value==='1'&&!document.querySelector('button[aria-label="审核通过"]')?.disabled);
+    await select('筛选标注标签','fire');
+    await page.waitForURL(url=>url.pathname==='/annotate/'+assets[1].id&&url.searchParams.get('collection_id')===second&&url.searchParams.get('label')==='fire');
+    await page.getByText('/ 1',{exact:true}).waitFor();
+    if(!requests.some(r=>r.collection_id===second&&r.label==='fire'))throw Error('Collection and label filters were not combined');
+    checks.push('Project collection filter keeps neighbors and ordinal jump inside one collection');
+    await page.goto(origin+'/annotate/'+assets[0].id);await canvas.waitFor();
     await select('筛选标注标签','fire');await page.waitForURL('**/'+assets[1].id+'?label=fire');await canvas.waitFor();
     await page.getByText('/ 2',{exact:true}).waitFor();await page.getByRole('button',{name:'下一张',exact:true}).click();await page.waitForURL('**/'+assets[3].id+'?label=fire');
     await canvas.waitFor();await page.waitForFunction(()=>document.querySelector('input[aria-label="跳转图片序号"]')?.value==='2');await page.getByRole('spinbutton',{name:'跳转图片序号'}).fill('1');await page.getByRole('spinbutton',{name:'跳转图片序号'}).press('Enter');await page.waitForURL('**/'+assets[1].id+'?label=fire');
@@ -52,8 +70,9 @@ async page=>{
     checks.push('Label filter, neighbors, ordinal jump and reload preserve one filtered queue');
     const before=page.url();await select('筛选标注标签','star');await page.getByText('当前标签没有已标注图片',{exact:true}).waitFor();if(page.url()!==before)throw Error('Empty filter changed current image');
     checks.push('Empty label keeps current image and filter');
+    await page.waitForFunction(()=>!document.querySelector('button[aria-label="审核通过"]')?.disabled);
     hold=true;await canvas.focus();await page.keyboard.press('r');await page.getByRole('button',{name:'审核通过',exact:true}).waitFor({state:'visible'});
-    await page.waitForFunction(()=>document.querySelector('button[aria-label="审核通过"]').disabled);await page.keyboard.press('r');if(reviews!==1)throw Error('Duplicate review submitted');hold=false;release();await page.getByText('v1 · 已通过',{exact:true}).waitFor();
+    await page.waitForFunction(()=>document.querySelector('button[aria-label="审核通过"]').disabled);await page.keyboard.press('r');if(reviews!==1)throw Error('Duplicate review submitted');hold=false;release();await page.waitForURL('**/'+assets[3].id+'?label=fire');if(records[1].review_status!=='approved')throw Error('Review was not recorded');
     checks.push('R approves through existing API and ignores duplicate presses while busy');
     await page.getByRole('spinbutton',{name:'跳转图片序号'}).focus();await page.keyboard.press('r');if(reviews!==1)throw Error('Typing triggered review');
     await canvas.focus();await page.keyboard.press('n');await page.getByText('未保存',{exact:true}).waitFor();if(await page.getByRole('combobox',{name:'筛选标注标签'}).isEnabled())throw Error('Dirty filter enabled');await page.keyboard.press('r');if(reviews!==1)throw Error('Dirty draft reviewed');await page.keyboard.press('Control+z');

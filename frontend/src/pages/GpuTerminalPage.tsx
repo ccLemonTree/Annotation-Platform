@@ -29,7 +29,7 @@ export default function GpuTerminalPage() {
   useEffect(() => {
     if (!admin) return;
     const controller = new AbortController();
-    const request=sshMode?getDeploymentServers(controller.signal).then(list=>list.map(row=>({id:'ssh:'+row.name,name:row.name,host:row.host,port:row.port,username:row.user,enabled:true,has_password:false,revision:0,source:'ssh_manager' as const}))):getGpuServers(controller.signal);
+    const request=sshMode?getDeploymentServers(controller.signal).then(list=>list.map(row=>({id:'ssh:'+row.name,name:row.name,host:row.host,port:row.port,username:row.user,enabled:true,training_enabled:false,has_password:false,revision:0,source:'ssh_manager' as const}))):getGpuServers(controller.signal);
     request.then(list => {
       if (controller.signal.aborted) return;
       setServers(list);

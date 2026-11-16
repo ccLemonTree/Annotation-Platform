@@ -1,6 +1,7 @@
 // API客户端配置
 import axios, { AxiosError } from 'axios';
 import { message } from 'antd';
+import { redirectToLogin } from '../utils/authNavigation';
 
 declare module 'axios' {
   interface AxiosRequestConfig { skipErrorToast?: boolean; }
@@ -40,11 +41,9 @@ apiClient.interceptors.response.use(
   (error: AxiosError<any>) => {
     if (axios.isCancel(error)) return Promise.reject(error);
     // 401 未授权 - 跳转到登录页
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
+    if (error.response?.status === 401 && !/\/api\/auth\/login(?:\?|$)/.test(error.config?.url || '')) {
       message.error('登录已过期，请重新登录');
-      window.location.href = '/login';
+      redirectToLogin();
       return Promise.reject(error);
     }
 

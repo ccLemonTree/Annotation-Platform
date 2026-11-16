@@ -97,6 +97,7 @@ def get_capture_image_data(
                     "targetType": actual_target_type,
                     "targetColor": "blue",
                     "device": record.get("deviceName", "-"),
+                    "deviceId": record.get("deviceId", ""),
                     "timestamp": record.get("createTime", "-"),
                     "picUrl": pic
                 }

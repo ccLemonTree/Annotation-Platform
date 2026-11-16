@@ -89,7 +89,7 @@ async page => {
   await page.locator('.ant-select-dropdown:visible').getByText('RF-DETR · r1',{exact:true}).click();
   await page.getByRole('spinbutton',{name:'裁剪每侧外扩百分比'}).fill('35');
   await page.getByRole('row').filter({hasText:'person-one.png'}).getByRole('checkbox').check();await page.getByRole('button',{name:/检测切图 · 已选 1 张/}).click();
-  if(job.model_id!=='model-1'||job.expansion!==.35||!job.crops_only)throw Error('Crop selection/expansion lost');checks.push('All enabled detectors selectable; RF-DETR crop with 35 percent per-side expansion');
+  if(job.model_id!=='model-1'||job.expansion!==.35||'crops_only' in job)throw Error('Crop selection/expansion or scope isolation failed');checks.push('RF-DETR crop with 35 percent per-side expansion leaves project scope untouched');
   await page.getByRole('button',{name:'开始标注',exact:true}).click();
   await page.waitForURL('**/annotate/project/'+ids.vector);
   await page.setViewportSize({width:390,height:844});

@@ -1,4 +1,5 @@
 """DINOv3 detection adapter contracts; no business data, Docker or GPU writes."""
+from tests.test_training_runs import platform_payload
 import json
 import shutil
 import sys
@@ -159,11 +160,11 @@ async def training_tables(test_engine):
         await conn.run_sync(lambda c:TrainingGpuHold.__table__.create(c,checkfirst=True))
 
 
-def test_dinov3_draft_api_saves_and_edits_without_launching(client,auth_headers,test_project,training_tables,monkeypatch):
+def test_dinov3_draft_api_saves_and_edits_without_launching(client,auth_headers,test_project,training_tables,monkeypatch,platform_payload):
     from services import training_runs
     async def no_remote(*args,**kwargs):raise AssertionError('draft must not contact training server')
     monkeypatch.setattr(training_runs,'remote',no_remote)
-    payload=spec().model_dump(mode='json')
+    payload=spec(snapshot_id=platform_payload['snapshot_id'],dataset_path='').model_dump(mode='json')
     response=client.post('/api/training/runs',headers=auth_headers,json=payload)
     assert response.status_code==201,response.text
     run=response.json();assert run['status']=='draft'

@@ -16,6 +16,7 @@ from main import app
 from models import Base, Tenant, User, Project, Asset, TaskType, ProjectStatus
 from services.auth import create_access_token, get_password_hash
 from services.storage import reset_storage
+from integrations.smarteye import management_schema  # Include isolated device-management tables.
 
 @compiles(JSONB, "sqlite")
 def sqlite_jsonb(type_, compiler, **kwargs):
@@ -35,7 +36,7 @@ async def test_engine(tmp_path):
     @event.listens_for(engine.sync_engine, "begin")
     def begin(connection):
         connection.exec_driver_sql("BEGIN")
-    tables = [Base.metadata.tables[name] for name in ("tenants", "users", "projects", "images", "image_collections", "image_collection_members", "image_ingest_settings", "image_uploads", "image_upload_items", "assets", "annotations", "annotation_events", "export_snapshots", "automation_jobs", "automation_items")]
+    tables = [Base.metadata.tables[name] for name in ("tenants", "users", "projects", "project_members", "images", "image_collections", "image_collection_members", "image_ingest_settings", "image_uploads", "image_upload_items", "image_upload_batches", "image_upload_batch_files", "assets", "annotations", "annotation_events", "export_snapshots", "export_snapshot_jobs", "automation_jobs", "automation_items")]
     async with engine.begin() as connection:
         await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=tables))
     yield engine
@@ -100,6 +101,10 @@ def client(test_engine, test_user, tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, '_runtime', runtime.Runtime(sync_engine, tmp_path / 'storage'))
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+    from integrations.smarteye.device_capture import shutdown_worker
+    shutdown_worker()
+    from integrations.smarteye.device_scenes import shutdown_worker as stop_device_scenes
+    stop_device_scenes()
     app.dependency_overrides.clear()
     reset_storage()
     sync_engine.dispose()

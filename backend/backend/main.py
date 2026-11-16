@@ -134,6 +134,10 @@ async def startup_event():
         await start_training_worker()
         from services.model_deployments import start_worker as start_deployment_worker
         await start_deployment_worker()
+        from services.model_repository import start_worker as start_repository_worker
+        await start_repository_worker()
+        from services.snapshot_jobs import start_worker as start_snapshot_worker
+        await start_snapshot_worker()
     # 注意：数据库表已经存在，不需要自动创建
     # 如果需要创建表，请运行 alembic upgrade head
     logger.info("Application started successfully")
@@ -164,6 +168,10 @@ async def shutdown_event():
         await stop_training_worker()
         from services.model_deployments import stop_worker as stop_deployment_worker
         await stop_deployment_worker()
+        from services.model_repository import stop_worker as stop_repository_worker
+        await stop_repository_worker()
+        from services.snapshot_jobs import stop_worker as stop_snapshot_worker
+        await stop_snapshot_worker()
         shutdown()
     await engine.dispose()
     logger.info("Database connection closed")

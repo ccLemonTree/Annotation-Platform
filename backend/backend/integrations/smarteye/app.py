@@ -1,4 +1,4 @@
-from integrations.smarteye.runtime import cached_image, response_bytes
+from integrations.smarteye.runtime import cached_image, response_bytes, device_source
 from integrations.smarteye.runtime import DurableTasks, tracked_run, save_image_content, actor, get_runtime
 from integrations.smarteye.configuration import download_root
 # -*- coding: utf-8 -*-
@@ -134,9 +134,9 @@ class WeakSSLAdapter(HTTPAdapter):
         )
 
 
-def download_file(url, save_path, session=None, collection_name=None):
+def download_file(url, save_path, session=None, collection_name=None, device_info=None):
     """下载单个文件（带超时和重试，支持弱加密SSL证书）"""
-    if cached_image(save_path):
+    if cached_image(save_path, device_info=device_info, collection_name=collection_name):
         return True
     max_retries = 3
 
@@ -166,7 +166,7 @@ def download_file(url, save_path, session=None, collection_name=None):
             response.raise_for_status()
 
             # 优化：分块写入，增大缓存 size 到 8KB
-            if not save_image_content(save_path, response_bytes(response), collection_name=collection_name):
+            if not save_image_content(save_path, response_bytes(response), collection_name=collection_name, device_info=device_info):
                 if not session:local_session.close()
                 return False
 
@@ -235,12 +235,18 @@ def run_download_task(task_id, params):
 
             plat_name = result_data.get("platName", pn)
             type_url_map = result_data.get("type_url_map", {})
+            source_records = result_data.get("records") or []
+            records_by_url = {}
+            for record in source_records:
+                if record.get("picUrl"):
+                    records_by_url.setdefault(record["picUrl"].strip(), []).append(record)
             for type_name, urls in type_url_map.items():
                 for url in urls:
                     image_list.append({
                         'url': url,
                         'platform': plat_name,
-                        'type': type_name
+                        'type': type_name,
+                        'device_info': device_source(plat_name, (records_by_url.get(url) or [{}]).pop(0))
                     })
 
         total_images = len(image_list)
@@ -280,10 +286,14 @@ def run_download_task(task_id, params):
                     if not filename or len(filename) > 255:
                         filename = f"{uuid.uuid4()}.jpg"
 
+                    if img.get('device_info'):
+                        source = img['device_info']
+                        prefix = uuid.uuid5(uuid.NAMESPACE_URL, source['plat_id'] + '\0' + source['device_id']).hex[:12]
+                        filename = prefix + '_' + filename[-220:]
                     save_path = os.path.join(type_dir, filename)
 
                     # 优化：传递 session
-                    future = download_executor.submit(download_file, url, save_path, task_session, img.get('platform'))
+                    future = download_executor.submit(download_file, url, save_path, task_session, img.get('platform'), img.get('device_info'))
                     download_tasks.append(future)
 
                 # 监控下载进度
@@ -1038,6 +1048,9 @@ def download_images_zip():
     collection_name=data.get('collection_name')
     if collection_name is not None and (not isinstance(collection_name,str) or not collection_name.strip() or len(collection_name.strip())>200):
         return jsonify(code=400,message='图片集名称无效'),400
+    records = data.get('records')
+    if records is not None and (not isinstance(records, list) or len(records) != len(urls) or any(not isinstance(record, dict) for record in records)):
+        return jsonify(code=400, message='图片设备来源必须与URL列表一一对应'), 400
     zip_name = data.get('filename', 'images') + '.zip'
 
     tmp_dir = os.path.join(DOWNLOAD_PATH, f"tmp_{uuid.uuid4()}")
@@ -1055,18 +1068,25 @@ def download_images_zip():
                     fname = url.split('/')[-1].split('?')[0] or f"{uuid.uuid4()}.jpg"
                     if len(fname) > 200:
                         fname = f"{uuid.uuid4()}.jpg"
-                    return download_file(url, os.path.join(tmp_dir, f'{index}_{fname}'), sess, collection_name) if collection_name is not None else download_file(url, os.path.join(tmp_dir, f'{index}_{fname}'), sess)
+                    source = device_source(collection_name or (records[index].get('platform') if records else ''), records[index]) if records else None
+                    return download_file(url, os.path.join(tmp_dir, f'{index}_{fname}'), sess, collection_name, source) if source else download_file(url, os.path.join(tmp_dir, f'{index}_{fname}'), sess, collection_name) if collection_name is not None else download_file(url, os.path.join(tmp_dir, f'{index}_{fname}'), sess)
 
                 results = list(ex.map(_dl, enumerate(urls)))
-                if not all(results):
-                    return jsonify(code=502, message=f'部分图片下载失败：成功{sum(results)}/{len(urls)}张，请重试'), 502
+                downloaded = sum(results)
+                filtered = get_runtime().get(actor.get()['session_id']).get('filtered_count', 0)
+                failed = len(urls) - downloaded - filtered
+                if failed:
+                    return jsonify(code=502, message=f'部分图片下载失败：成功{downloaded}张，按阈值过滤{filtered}张，失败{failed}张，请重试'), 502
 
         zip_path = os.path.join(DOWNLOAD_PATH, f"tmp_{uuid.uuid4()}.zip")
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for f in os.listdir(tmp_dir):
                 zf.write(os.path.join(tmp_dir, f), f)
 
-        return send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
+        response = send_file(zip_path, as_attachment=True, download_name=zip_name, mimetype='application/zip')
+        response.headers['X-SmartEye-Downloaded-Count'] = str(downloaded)
+        response.headers['X-SmartEye-Filtered-Count'] = str(filtered)
+        return response
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

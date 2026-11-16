@@ -4,11 +4,11 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update, delete, func, or_
 from typing import List, Optional
 from uuid import UUID
 from typing import Literal
-from models import Asset
+from models import Annotation, Asset, AutomationJob, ExportSnapshot, MatchQuery, ProjectWorkJob, TrainingTask, ValidationSet
 from services.annotation_scope import eligible_assets
 
 from database import get_db_session as get_db
@@ -17,10 +17,76 @@ from models.project import ProjectStatus, TaskType
 from schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectStats, ProjectLabelRemovalPreview, ProjectLabelRemoval
 from schemas.common import PaginatedResponse, PaginationParams
 from api.deps import get_current_user, get_tenant_id, get_current_superuser
-from services.project_labels import sync_project_labels, label_removal_state, remove_project_label
+from services.project_labels import sync_project_labels, label_removal_state, remove_project_label, map_yolo_classes, yolo_mapping_batches
+from services.project_access import project_condition
+from api.asset_routes import scoped_project
+from models import ProjectMember, ModelService
+from schemas.project import ProjectAssignments, ProjectLabelsAdd, YoloClassMapping
 
 
 router = APIRouter()
+
+
+@router.post('/{project_id}/labels',response_model=ProjectResponse)
+async def add_labels(project_id:UUID,request:ProjectLabelsAdd,db:AsyncSession=Depends(get_db),
+                     user:User=Depends(get_current_superuser)):
+    project=await scoped_project(db,project_id,user.tenant_id,for_update=True)
+    schema=project.label_schema or {}
+    labels=list(dict.fromkeys([*(schema.get('labels') or []),*request.labels]))
+    project.label_schema={**schema,'labels':labels}
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+@router.get('/{project_id}/yolo-class-mapping')
+async def list_yolo_mapping_batches(project_id:UUID,db:AsyncSession=Depends(get_db),
+                                    user:User=Depends(get_current_superuser)):
+    project=await scoped_project(db,project_id,user.tenant_id)
+    return await yolo_mapping_batches(db,project)
+
+
+@router.post('/{project_id}/yolo-class-mapping')
+async def apply_yolo_class_mapping(project_id:UUID,request:YoloClassMapping,db:AsyncSession=Depends(get_db),
+                                   user:User=Depends(get_current_superuser)):
+    project=await scoped_project(db,project_id,user.tenant_id)
+    result=await map_yolo_classes(db,project,request,user.id)
+    await db.commit()
+    return result
+
+
+@router.get('/{project_id}/assignments',response_model=ProjectAssignments)
+async def get_assignments(project_id:UUID,db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    await scoped_project(db,project_id,user.tenant_id)
+    ids=(await db.scalars(select(ProjectMember.user_id).where(ProjectMember.project_id==project_id).order_by(ProjectMember.user_id))).all()
+    return {'user_ids':ids}
+
+
+@router.put('/{project_id}/assignments',response_model=ProjectAssignments)
+async def set_assignments(project_id:UUID,request:ProjectAssignments,db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    project=await db.scalar(select(Project).where(Project.id==project_id,Project.tenant_id==user.tenant_id).with_for_update())
+    if project is None:raise HTTPException(404,'项目不存在')
+    ids=sorted(set(request.user_ids))
+    found=(await db.scalars(select(User.id).where(User.id.in_(ids),User.tenant_id==user.tenant_id,
+        User.is_active.is_(True),User.role!='admin').with_for_update())).all()
+    if len(found)!=len(ids):raise HTTPException(400,'只能分配同租户内已启用的普通用户')
+    await db.execute(delete(ProjectMember).where(ProjectMember.project_id==project_id))
+    db.add_all([ProjectMember(project_id=project_id,user_id=id) for id in ids])
+    await db.commit()
+    return {'user_ids':ids}
+
+
+@router.get('/{project_id}/annotation-models')
+async def annotation_models(project_id:UUID,db:AsyncSession=Depends(get_db),user:User=Depends(get_current_user)):
+    from models.project_work import ProjectWorkJob, ProjectWorkItem
+    await scoped_project(db,project_id,user.tenant_id)
+    indexed=set((await db.execute(select(ProjectWorkJob.model['id'].as_string(),ProjectWorkJob.model['revision'].as_integer()).where(
+        ProjectWorkJob.project_id==project_id,ProjectWorkJob.operation=='index',select(ProjectWorkItem.id).where(
+            ProjectWorkItem.job_id==ProjectWorkJob.id,ProjectWorkItem.status=='completed').exists()).distinct())).all())
+    rows=(await db.scalars(select(ModelService).where(ModelService.tenant_id==user.tenant_id,
+        ModelService.kind=='embedding',ModelService.enabled.is_(True)).order_by(ModelService.key))).all()
+    return [dict(id=str(row.id),name=row.name,revision=row.revision,kind=row.kind,enabled=row.enabled,connection_check=row.connection_check)
+        for row in rows if (str(row.id),row.revision) in indexed]
 
 
 @router.post('/{project_id}/annotations/remove-label/preview')
@@ -100,7 +166,7 @@ async def list_projects(
     - 支持按状态筛选
     """
     # 构建查询条件
-    conditions = [Project.tenant_id == tenant_id]
+    conditions = [Project.tenant_id == tenant_id,project_condition(db)]
     if status_filter:
         conditions.append(Project.status == status_filter)
     if task_type:
@@ -138,7 +204,7 @@ async def get_project(
     current_user: User = Depends(get_current_user)
 ):
     """获取项目详情"""
-    project = await db.get(Project, project_id)
+    project = await db.scalar(select(Project).where(Project.id==project_id,project_condition(db)))
 
     if not project:
         raise HTTPException(
@@ -165,7 +231,7 @@ async def update_project(
     current_user: User = Depends(get_current_user)
 ):
     """更新项目"""
-    project = await db.get(Project, project_id)
+    project = await db.scalar(select(Project).where(Project.id==project_id,project_condition(db)))
 
     if not project:
         raise HTTPException(
@@ -180,8 +246,35 @@ async def update_project(
             detail="无权访问此项目"
         )
 
-    if "label_schema" in project_data.model_fields_set:
-        await sync_project_labels(db, project, project_data, current_user.id)
+    if project_data.task_type is not None and project_data.task_type != project.task_type:
+        old_type = project.task_type
+        project = await scoped_project(db, project_id, tenant_id, for_update=True)
+        if project.task_type != old_type:
+            raise HTTPException(409, '项目任务类型已变化，请重新打开编辑窗口')
+        if project_data.task_type == TaskType.SEGMENTATION:
+            raise HTTPException(400, '图像分割暂不支持')
+        dependencies = [select(Annotation.id).join(Asset).where(Asset.project_id == project.id).exists(),
+                        select(Asset.id).where(Asset.project_id == project.id, Asset.source_type == 'model_crop').exists()]
+        dependencies.extend(select(model.id).where(model.project_id == project.id).exists() for model in
+                            (AutomationJob, ProjectWorkJob, MatchQuery, ExportSnapshot, ValidationSet, TrainingTask))
+        if await db.scalar(select(or_(*dependencies))):
+            raise HTTPException(409, '项目已有标注、处理结果或关联任务，无法修改任务类型')
+        if 'base_label_schema' in project_data.model_fields_set and project_data.base_label_schema != project.label_schema:
+            raise HTTPException(409, '项目类别配置已更新，请重新打开编辑窗口')
+        if project_data.label_renames:
+            raise HTTPException(400, '切换任务类型时无需同步旧标注类别')
+        schema = project_data.label_schema if 'label_schema' in project_data.model_fields_set else project.label_schema
+        if schema is not None:
+            schema = dict(schema)
+            if project_data.task_type not in (TaskType.CAPTION, TaskType.VECTOR):
+                schema.pop('object_attributes', None)
+            if project_data.task_type == TaskType.DETECTION:
+                schema.pop('classification_mode', None)
+        project.label_schema = schema
+        project.task_type = project_data.task_type
+    elif "label_schema" in project_data.model_fields_set:
+        if project_data.label_schema!=project.label_schema or project_data.label_renames:
+            await sync_project_labels(db, project, project_data, current_user.id)
     elif project_data.label_renames:
         raise HTTPException(400, '类别重命名需要同时提交新类别配置')
 
@@ -206,7 +299,7 @@ async def delete_project(
     current_user: User = Depends(get_current_user)
 ):
     """删除项目"""
-    project = await db.get(Project, project_id)
+    project = await db.scalar(select(Project).where(Project.id==project_id,project_condition(db)))
 
     if not project:
         raise HTTPException(
@@ -236,7 +329,7 @@ async def get_project_stats(
     current_user: User = Depends(get_current_user)
 ):
     """获取项目统计信息"""
-    project = await db.get(Project, project_id)
+    project = await db.scalar(select(Project).where(Project.id==project_id,project_condition(db)))
 
     if not project:
         raise HTTPException(

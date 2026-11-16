@@ -51,16 +51,36 @@ class GpuServerInput(BaseModel):
         return value
 
 
+class JumpConnection(GpuServerInput):
+    host: Host
+    port: Port = 22
+    username: Username = 'root'
+
+
+class JumpCreate(JumpConnection):
+    password: Annotated[Password, Field(min_length=1)] = Field(repr=False)
+
+
+class JumpUpdate(JumpConnection):
+    password: Password | None = Field(default=None, repr=False)
+
+
 class GpuServerTest(GpuServerInput):
     name: Name
     host: Host
     port: Port = 22
     username: Username = 'root'
     password: Annotated[Password, Field(min_length=1)] = Field(repr=False)
+    jump: JumpCreate | None = None
 
 
 class GpuServerCreate(GpuServerTest):
     enabled: bool = True
+    training_enabled: bool = False
+
+
+class GpuServerImport(GpuServerInput):
+    servers: list[GpuServerCreate] = Field(min_length=1, max_length=200)
 
 
 class GpuServerUpdate(GpuServerInput):
@@ -70,15 +90,24 @@ class GpuServerUpdate(GpuServerInput):
     username: Username | None = None
     password: Password | None = Field(default=None, repr=False)
     enabled: bool | None = None
+    training_enabled: bool | None = None
     clear_password: bool = False
+    jump: JumpUpdate | None = None
 
     @model_validator(mode='after')
     def edit_fields(self):
-        if any(getattr(self, key) is None for key in self.model_fields_set - {'password', 'clear_password'}):
+        if any(getattr(self, key) is None for key in self.model_fields_set - {'password', 'clear_password', 'jump'}):
             raise ValueError('服务器配置不能为null')
         if self.clear_password and self.password is not None:
             raise ValueError('重填密码与清除密码不能同时使用')
         return self
+
+
+class JumpResponse(BaseModel):
+    host: str
+    port: int
+    username: str
+    has_password: bool
 
 
 class GpuServerResponse(BaseModel):
@@ -88,6 +117,13 @@ class GpuServerResponse(BaseModel):
     port: int | None
     username: str | None
     enabled: bool
+    training_enabled: bool
     revision: int
     has_password: bool
     source: Literal['ssh_manager', 'password']
+    jump: JumpResponse | None = None
+
+
+class GpuServerImportResponse(BaseModel):
+    imported: int
+    items: list[GpuServerResponse]

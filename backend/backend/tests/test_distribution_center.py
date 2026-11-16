@@ -39,8 +39,51 @@ def test_local_archive_rejects_unsafe_manifest(tmp_path,path):
 
 
 def test_independent_distribution_endpoints_require_admin(client):
-    for path in ('releases','targets','sources'):
+    for path in ('releases','targets','sources','servers/discover?server=files'):
         assert client.get('/api/model-deployments/'+path).status_code==401
+
+
+def test_discover_reads_only_server_names_and_existing_config(tmp_path,monkeypatch):
+    from services import model_deployment_executor as executor
+    repository=tmp_path/'models';model=repository/'detector';model.mkdir(parents=True)
+    (model/'config.pbtxt').write_text('name: "detector"',encoding='utf-8')
+    calls=[]
+    def command(args,timeout=60):
+        calls.append(args)
+        return 'triton\nnexusai\n'
+    monkeypatch.setattr(executor,'command',command)
+    result=executor.discover(dict(repository=str(repository),model_name='detector'))
+    assert result==dict(containers=['nexusai','triton'],models=['detector'],triton_config='name: "detector"')
+    assert calls==[['docker','ps','--format','{{.Names}}']]
+    assert executor.discover(dict(repository=str(repository),model_name='../secret'))['triton_config']==''
+
+
+@pytest.mark.asyncio
+async def test_discover_endpoint_checks_named_server(client,auth_headers,monkeypatch):
+    from services import model_deployments
+    async def servers():return [dict(name='files',host='10.0.0.1',user='root',port=22)]
+    calls=[]
+    def bridge(server,payload):
+        calls.append((server,payload))
+        return dict(containers=['triton'],models=[],triton_config='')
+    monkeypatch.setattr(model_deployments,'servers',servers)
+    monkeypatch.setattr(model_deployments.training_runs,'bridge',bridge)
+    assert client.get('/api/model-deployments/servers/discover?server=other',headers=auth_headers).status_code==422
+    response=client.get('/api/model-deployments/servers/discover?server=files',headers=auth_headers)
+    assert response.status_code==200 and response.json()['containers']==['triton']
+    assert len(calls)==1 and calls[0][0]=='files' and calls[0][1]['payload']['action']=='discover'
+
+
+@pytest.mark.asyncio
+async def test_records_filter_before_pagination(center_tables,client,auth_headers,test_db,test_user):
+    from models.model_deployment import ModelDeployment
+    rows=[ModelDeployment(id=uuid4(),tenant_id=test_user.tenant_id,user_id=test_user.id,kind=kind,status='draft',target_key=str(uuid4()),
+        source=source,target=dict(control_server=server,file_server=server),inspection={},logs=[])
+        for kind,source,server in [('model',dict(version='v1'),'files'),('image',dict(image='repo/app:v2'),'edge'),('image',dict(image='repo/app:v3'),'files')]]
+    test_db.add_all(rows);await test_db.commit()
+    result=client.get('/api/model-deployments',headers=auth_headers,params=dict(kind='image',version='v2',server='edge')).json()
+    assert [row['id'] for row in result['items']]==[str(rows[1].id)]
+    assert client.get('/api/model-deployments',headers=auth_headers,params=dict(kind='model',version='v1',server='files')).json()['items'][0]['id']==str(rows[0].id)
 
 
 @pytest_asyncio.fixture
@@ -48,7 +91,7 @@ async def center_tables(test_engine):
     service=center()
     from models import Base
     async with test_engine.begin() as conn:
-        for name in ('training_runs','training_gpu_holds','model_releases','deployment_targets','model_deployments','deployment_leases'):
+        for name in ('training_runs','training_gpu_holds','model_repository_items','model_releases','deployment_targets','model_deployments','deployment_leases'):
             await conn.run_sync(lambda c:Base.metadata.tables[name].create(c,checkfirst=True))
     return service
 

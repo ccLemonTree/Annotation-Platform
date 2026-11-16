@@ -58,7 +58,7 @@ class Token(BaseModel):
     """JWT令牌响应"""
     access_token: str
     token_type: str = "bearer"
-    expires_in: int = 3600
+    expires_in: int
 
 
 class TokenData(BaseModel):

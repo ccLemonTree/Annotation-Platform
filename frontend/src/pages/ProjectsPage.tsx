@@ -1,10 +1,13 @@
 // 项目管理页面
-import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Card,
   Button,
-  Table,
+  Pagination,
+  Spin,
+  Empty,
+  Progress,
   Modal,
   Form,
   Input,
@@ -14,10 +17,13 @@ import {
   Tag,
   Popconfirm,
   Alert,
+  Collapse,
 } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { isAxiosError } from 'axios';
 import {
   getProjects,
+  getProject,
   createProject,
   updateProject,
   deleteProject,
@@ -26,33 +32,42 @@ import {
 } from '../api/projects';
 
 import { getAnnotations } from '../api/annotations';
-import ContinueAnnotation from '../components/ContinueAnnotation';
+import ProjectAssignments from '../components/ProjectAssignments';
+import ProjectWorkflow from '../components/ProjectWorkflow';
+import './ProjectsPage.css';
 
 const { TextArea } = Input;
 
 export default function ProjectsPage() {
   const navigate = useNavigate();
+  const { projectId } = useParams();
+  const [loadError, setLoadError] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
+  const projectRequest = useRef(0);
+  const [assignmentProject,setAssignmentProject] = useState<Project>();
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [pagination, setPagination] = useState({ page: 1, page_size: 10, total: 0 });
+  const [revision, setRevision] = useState(0);
   const [form] = Form.useForm();
   const configuredLabels: string[] = Form.useWatch('labels', form) || [];
   const taskType = Form.useWatch('task_type', form) || 'detection';
+  const changingTaskType = !!editingProject && taskType !== editingProject.task_type;
   const [usedLabels, setUsedLabels] = useState<string[]>([]);
   const [renames, setRenames] = useState<Record<string, string>>({});
   const [labelsLoading, setLabelsLoading] = useState(false);
   const [labelsError, setLabelsError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState('');
   useEffect(() => {
-    if (!modalVisible || !editingProject) return;
+    if (!modalVisible || !editingProject || !['detection','classification'].includes(editingProject.task_type)) return;
     let active = true;
     setLabelsLoading(true); setLabelsError(''); setUsedLabels([]); setRenames({});
     (async () => {
       const names = new Set<string>();
       for (let page = 1; ; page++) {
-        const data = await getAnnotations({ project_id: editingProject.id, latest_only: true, page, page_size: 100 });
+        const data = await getAnnotations({ project_id: editingProject.id, scope:'annotation', latest_only: true, page, page_size: 100 });
         for (const annotation of data.items) {
           for (const box of annotation.annotation_data.boxes || []) names.add(box.label);
           for (const label of annotation.annotation_data.labels || []) names.add(label);
@@ -66,32 +81,54 @@ export default function ProjectsPage() {
   }, [modalVisible, editingProject]);
 
   useEffect(() => {
-    fetchProjects();
-  }, [pagination.page, pagination.page_size]);
+    let pending = false;
+    const load = async (quiet = false) => {
+      if (pending || quiet && document.hidden) return;
+      pending = true;
+      try { await fetchProjects(quiet); }
+      finally { pending = false; }
+    };
+    const refresh = () => { void load(true); };
+    void load();
+    const timer = setInterval(refresh, 15000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      projectRequest.current++;
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [pagination.page, pagination.page_size, revision, projectId]);
 
-  const fetchProjects = async () => {
+  const fetchProjects = async (quiet = false) => {
+    const request = ++projectRequest.current;
     try {
-      setLoading(true);
-      const response = await getProjects({
+      if (!quiet) setLoading(true);
+      const response = projectId ? {items:[await getProject(projectId)], total:1} : await getProjects({
         page: pagination.page,
         page_size: pagination.page_size,
       });
+      if (request !== projectRequest.current) return;
+      setLoadError(false);
       setProjects(response.items);
       setPagination(prev => ({ ...prev, total: response.total }));
     } catch (error) {
-      message.error('获取项目列表失败');
+      if (request === projectRequest.current && !quiet) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (request === projectRequest.current) setLoading(false);
     }
   };
 
   const handleCreate = () => {
+    setSaveError('');
     setEditingProject(null); setRenames({}); setUsedLabels([]); setLabelsError(''); setLabelsLoading(false);
     form.resetFields();
     setModalVisible(true);
   };
 
   const handleEdit = (project: Project) => {
+    setSaveError('');
     setEditingProject(project);
     form.setFieldsValue({ ...project, labels: project.label_schema?.labels || [],classification_mode:project.label_schema?.classification_mode||'single' });
     setModalVisible(true);
@@ -101,170 +138,81 @@ export default function ProjectsPage() {
     try {
       await deleteProject(projectId);
       message.success('删除成功');
-      fetchProjects();
+      navigate('/projects');
     } catch (error) {
       message.error('删除失败');
     }
   };
 
   const handleSubmit = async () => {
+    const validated = await form.validateFields().catch(() => null);
+    if (!validated) return;
     try {
-      const { labels=[], classification_mode, ...values } = await form.validateFields();
+      const { labels=editingProject?.label_schema?.labels || [], classification_mode, ...values } = validated;
       if (submitting || labelsLoading || labelsError) return;
       const normalized = labels.map((label: string) => label.trim());
-      const mapping = Object.fromEntries(Object.entries(renames).filter(([source, target]) => target && source !== target));
-      if (usedLabels.some(source => !normalized.includes(mapping[source] || source))) {
+      const mapping = changingTaskType ? {} : Object.fromEntries(Object.entries(renames).filter(([source, target]) => target && source !== target));
+      if (!changingTaskType && usedLabels.some(source => !normalized.includes(mapping[source] || source))) {
         message.error('已有框使用了被移除的类别，请指定旧类别到新类别的对应关系'); return;
       }
       const payload = { ...values, label_schema: { ...(editingProject?.label_schema || {}), labels: normalized },
         ...(editingProject ? { label_renames: mapping, base_label_schema: editingProject.label_schema } : {}) };
-      if(['classification','caption','vector'].includes(values.task_type))payload.label_schema.classification_mode=classification_mode||'single';
+      if(values.task_type==='classification')payload.label_schema.classification_mode=classification_mode||'single';
       setSubmitting(true);
+      setSaveError('');
 
       if (editingProject) {
-        await updateProject(editingProject.id, payload);
+        const { task_type, ...changes } = payload;
+        await updateProject(editingProject.id, changingTaskType ? { ...changes, task_type } : changes);
         message.success('更新成功');
       } else {
         const created = await createProject(payload as ProjectCreate);
-        message.success('创建成功，请为项目添加图片');
-        setModalVisible(false);navigate(`/projects/${created.id}/images`);return;
+        message.success('项目已创建，先添加图片');
+        setModalVisible(false); navigate(`/projects/${created.id}/images`); return;
       }
 
       setModalVisible(false);
       fetchProjects();
     } catch (error) {
-      message.error(editingProject ? '更新失败，请核对类别映射或重新打开最新配置' : '创建失败');
+      const detail = isAxiosError(error) ? error.response?.data?.detail : undefined;
+      setSaveError(typeof detail === 'string' ? detail : editingProject ? '更新失败，请重新打开最新配置后重试' : '创建失败，请重试');
     } finally { setSubmitting(false); }
   };
 
-  const columns = [
-    {
-      title: '项目名称',
-      dataIndex: 'project_name',
-      render: (name: string, record: Project) => <Link to={`/projects/${record.id}/images`}>{name}</Link>,
-      key: 'project_name',
-      width: 200,
-    },
-    {
-      title: '任务类型',
-      dataIndex: 'task_type',
-      key: 'task_type',
-      width: 120,
-      render: (type: string) => {
-        const typeMap: Record<string, { label: string; color: string }> = {
-          detection: { label: '目标检测', color: 'blue' },
-          classification: { label: '图像分类', color: 'green' },
-          segmentation: { label: '图像分割', color: 'purple' },
-          caption: { label:'描述标注',color:'cyan' },
-          vector: { label:'向量标注',color:'geekblue' },
-        };
-        const config = typeMap[type] || { label: type, color: 'default' };
-        return <Tag color={config.color}>{config.label}</Tag>;
-      },
-    },
-    {
-      title: '标注类别',
-      key: 'labels',
-      width: 200,
-      render: (_: unknown, record: Project) => Array.isArray(record.label_schema?.labels) && record.label_schema.labels.length
-        ? <Space wrap>{(record.label_schema.labels as string[]).map(label => <Tag key={label}>{label}</Tag>)}</Space> : <Tag>未配置</Tag>,
-    },
-    {
-      title: '描述',
-      dataIndex: 'description',
-      key: 'description',
-      ellipsis: true,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (status: string) => (
-        <Tag color={status === 'active' ? 'success' : 'default'}>
-          {({ draft: '草稿', active: '进行中', completed: '已完成', archived: '已归档' } as Record<string, string>)[status] || status}
-        </Tag>
-      ),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 180,
-      render: (date: string) => new Date(date).toLocaleString('zh-CN'),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 420,
-      fixed: 'right' as const,
-      render: (_: any, record: Project) => (
-        <Space>
-          <Link to={`/projects/${record.id}/images`}>管理图片</Link>
-          <Link to={`/projects/${record.id}/prepare`}>标注准备</Link>
-          <ContinueAnnotation projectId={record.id} taskType={record.task_type}/>
-          <Link to={`/annotations?project_id=${record.id}`}>审核</Link>
-          <Link to={`/projects/${record.id}/deliver`}>导出 / 训练</Link>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
-          <Popconfirm
-            title="确定删除此项目吗？"
-            onConfirm={() => handleDelete(record.id)}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button
-              type="link"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-            >
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
-
+  const project = projectId ? projects.find(item => item.id === projectId) : undefined;
   return (
     <div>
-      <Card
-        title="项目列表"
-        extra={
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={handleCreate}
-          >
-            新建项目
-          </Button>
-        }
-      >
-        <Table
-          columns={columns}
-          scroll={{ x: 1050 }}
-          dataSource={projects}
-          rowKey="id"
-          loading={loading}
-          pagination={{
-            current: pagination.page,
-            pageSize: pagination.page_size,
-            total: pagination.total,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
-            onChange: (page, pageSize) => {
-              setPagination(prev => ({ ...prev, page, page_size: pageSize }));
-            },
-          }}
-        />
-      </Card>
+      {assignmentProject&&<ProjectAssignments project={assignmentProject} onClose={()=>setAssignmentProject(undefined)}/>}
+      {loadError&&<Alert type="error" showIcon title="读取项目失败" action={<Button onClick={()=>setRevision(n=>n+1)}>重试</Button>} style={{marginBottom:16}}/>}
+      {projectId ? project ? <>
+        <ProjectWorkflow project={project} active="settings"/>
+        <Card title="项目设置">
+          <p className="workspace-help">管理项目名称、标注类别和成员。</p>
+          <Space wrap><Button type="primary" icon={<EditOutlined/>} onClick={()=>handleEdit(project)}>编辑名称与类别</Button>
+            <Button onClick={()=>setAssignmentProject(project)}>分配项目成员</Button></Space>
+          <p>标注类别：{(project.label_schema?.labels as string[]||[]).join('、')||'尚未设置，可在开始标注前添加'}</p>
+          <Collapse items={[{key:'danger',label:'删除项目',children:<><p>删除此项目及其标注、审核记录。此操作不可撤销。</p><Popconfirm title="确定删除此项目及其标注吗？" onConfirm={()=>handleDelete(project.id)} okText="删除项目" cancelText="取消"><Button danger icon={<DeleteOutlined/>}>删除项目</Button></Popconfirm></>}]} />
+        </Card>
+      </> : loading ? <Spin/> : null : <>
+        <div className="page-toolbar"><p className="workspace-help">选择项目继续工作，或创建项目后添加第一批图片。</p>
+          <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>新建项目</Button></div>
+        <Spin spinning={loading}>
+          {!projects.length&&!loading&&!loadError ? <Empty description="还没有项目，从项目名称开始"><Button type="primary" onClick={handleCreate}>创建第一个项目</Button></Empty> : <div className="project-card-grid">
+            {projects.map(project=><Link key={project.id} className="project-card-link" to={`/projects/${project.id}/images`} aria-label={`进入项目 ${project.project_name}`}>
+              <Card className="project-card" hoverable role="article" aria-label={project.project_name}
+                title={project.project_name}
+                extra={<Tag color={project.status==='active'?'success':'default'}>{({draft:'草稿',active:'进行中',completed:'已完成',archived:'已归档'} as Record<string,string>)[project.status]||project.status}</Tag>}>
+                <p className="project-card-description">{project.description||'添加数据、完成标注与审核，再导出或训练。'}</p>
+                <p className="project-card-counts">图片 {project.total_assets} · 已标注 {project.annotated_count} · 已审核 {project.reviewed_count}</p>
+                <div className="project-card-progress"><span>审核进度</span><Progress aria-label="项目审核进度" percent={project.total_assets?Math.floor(project.reviewed_count*100/project.total_assets):0} size="small" /></div>
+                <span className="project-card-enter">{project.total_assets?'进入项目':'添加第一批图片'} →</span>
+              </Card>
+            </Link>)}
+          </div>}
+        </Spin>
+        <Pagination current={pagination.page} pageSize={pagination.page_size} total={pagination.total} showSizeChanger
+          showTotal={total=>`共 ${total} 个项目`} style={{marginTop:20}} onChange={(page,pageSize)=>setPagination(previous=>({...previous,page,page_size:pageSize}))} />
+      </>}
 
       <Modal
         title={editingProject ? '编辑项目' : '新建项目'}
@@ -272,9 +220,11 @@ export default function ProjectsPage() {
         confirmLoading={submitting}
         okButtonProps={{ disabled: labelsLoading || !!labelsError }}
         onOk={handleSubmit}
-        onCancel={() => setModalVisible(false)}
+        onCancel={() => { if (!submitting) setModalVisible(false); }}
+        closable={!submitting}
+        mask={{closable:!submitting}}
         width={600}
-        okText="确定"
+        okText={editingProject ? "保存设置" : "创建项目"}
         cancelText="取消"
       >
         <Form
@@ -293,33 +243,23 @@ export default function ProjectsPage() {
             <Input placeholder="请输入项目名称" />
           </Form.Item>
 
-          <Form.Item
-            name="task_type"
-            label="任务类型"
-            rules={[{ required: true, message: '请选择任务类型' }]}
-          >
-            <Select
-              disabled={!!editingProject}
-              options={[
-                { label: '目标检测', value: 'detection' },
-                { label: '图像分类', value: 'classification' },
-                { label: '图像分割', value: 'segmentation' },
-                {label:'大模型描述标注',value:'caption'},
-                {label:'向量匹配标注',value:'vector'},
-              ]}
-            />
+          <Form.Item name="task_type" label="标注格式" rules={[{required:true}]}>
+            <Select options={[{value:'detection',label:'目标检测'},{value:'caption',label:'图片描述与属性'},
+              {value:'classification',label:'图片分类'},{value:'vector',label:'向量匹配'},{value:'segmentation',label:'图像分割',disabled:true}]}/>
           </Form.Item>
 
-          {['classification','caption','vector'].includes(taskType)&&<Form.Item name="classification_mode" label="分类方式"><Select options={[{value:'single',label:'单选分类'},{value:'multi',label:'多标签分类'}]}/></Form.Item>}
-          <Form.Item name="labels" label="标注类别" extra="输入类别后按回车。描述和向量项目可留空；类别与描述按图片共用。"
-            rules={[{ type: 'array', required: !['caption','vector'].includes(taskType), min: ['caption','vector'].includes(taskType)?0:1, message: '请至少设置一个类别' },
+          {taskType==='classification'&&<Form.Item name="classification_mode" label="分类方式"><Select options={[{value:'single',label:'单选分类'},{value:'multi',label:'多标签分类'}]}/></Form.Item>}
+          {(taskType==='classification'||editingProject&&taskType==='detection')&&<Form.Item name="labels" label="标注类别" extra="输入类别后按回车。"
+            rules={[{ type: 'array', required: true, min: 1, message: '请至少设置一个类别' },
               { validator: (_, labels: string[]=[]) => labels.every(label => label.trim()) && new Set(labels.map(label => label.trim())).size === labels.length
                 ? Promise.resolve() : Promise.reject(new Error('类别不能空白或重复')) }]}>
             <Select aria-label="项目标注类别" mode="tags" tokenSeparators={[',', '，']} placeholder="例如：人、车；输入后按回车" />
-          </Form.Item>
+          </Form.Item>}
 
+          {editingProject&&<>
           {labelsError && <Alert type="error" showIcon title={labelsError} />}
-          {editingProject && <div style={{ marginBottom: 20 }}>
+          {saveError && <Alert type="error" showIcon title={saveError} style={{ marginBottom: 16 }} />}
+          {!changingTaskType && ['detection','classification'].includes(taskType) && <div style={{ marginBottom: 20 }}>
             <h3>同步已有标注类别</h3>
             <p style={{ color: 'var(--ui-muted)' }}>选择旧类别对应的新类别。同步后最新标注生成新版本并待审核；历史和冻结包不变。{labelsLoading && ' 正在读取已有类别…'}</p>
             {[...new Set([...(Array.isArray(editingProject.label_schema?.labels) ? editingProject.label_schema.labels as string[] : []), ...usedLabels])].map(source =>
@@ -357,6 +297,7 @@ export default function ProjectsPage() {
               />
             </Form.Item>
           )}
+          </>}
         </Form>
       </Modal>
     </div>

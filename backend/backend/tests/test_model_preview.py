@@ -1,5 +1,7 @@
 """Upload-only detection preview: no projects, human truth, captions or library writes."""
 import json
+import shutil
+import subprocess
 from uuid import UUID
 import pytest
 import pytest_asyncio
@@ -74,6 +76,97 @@ async def test_service_upload_queue_results_and_cleanup(pclient,detector,auth_he
     assert pclient.delete(url,headers=auth_headers).status_code==204
     assert pclient.get(url,headers=auth_headers).status_code==404
     assert not any([await get_storage().file_exists(path) for path in paths])
+
+
+@pytest.mark.asyncio
+async def test_video_preview_samples_exports_and_cleans_up(pclient,detector,auth_headers,mock_image_data,test_engine,test_db,monkeypatch):
+    from pathlib import Path
+    from services import model_preview_video,validation
+    from services.storage import get_storage
+    from models.validation import ValidationSet
+    def prepare(upload,directory,interval):
+        assert interval==.5
+        (Path(directory)/'source').write_bytes(upload.read())
+        paths=[]
+        for index in range(2):
+            path=Path(directory)/f'{index}.jpg';path.write_bytes(mock_image_data.getvalue());paths.append(path)
+        return {'duration':4,'width':40,'height':40},paths
+    def render(source,items,interval,directory):
+        assert source.read_bytes()==b'video' and interval==.5 and len(items)==2
+        assert all(item.predictions[0]['label']=='person' for item in items)
+        output=Path(directory)/'result.mp4';output.write_bytes(b'boxed');return output
+    async def infer(*args):return {'boxes':[dict(label='person',x=1,y=2,width=3,height=4,score=.9)]}
+    monkeypatch.setattr(model_preview_video,'prepare',prepare)
+    monkeypatch.setattr(model_preview_video,'render',render)
+    monkeypatch.setattr(validation,'infer',infer)
+    request={'model_id':str(detector.id),'video_interval':.5}
+    response=pclient.post('/api/model-previews',headers=auth_headers,data={'request':json.dumps(request)},
+        files={'files':('clip.mp4',b'video','video/mp4')})
+    assert response.status_code==201,response.text
+    run=response.json();url='/api/model-previews/'+run['id']
+    assert run['video']=={'name':'clip.mp4','interval':.5,'duration':4}
+    assert pclient.get(url+'/video',headers=auth_headers).status_code==409
+    sessions=async_sessionmaker(test_engine,expire_on_commit=False)
+    for _ in range(2):assert await validation.process_one(sessions)
+    detail=pclient.get(url,headers=auth_headers).json()
+    assert detail['status']=='completed' and detail['total']==2
+    assert [item['original_name'] for item in detail['items']]==['000000-0s.jpg','000001-0.5s.jpg']
+    assert pclient.get(url+'/video',headers=auth_headers).content==b'boxed'
+    dataset=await test_db.get(ValidationSet,UUID(run['set_id']))
+    path=dataset.source['video_path']
+    assert await get_storage().file_exists(path)
+    await test_db.commit()
+    assert pclient.delete(url,headers=auth_headers).status_code==204
+    assert not await get_storage().file_exists(path)
+
+
+def test_video_preview_rejects_invalid_uploads(pclient,detector,auth_headers,mock_image_data):
+    request={'model_id':str(detector.id),'video_interval':2}
+    for changed in [{'video_interval':.05},{'video_interval':61},{'video_interval':2,'task_type':'caption'}]:
+        assert pclient.post('/api/model-previews',headers=auth_headers,data={'request':json.dumps({**request,**changed})},
+            files={'files':('clip.mp4',b'video','video/mp4')}).status_code==422
+    assert pclient.post('/api/model-previews',headers=auth_headers,data={'request':json.dumps(request)},
+        files=[('files',('clip.mp4',b'video','video/mp4')),
+               ('files',('image.jpg',mock_image_data.getvalue(),'image/jpeg'))]).status_code==400
+
+
+def test_video_sampling_rejects_more_than_5000_frames(tmp_path,monkeypatch):
+    from io import BytesIO
+    from services import model_preview_video
+    def probe(command,**kwargs):
+        assert command[0]=='ffprobe'
+        return subprocess.CompletedProcess(command,0,json.dumps({'streams':[{'width':320,'height':180}],
+            'format':{'duration':'600'}}).encode())
+    monkeypatch.setattr(model_preview_video.subprocess,'run',probe)
+    with pytest.raises(HTTPException) as error:model_preview_video.prepare(BytesIO(b'video'),tmp_path,.1)
+    assert error.value.status_code==400 and '5000' in error.value.detail
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'),reason='FFmpeg is not installed locally')
+@pytest.mark.asyncio
+async def test_video_preview_real_media_pipeline(pclient,detector,auth_headers,test_engine,tmp_path,monkeypatch):
+    from services import validation
+    async def infer(*args):return {'boxes':[dict(label='行人',x=10,y=20,width=60,height=50,score=.9)]}
+    monkeypatch.setattr(validation,'infer',infer)
+    clip=tmp_path/'clip.mp4'
+    subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','testsrc=size=320x180:rate=10:duration=4',
+        '-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-pix_fmt','yuv420p',
+        '-c:a','aac',str(clip)],check=True)
+    response=pclient.post('/api/model-previews',headers=auth_headers,
+        data={'request':json.dumps({'model_id':str(detector.id),'video_interval':.5})},
+        files={'files':('clip.mp4',clip.read_bytes(),'video/mp4')})
+    assert response.status_code==201,response.text
+    run=response.json();sessions=async_sessionmaker(test_engine,expire_on_commit=False)
+    for _ in range(8):assert await validation.process_one(sessions)
+    url='/api/model-previews/'+run['id']
+    result=pclient.get(url+'/video',headers=auth_headers)
+    assert result.status_code==200,result.text
+    output=tmp_path/'result.mp4';output.write_bytes(result.content)
+    probe=json.loads(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration:stream=codec_type',
+        '-of','json',str(output)],capture_output=True,check=True).stdout)
+    assert 3.9<float(probe['format']['duration'])<4.1
+    assert {stream['codec_type'] for stream in probe['streams']}=={'video','audio'}
+    assert pclient.delete(url,headers=auth_headers).status_code==204
 
 
 @pytest.mark.asyncio

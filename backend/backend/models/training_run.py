@@ -1,7 +1,7 @@
 """Single-host Docker runs, separate from unused legacy Kubernetes task records."""
 import uuid
 from datetime import datetime
-from sqlalchemy import String,Integer,DateTime,ForeignKey,Text,func,Index
+from sqlalchemy import BigInteger,String,Integer,DateTime,ForeignKey,Text,func,Index
 from sqlalchemy.dialects.postgresql import UUID,JSONB
 from sqlalchemy.orm import Mapped,mapped_column
 from .base import Base
@@ -30,6 +30,13 @@ class TrainingGpuHold(Base):
     __tablename__='training_gpu_holds'
     gpu_uuid:Mapped[str]=mapped_column(String(100),primary_key=True)
     run_id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),ForeignKey('training_runs.id',ondelete='RESTRICT'),index=True)
+
+
+class TrainingTrainer(Base):
+    __tablename__ = 'training_trainers'
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('tenants.id', ondelete='CASCADE'), index=True)
+    definition: Mapped[dict] = mapped_column(JSONB)
 
 
 class TrainingAnalysis(Base):

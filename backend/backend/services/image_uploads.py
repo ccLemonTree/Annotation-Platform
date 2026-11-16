@@ -1,11 +1,12 @@
 """Bounded local staging, safe archive reads and durable per-image import checkpoints."""
-import asyncio,hashlib,io,logging,os,shutil,stat,tarfile,zipfile
+import asyncio,hashlib,io,json,logging,os,shutil,stat,tarfile,zipfile
 from datetime import datetime,timedelta
 from pathlib import Path,PurePosixPath,PureWindowsPath
 from uuid import UUID
 from fastapi import HTTPException,UploadFile
 from sqlalchemy import select,update,func
-from models import ImageUpload,ImageUploadItem,ImageCollection,ImageCollectionMember
+from models import ImageUpload,ImageUploadItem,ImageCollection,ImageCollectionMember,User
+from models.image_upload import ImageUploadBatchFile
 from config.settings import settings
 
 CHUNK_SIZE=8*1024**2
@@ -28,6 +29,14 @@ def remove_staging(id):
 def part_size(job,index):
     return min(CHUNK_SIZE,job.size-index*CHUNK_SIZE)
 
+def resume_keys(filename,size,hashes,collection_id,minimum,annotation_format,trust_annotations,project_id,image_kind='originals'):
+    identity=[filename,size,hashes,str(collection_id),minimum]
+    if annotation_format:identity.extend([annotation_format,trust_annotations])
+    if image_kind=='crops':identity.append('crops')
+    def digest(values):
+        return hashlib.sha256(json.dumps(values,separators=(',',':')).encode()).hexdigest()
+    return digest([*identity,str(project_id) if project_id else None]),digest(identity)
+
 def uploaded_parts(job):
     if job.status in ('pending','processing','completed'):return list(range(len(job.chunk_hashes)))
     root=staging(job.id)
@@ -36,9 +45,11 @@ def uploaded_parts(job):
 def response(job):
     parts=uploaded_parts(job)
     return dict(id=str(job.id),filename=job.filename,size=job.size,collection_id=str(job.collection_id),min_long_edge=job.min_long_edge,
+        project_id=str(job.project_id) if job.project_id else None,
+        image_kind=job.image_kind,
         annotation_format=job.annotation_format,
         trust_annotations=job.trust_annotations,
-        status=job.status,uploaded_parts=parts,uploaded_bytes=sum(part_size(job,i) for i in parts),
+        status=job.status,uploaded_parts=parts,uploaded_bytes=job.size if job.user_id is None else sum(part_size(job,i) for i in parts),
         chunk_size=CHUNK_SIZE,result=job.result,error=job.error,cursor=job.cursor,
         updated_at=job.updated_at.isoformat()+'Z')
 
@@ -94,16 +105,19 @@ def check_archive(path,kind):
             count+=1;total+=size
             if count>settings.MAX_ARCHIVE_FILES:
                 raise ValueError(f'压缩包条目数量超过限制：已检查{count}项，上限{settings.MAX_ARCHIVE_FILES}项（含图片、标注和目录）')
-            if total>settings.MAX_ARCHIVE_EXPANDED_SIZE:
-                raise ValueError(f'压缩包展开大小超过限制：已检查{total}字节，上限{settings.MAX_ARCHIVE_EXPANDED_SIZE}字节')
+            if total>settings.MAX_IMAGE_ARCHIVE_EXPANDED_SIZE:
+                raise ValueError(f'压缩包展开大小超过限制：已检查{total}字节，上限{settings.MAX_IMAGE_ARCHIVE_EXPANDED_SIZE}字节')
+    return count
 
-def import_items(path,filename,cursor,checked=False):
+def import_items(path,filename,cursor,checked=False,*,on_total=None):
     kind='zip' if filename.lower().endswith('.zip') else 'tar' if filename.lower().endswith(ARCHIVES[1:]) else None
     if kind is None:
         if cursor==0:
             with path.open('rb') as file:yield 0,filename,file.read(settings.MAX_UPLOAD_SIZE+1),None
         return
-    if not checked:check_archive(path,kind)
+    if not checked:
+        total=check_archive(path,kind)
+        if on_total:on_total(total)
     with open_archive(path,kind) as file:
         for index,item in enumerate(members(file,kind)):
             name,size,directory=member_info(item,kind)
@@ -125,15 +139,23 @@ async def process_one(sessions):
         job=await db.scalar(select(ImageUpload).where(ImageUpload.status=='pending').order_by(ImageUpload.created_at).with_for_update(skip_locked=True).limit(1))
         if job is None:return False
         job.status='processing';job.attempt+=1
+        if job.project_id and not job.cursor:
+            job.result={**job.result,'project_association_complete':True,'added_count':0,'project_duplicates':0,'project_conflicts':0,'queued_count':0}
         id,attempt=job.id,job.attempt
         await db.commit()
     iterator=None
+    archive_total=None
+
+    def set_archive_total(total):
+        nonlocal archive_total
+        archive_total=total
+
     try:
-        path=await asyncio.to_thread(assemble,job)
+        path=staging(id)/'assembled' if job.user_id is None else await asyncio.to_thread(assemble,job)
         if job.annotation_format:
             from services import yolo_import
-            iterator=yolo_import.import_items(path,job.filename,job.cursor)
-        else:iterator=import_items(path,job.filename,job.cursor)
+            iterator=yolo_import.import_items(path,job.filename,job.cursor,on_total=set_archive_total)
+        else:iterator=import_items(path,job.filename,job.cursor,on_total=set_archive_total)
         while True:
             read=asyncio.create_task(asyncio.to_thread(next_item,iterator))
             try:item=await asyncio.shield(read)
@@ -145,7 +167,11 @@ async def process_one(sessions):
             async with sessions() as db:
                 current=await db.scalar(select(ImageUpload).where(ImageUpload.id==id).with_for_update())
                 if current is None or current.status!='processing' or current.attempt!=attempt:return True
+                external=current.user_id is None
+                if (external or job.project_id or current.result.get('project_association_complete')) and current.project_id is None:
+                    raise ValueError('目标项目已删除')
                 result={**current.result,'errors':list(current.result.get('errors',[]))}
+                if archive_total is not None:result['archive_total']=archive_total
                 if skip:
                     result[skip]+=1
                     if len(item)>5 and len(result['errors'])<20:result['errors'].append(item[5][:500])
@@ -159,6 +185,16 @@ async def process_one(sessions):
                         result['invalid']+=1
                         if len(result['errors'])<20:result['errors'].append(name[:255]+'：图片格式、大小或内容无效')
                     else:
+                        if current.project_id:
+                            from api.asset_routes import scoped_project
+                            from services.upload_follow import lock_follow_job
+                            actor=await db.get(User,current.user_id) if current.user_id is not None else None
+                            if current.user_id is not None:
+                                if not actor or not actor.is_active or actor.tenant_id!=current.tenant_id:
+                                    raise ValueError('上传用户已停用或租户变化')
+                                db.info['current_user']={'id':actor.id,'role':actor.role,'tenant_id':actor.tenant_id}
+                            project=await scoped_project(db,current.project_id,current.tenant_id)
+                            follow=await lock_follow_job(db,current.project_id)
                         image=await register_image(db,current.tenant_id,values,str(id))
                         member=await db.get(ImageCollectionMember,(current.collection_id,image.id))
                         result['duplicates' if member else 'imported']+=1
@@ -168,6 +204,27 @@ async def process_one(sessions):
                             from services.yolo_import import save
                             await save(db,current,image,item[4],result)
                         if await db.get(ImageUploadItem,(id,image.id)) is None:
+                            if current.project_id:
+                                from services.image_library import attach_images
+                                from services.upload_follow import enqueue_uploads,find_streaming_follow_job
+                                try:
+                                    assets,created=await attach_images(db,current.project_id,current.tenant_id,[image.id],image_kind=current.image_kind)
+                                except HTTPException as exc:
+                                    if exc.status_code!=409:raise
+                                    result['project_conflicts']=result.get('project_conflicts',0)+1
+                                    if len(result['errors'])<20:result['errors'].append(name[:255]+'：'+str(exc.detail))
+                                else:
+                                    if current.annotation_format and project.task_type=='detection':
+                                        from services.yolo_import import copy_to_project
+                                        imported=await copy_to_project(db,assets,actor)
+                                        for key,value in imported.items():result['project_'+key]=result.get('project_'+key,0)+value
+                                    result['added_count']=result.get('added_count',0)+len(created)
+                                    result['project_duplicates']=result.get('project_duplicates',0)+int(not created)
+                                    crop_entry_locked=follow is not None
+                                    if follow is None and created:follow=await find_streaming_follow_job(db,current.project_id)
+                                    queued,warning=await enqueue_uploads(db,follow,created,crop_entry_locked=crop_entry_locked)
+                                    result['queued_count']=result.get('queued_count',0)+queued
+                                    if warning:result['queue_warning']=warning
                             db.add(ImageUploadItem(upload_id=id,image_id=image.id))
                 current.result=result;current.cursor=index+1;current.updated_at=datetime.utcnow()
                 await db.commit()
@@ -175,14 +232,19 @@ async def process_one(sessions):
             current=await db.scalar(select(ImageUpload).where(ImageUpload.id==id).with_for_update())
             if current and current.status=='processing' and current.attempt==attempt:
                 current.unique_count=await db.scalar(select(func.count()).select_from(ImageUploadItem).where(ImageUploadItem.upload_id==id))
-                current.status='completed';current.error=None;await db.commit()
+                current.status='completed';current.error=None
+                await db.execute(update(ImageUploadBatchFile).where(ImageUploadBatchFile.upload_id==id).values(status='completed'))
+                await db.commit()
         await asyncio.to_thread(remove_staging,id)
     except asyncio.CancelledError:raise
     except Exception as exc:
         message=str(exc.detail) if isinstance(exc,HTTPException) else str(exc) if isinstance(exc,ValueError) else '文件校验或入库失败，请重试；损坏的压缩包需重新打包'
         async with sessions() as db:
-            await db.execute(update(ImageUpload).where(ImageUpload.id==id,ImageUpload.status=='processing',ImageUpload.attempt==attempt).values(status='failed',error=message[:500]))
+            changed=await db.execute(update(ImageUpload).where(ImageUpload.id==id,ImageUpload.status=='processing',ImageUpload.attempt==attempt).values(status='failed',error=message[:500]))
+            if changed.rowcount:
+                await db.execute(update(ImageUploadBatchFile).where(ImageUploadBatchFile.upload_id==id).values(status='failed'))
             await db.commit()
+        if job.user_id is None:await asyncio.to_thread(remove_staging,id)
         logger.warning('Upload import failed: %s',type(exc).__name__)
     finally:
         if iterator:iterator.close()

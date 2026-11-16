@@ -1,0 +1,73 @@
+async page=>{
+  const project={id:'11111111-1111-4111-8111-111111111111',project_name:'工厂检测项目',task_type:'detection',label_schema:{labels:['人']},total_assets:1,annotated_count:1,reviewed_count:0};
+  const asset={id:'22222222-2222-4222-8222-222222222222',project_id:project.id,original_name:'factory-camera.jpg',width:1,height:1,annotation_status:'completed',source_type:'upload'};
+  const job={id:'33333333-3333-4333-8333-333333333333',project_id:project.id,kind:'review',status:'completed',total:1,processed:1,approved_count:0,needs_review_count:1,failed_count:0,config:{},created_at:'2026-11-02T00:00:00Z'};
+  const item={id:'44444444-4444-4444-8444-444444444444',job_id:job.id,asset_id:asset.id,annotation_id:'55555555-5555-4555-8555-555555555555',annotation_version:1,status:'needs_review',reason:'需要人工核对',evidence:{},result:{boxes:[]},project_id:project.id,project_name:project.project_name,asset_name:asset.original_name,job_kind:'review'};
+  const annotation={id:item.annotation_id,asset_id:asset.id,annotation_data:{boxes:[]},version:1,is_latest:true,review_status:'pending',annotation_source:'reuse'};
+  const api=/^http:\/\/localhost:3000\/api\//,reads=[];let role='admin';
+  await page.addInitScript(()=>{if(location.protocol==='http:')localStorage.setItem('token','isolated-review-token');});
+  await page.route(api,async route=>{
+    const request=route.request(),url=new URL(request.url()),path=url.pathname;reads.push(url.href);
+    if(request.method()!=='GET')return route.fulfill({json:{}});
+    let data;
+    if(path==='/api/auth/me')data={id:1,username:'fixture',role,tenant_id:1,is_active:true};
+    else if(path==='/api/projects')data={items:[project],total:1,page:1,page_size:100};
+    else if(path===`/api/projects/${project.id}`)data=project;
+    else if(path.endsWith('/stats'))data=project;
+    else if(path==='/api/automation/review-queue')data={items:[item],total:1,page:1,page_size:20};
+    else if(path==='/api/automation/jobs')data={items:[job],total:1,page:1,page_size:20};
+    else if(path===`/api/automation/jobs/${job.id}`)data=job;
+    else if(path.endsWith('/items'))data={items:[item],total:1,page:1,page_size:20};
+    else if(path===`/api/assets/${asset.id}`)data=asset;
+    else if(path==='/api/assets')data={items:[asset],total:1,page:1,page_size:20};
+    else if(path.endsWith('/neighbors'))data={previous_id:null,next_id:null,position:1,total:1};
+    else if(path.endsWith('/content'))return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==','base64')});
+    else if(path===`/api/annotations/${item.annotation_id}`)data=annotation;
+    else if(path==='/api/annotations')data={items:[annotation],total:1,page:1,page_size:100};
+    else if(path==='/api/analytics')data={quality:null,workload:null,efficiency:null,definitions:{}};
+    else data=[];
+    return route.fulfill({json:data});
+  });
+  try{
+    await page.goto(`http://localhost:3000/review-queue?project_id=${project.id}`);
+    await page.getByRole('heading',{name:'管理员待审队列',exact:true}).waitFor();
+    const related=page.getByRole('navigation',{name:'相关功能'});
+    if(!(await related.getByRole('link',{name:'预标注与AI审核 →'}).getAttribute('href')).includes(`project_id=${project.id}`))throw Error('相关功能链接丢失项目上下文');
+    const table=page.getByRole('table').first();
+    await table.getByRole('link',{name:project.project_name,exact:true}).waitFor();
+    await table.getByText(asset.original_name,{exact:true}).waitFor();
+    await table.getByRole('link',{name:'查看来源任务'}).click();
+    if(!new URL(page.url()).searchParams.get('job_id'))throw Error('来源任务上下文丢失');
+    await page.getByRole('dialog',{name:`任务明细 · ${job.id}`}).waitFor();
+    await page.goto(`http://localhost:3000/review-queue?project_id=${project.id}`);
+    await page.getByRole('button',{name:'预览审核'}).click();
+    await page.getByText(/标注来源：项目复用/).waitFor();
+    await page.getByRole('dialog',{name:'管理员审核预览'}).getByRole('link',{name:'打开标注工作台'}).click();
+    if(new URL(page.url()).searchParams.get('from')!=='automation-review')throw Error('打开工作台丢失队列来源');
+    await page.getByRole('link',{name:'返回管理员待审队列'}).click();
+    if(new URL(page.url()).pathname!=='/review-queue'||new URL(page.url()).searchParams.get('project_id')!==project.id)throw Error('返回了普通审核或其他项目');
+    await page.goto(`http://localhost:3000/annotate/${asset.id}?from=review&project_id=${project.id}`);
+    await page.getByRole('link',{name:`返回 ${project.project_name} 标注与审核`,exact:true}).click();
+    if(new URL(page.url()).pathname!=='/annotations')throw Error('旧普通审核来源兼容失效');
+    await page.getByRole('cell',{name:'项目复用',exact:true}).waitFor();
+    await page.goto(`http://localhost:3000/analytics?project_id=${project.id}`);
+    await page.getByRole('navigation',{name:'项目导航'}).waitFor();
+    await page.getByRole('combobox',{name:'统计项目'}).click();
+    await page.getByRole('button',{name:'Clear'}).click();
+    if(new URL(page.url()).searchParams.has('project_id'))throw Error('分析项目筛选未同步URL');
+    await page.getByRole('button',{name:'查询统计'}).click();
+    if(!reads.some(url=>new URL(url).pathname==='/api/analytics'&&!new URL(url).searchParams.has('project_id')))throw Error('统计未使用全部项目范围');
+    await page.goto(`http://localhost:3000/review-queue?project_id=${project.id}`);await page.getByRole('button',{name:'预览审核'}).waitFor();
+    await page.locator('.ant-spin-spinning').waitFor({state:'hidden'});
+    await page.screenshot({path:'output/playwright/project-review-queue-desktop.png',fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'预览审核'}).waitFor();
+    if(await page.locator('html').evaluate(element=>element.scrollWidth>element.clientWidth+1))throw Error('待审队列手机端溢出');
+    await page.screenshot({path:'output/playwright/project-review-queue-mobile.png',fullPage:true,animations:'disabled'});
+    role='annotator';await page.goto('http://localhost:3000/review-queue');
+    await page.waitForURL('**/annotations');
+    if(await page.getByRole('menuitem',{name:'管理员待审队列'}).count())throw Error('非管理员出现队列入口');
+    return {checks:['独立管理员入口含项目和图片名','来源任务深链','队列→工作台→原项目队列','分析项目上下文同步URL','非管理员权限保持','手机布局'],scope:'所有根/api请求隔离拦截，无业务写入'};
+  }catch(error){await page.screenshot({path:'output/playwright/project-review-flow-failure.png',fullPage:true});throw error;}
+  finally{await page.goto('about:blank');await page.unroute(api);await page.setViewportSize({width:1440,height:1000});}
+}

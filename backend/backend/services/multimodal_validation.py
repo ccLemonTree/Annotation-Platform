@@ -24,7 +24,9 @@ def kind_filter(column,kind):
 
 async def model_snapshot(db,model_id,tenant_id,kind):
     from services.image_semantics import model_snapshot as existing
-    return await existing(db,tenant_id,model_id,kind)
+    snapshot=await existing(db,tenant_id,model_id,kind)
+    if snapshot['config']['protocol']=='jev_decide':raise HTTPException(400,'JEV choice模型仅用于目标属性分析')
+    return snapshot
 
 
 def vector(value):
@@ -90,7 +92,7 @@ async def create_set(db,request,user,project):
             annotation_id=str(ann.id) if ann else None,annotation_version=ann.version if ann else None,reviewer_id=ann.reviewer_id if ann else None))
     queries=[]
     if kind=='embedding':
-        records=(await db.scalars(select(MatchQuery).where(MatchQuery.project_id==project.id).order_by(MatchQuery.id).limit(201))).all()
+        records=(await db.scalars(select(MatchQuery).where(MatchQuery.project_id==project.id,MatchQuery.is_retrieval_query()).order_by(MatchQuery.id).limit(201))).all()
         if len(records)>200:raise HTTPException(400,'单验证集最多200条检索查询，请分项目验证')
         by_id={s['asset_id']:s for s in samples}
         image_ids={UUID(r.query['image_id']) for r in records if r.query.get('image_id')}

@@ -1,10 +1,12 @@
 import apiClient from './client';
 import type { Box } from '../components/detectionEditor';
 
+export const DEFAULT_DETECTION_CONFIDENCE = 0.85;
+
 export type ModelKind = 'detection' | 'caption' | 'embedding' | 'reranker';
-export type ModelProtocol = 'model_service' | 'openai_chat' | 'openai_embedding' | 'openai_rerank';
+export type ModelProtocol = 'model_service' | 'openai_chat' | 'openai_embedding' | 'openai_rerank' | 'jev_decide';
 export interface ChatPrompts { caption: string; review: string; match_review?:string; training_analysis?:string }
-export interface PromptDefaults extends ChatPrompts { scene: string }
+export interface PromptDefaults extends ChatPrompts { scene: string; attributes?:string; quality?:string; detection_preannotation?:string }
 export interface ModelServiceConfig {
   key: string;
   name: string;
@@ -22,7 +24,12 @@ export interface ModelServiceConfig {
   api_key_env?: string;
   chat_prompts?: ChatPrompts;
 }
-export interface ModelService extends ModelServiceConfig { id: string; revision: number }
+export interface ModelService extends ModelServiceConfig {
+  id: string; revision: number;
+  connection_check?: {status:'online'|'offline';detail:string;checked_at:string;checked_revision:number}|null;
+}
+export const isModelOffline=(model?:Pick<ModelService,'revision'|'connection_check'>):boolean=>
+  model?.connection_check?.status==='offline'&&model.connection_check.checked_revision===model.revision;
 export const hasDetectionConfidence = (model?: ModelServiceConfig): boolean =>
   !(model?.protocol === 'model_service' && model.endpoint === '/detect/grounding');
 export const hasDetectionNms = (model?: ModelServiceConfig): boolean =>
@@ -61,7 +68,7 @@ export async function addDefaultModelServices(): Promise<ModelService[]> {
   return (await apiClient.post('/api/model-services/defaults')).data;
 }
 export async function testModelService(id: string): Promise<{ ok: boolean; detail: string; models?: string[] }> {
-  return (await apiClient.post(`/api/model-services/${id}/test`, undefined, { timeout: 185000 })).data;
+  return (await apiClient.post(`/api/model-services/${id}/test`, undefined, { timeout: 185000, skipErrorToast: true })).data;
 }
 export async function predictModelService(id: string, input: PredictionInput, signal?: AbortSignal): Promise<PredictionResult> {
   if (Boolean(input.asset_id) === Boolean(input.image_id)) throw new Error('请选择且只选择一个图片 ID');

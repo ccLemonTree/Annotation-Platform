@@ -7,6 +7,8 @@ interface SidebarProps {
 }
 
 const items = [
+  { key: 'platform-management', label: '平台管理', icon: <GlobalOutlined /> },
+  { key: 'device-capture', label: '设备抓图', icon: <PictureOutlined /> },
   { key: 'detection', label: '检测查询', icon: <SearchOutlined /> },
   { key: 'ledger-query', label: '台账查询', icon: <PictureOutlined /> },
   { key: 'ledger-schedule', label: '台账下载', icon: <ScheduleOutlined /> },

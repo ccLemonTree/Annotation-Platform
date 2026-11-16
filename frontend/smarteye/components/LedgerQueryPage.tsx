@@ -118,15 +118,20 @@ const LedgerQueryPage: React.FC = () => {
       const res = await apiFetch(`${API_BASE_URL}/download-images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls, collection_name: platInput.trim(), filename: `台账查询_${platInput}` }),
+        body: JSON.stringify({ urls, records: images.filter(img => img.backPath).map(img => ({ deviceId: img.deviceId, deviceName: img.deviceName, platform: platInput.trim() })), collection_name: platInput.trim(), filename: `台账查询_${platInput}` }),
       });
-      if (!res.ok) throw new Error('下载失败');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || data.msg || `下载失败 (HTTP ${res.status})`);
+      }
       const blob = await res.blob();
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = `台账查询_${platInput}.zip`;
       link.click();
       URL.revokeObjectURL(link.href);
+      const filtered = Number(res.headers.get('X-SmartEye-Filtered-Count'));
+      if (filtered > 0) alert(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
     } catch (e: any) {
       alert(e.message || '下载出错');
     } finally {

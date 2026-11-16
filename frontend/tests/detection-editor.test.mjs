@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { draftHistory, changeDraft, undoDraft, redoDraft, hitBoxes, duplicatePairs, zoomView } from '../src/components/detectionEditor.ts';
+import { draftHistory, changeDraft, undoDraft, redoDraft, hitBoxes, duplicatePairs, zoomView, labelColor } from '../src/components/detectionEditor.ts';
 
 const b = { x: 10, y: 10, width: 30, height: 40, label: '车' };
 test('undo/redo restore move, class, delete and negative state; new edit clears redo', () => {
@@ -36,4 +36,14 @@ test('zoom keeps the image coordinate under the cursor and clamps scale', () => 
   assert.equal((point.y - view.y) / view.height, (point.y - next.y) / next.height);
   assert.equal(zoomView(view, point, 1000, 800, 600).width, 800 / 8);
   assert.equal(zoomView(view, point, .0001, 800, 600).width, 800 * 5);
+});
+
+test('label colors are stable across views and differ for common classes', () => {
+  assert.equal(labelColor('车辆'), labelColor('车辆'));
+  assert.notEqual(labelColor('车辆'), labelColor('行人'));
+  assert.notEqual(labelColor('car'), labelColor('person'));
+  const labels = ['车辆', '行人', 'car', 'person'];
+  assert.equal(new Set(labels.map(label => labelColor(label, labels))).size, labels.length);
+  assert.equal(labelColor('车辆', labels), labelColor('车辆', [...labels]));
+  assert.equal(labelColor('unknown', labels), labelColor('unknown'));
 });

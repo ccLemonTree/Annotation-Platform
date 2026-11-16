@@ -42,7 +42,7 @@ def test_017_preserves_rows_and_matches_gpu_model(isolated_pg):
         inspector = inspect(conn)
         expected = GpuServer.__table__
         columns = inspector.get_columns('gpu_servers')
-        assert {column['name'] for column in columns} == set(expected.c.keys())
+        assert {column['name'] for column in columns} == {name for name in expected.c.keys() if not name.startswith('jump_')}
         for column in columns:
             assert column['type'].compile(dialect=conn.dialect) == expected.c[column['name']].type.compile(dialect=conn.dialect)
             assert column['nullable'] == expected.c[column['name']].nullable
@@ -52,6 +52,20 @@ def test_017_preserves_rows_and_matches_gpu_model(isolated_pg):
         assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '017'
     with pytest.raises(RuntimeError, match='禁止|refus'):
         command.downgrade(config, '016')
+
+
+def test_028_preserves_existing_server_and_adds_only_nullable_jump_columns(isolated_pg):
+    from models.gpu_server import GpuServer
+    engine,config=isolated_pg
+    pre_013(engine,config);command.upgrade(config,'027')
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO gpu_servers(id,tenant_id,name,host,password_encrypted) VALUES ('77777777-7777-4777-8777-777777777777',1,'existing','192.0.2.1','fixture-cipher')"))
+        before=conn.execute(text('SELECT id,tenant_id,name,host,password_encrypted,revision FROM gpu_servers')).all()
+    command.upgrade(config,'028')
+    with engine.connect() as conn:
+        assert conn.execute(text('SELECT id,tenant_id,name,host,password_encrypted,revision FROM gpu_servers')).all()==before
+        assert conn.execute(text('SELECT jump_host,jump_port,jump_username,jump_password_encrypted FROM gpu_servers')).one()==(None,None,None,None)
+        assert {c['name'] for c in inspect(conn).get_columns('gpu_servers')}==set(GpuServer.__table__.c.keys())
 
 
 def test_017_refuses_existing_table_without_overwriting(isolated_pg):

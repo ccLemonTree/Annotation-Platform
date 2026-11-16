@@ -1,4 +1,4 @@
-from integrations.smarteye.runtime import cached_image, response_bytes
+from integrations.smarteye.runtime import cached_image, response_bytes, device_source
 from integrations.smarteye.configuration import get_env
 from integrations.smarteye.runtime import DurableTasks, tracked_run, actor, save_image_content
 from integrations.smarteye.configuration import download_root
@@ -28,6 +28,7 @@ from integrations.smarteye.api.utils import logger
 from integrations.smarteye.api.db_utils import get_smart_search_platforms, get_devices_by_alarm_type_name, upsert_devices
 from integrations.smarteye.api.platform_enum import get_combined_platform_mapping
 from integrations.smarteye.api.smart_search import login_platform
+from integrations.smarteye.api.login_utils import is_token_invalid_response
 from integrations.smarteye.api.ledger_alarm_source import query_alarm_candidates
 from integrations.smarteye.api.db_cache import (
     init_connection_pool,
@@ -355,7 +356,7 @@ def _split_json_objects(s: str) -> list:
     return objects
 
 
-def crop_image_from_bbox(full_image_path: str, bbox: dict, output_path: str, collection_name=None) -> bool:
+def crop_image_from_bbox(full_image_path: str, bbox: dict, output_path: str, collection_name=None, device_info=None) -> bool:
     try:
         from PIL import Image
         img = Image.open(full_image_path)
@@ -375,7 +376,7 @@ def crop_image_from_bbox(full_image_path: str, bbox: dict, output_path: str, col
         from io import BytesIO
         output = BytesIO()
         cropped.save(output, format="JPEG")
-        return bool(save_image_content(output_path, output.getvalue(), collection_name=collection_name))
+        return bool(save_image_content(output_path, output.getvalue(), collection_name=collection_name, device_info=device_info))
     except Exception as e:
         logger.warning(f"裁图失败: {e}")
         return False
@@ -415,7 +416,7 @@ def _get_with_token(base_url: str, path: str, token_info: dict, timeout: int = 2
     try:
         with _make_no_proxy_session() as s:
             rsp = s.get(url, headers=headers, timeout=timeout, verify=False)
-        if rsp.status_code == 401:
+        if rsp.status_code == 401 or is_token_invalid_response(rsp):
             logger.warning(f"GET 401 token 失效 [{url}]")
             return _TOKEN_EXPIRED
         rsp.raise_for_status()
@@ -432,7 +433,7 @@ def _post_with_token(base_url: str, path: str, payload: dict,
     try:
         with _make_no_proxy_session() as s:
             rsp = s.post(url, headers=headers, json=payload, timeout=timeout, verify=False)
-        if rsp.status_code == 401:
+        if rsp.status_code == 401 or is_token_invalid_response(rsp):
             logger.warning(f"POST 401 token 失效 [{url}]")
             return _TOKEN_EXPIRED
         rsp.raise_for_status()
@@ -492,12 +493,15 @@ def query_devices_by_alarm_type(base_url: str, token_info: dict, alarm_type_id: 
 
 def query_ledger_record_page(base_url: str, token_info: dict,
                              device_id: str, start_time: str, end_time: str,
-                             current: int, page_size: int = 100):
+                             current: int, page_size: int = 100, *, latest_only: bool = False):
     """查询单页台账，返回 (records, total) 或 _TOKEN_EXPIRED。"""
     payload = {
         "current": current, "size": page_size,
         "model": {"deviceId": device_id, "startTime": start_time, "endTime": end_time},
     }
+    if latest_only:
+        payload['model'].update(startTime=None,endTime=None,success=True)
+        payload.update(current=1,size=1,sort='id',order='descending',searchCount=True)
     rsp = _post_with_token(base_url, "/api/schedule/capture/stat/v1/log", payload, token_info)
     if rsp is _TOKEN_EXPIRED:
         return _TOKEN_EXPIRED
@@ -609,8 +613,8 @@ def fetch_and_save_devices(platforms: list) -> dict:
     return summary
 
 
-def _download_image(url: str, save_path: str, session: requests.Session = None, associate=True, collection_name=None) -> bool:
-    if cached_image(save_path):
+def _download_image(url: str, save_path: str, session: requests.Session = None, associate=True, collection_name=None, device_info=None) -> bool:
+    if cached_image(save_path, device_info=device_info, associate=associate, collection_name=collection_name):
         return True
     max_retries = 2
     own_session = session is None
@@ -621,7 +625,7 @@ def _download_image(url: str, save_path: str, session: requests.Session = None, 
             rsp = local_session.get(url, stream=True, timeout=15, verify=False)
             rsp.raise_for_status()
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            if not save_image_content(save_path, response_bytes(rsp), associate=associate, collection_name=collection_name):
+            if not save_image_content(save_path, response_bytes(rsp), associate=associate, collection_name=collection_name, device_info=device_info):
                 if own_session:local_session.close()
                 return False
             return True
@@ -865,11 +869,11 @@ def process_single_platform(platform: dict, alarm_types: dict,
             )
 
         def _do_download(task, lock):
-            url, full_path, bboxes, need_full, need_crop = task
+            url, full_path, bboxes, need_full, need_crop, source = task
             with lock:
                 downloaded = cropped = 0
                 try:
-                    if not _download_image(url, full_path, associate=need_full, collection_name=plat_name):
+                    if not _download_image(url, full_path, associate=need_full, collection_name=plat_name, device_info=source):
                         return 0, 0
                     if need_full:
                         downloaded += 1
@@ -878,7 +882,7 @@ def process_single_platform(platform: dict, alarm_types: dict,
                         if stem.endswith("_full"):
                             stem = stem[:-5]
                         for i, bbox in enumerate(bboxes):
-                            if crop_image_from_bbox(full_path, bbox, f"{stem}_crop_{i+1}.jpg", collection_name=plat_name):
+                            if crop_image_from_bbox(full_path, bbox, f"{stem}_crop_{i+1}.jpg", collection_name=plat_name, device_info=source):
                                 cropped += 1
                         if small_model_mode == "crop":
                             try: os.remove(full_path)
@@ -968,7 +972,8 @@ def process_single_platform(platform: dict, alarm_types: dict,
                         full_path = str(image_dir / f"{safe_dev}_{capture_time}_full.jpg")
                         _submit_download((img_path, full_path, parsed.get("bboxes", []),
                                           is_large or small_model_mode in ("full", "both"),
-                                          not is_large and small_model_mode in ("crop", "both")))
+                                          not is_large and small_model_mode in ("crop", "both"),
+                                          device_source(plat_name, rec, plat_id, device["device_id"])))
                 devices_done += 1
                 if task_id and total_devices > 0:
                     with _task_progress_lock:

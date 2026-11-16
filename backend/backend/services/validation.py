@@ -24,6 +24,7 @@ from services.automation import model_snapshot
 from services.detection_metrics import aggregate_metrics, evaluate_image
 from services.model_inference import infer
 from services.storage import get_storage
+from services.snapshot_manifests import read_manifest
 from config.settings import settings
 from services import multimodal_validation as multimodal
 
@@ -64,6 +65,7 @@ def set_dict(row):
 def run_dict(row):
     result = public_columns(row, 'id set_id name status total processed failed_count config metrics error created_at updated_at')
     snapshot = row.model_snapshot
+    if snapshot.get('video'):result['video']=snapshot['video']
     result['model'] = {key: snapshot[key] for key in ('id', 'revision', 'name')}
     if snapshot.get('task_type'):result['model']['task_type']=snapshot['task_type']
     if snapshot.get('config') and not ModelServiceConfig.model_validate(snapshot['config']).has_confidence:
@@ -123,7 +125,7 @@ async def read_sample(sample):
 
 async def create_set(db, request, user):
     project = await db.scalar(select(Project).where(Project.id == request.project_id,
-        Project.tenant_id == user.tenant_id))
+        Project.tenant_id == user.tenant_id).with_for_update())
     if project is None: raise HTTPException(404, '项目不存在')
     if project.task_type in ('caption','vector'):return await multimodal.create_set(db,request,user,project)
     if project.task_type != 'detection': raise HTTPException(400, '验证集仅支持检测项目')
@@ -135,7 +137,7 @@ async def create_set(db, request, user):
         snapshot = await db.scalar(select(ExportSnapshot).where(ExportSnapshot.id == request.snapshot_id,
             ExportSnapshot.project_id == project.id).with_for_update())
         if snapshot is None: raise HTTPException(404, '冻结导出不存在或不属于当前项目')
-        manifest = snapshot.manifest
+        manifest = await read_manifest(snapshot.manifest_path, snapshot.manifest)
         labels = valid_labels(manifest.get('labels'))
         rows = manifest.get('assets')
         if not isinstance(rows, list): raise HTTPException(400, '冻结清单缺少图片列表')
@@ -184,7 +186,8 @@ async def create_set(db, request, user):
         labels = valid_labels((project.label_schema or {}).get('labels'))
         query = select(Asset, Annotation).join(Annotation, (Annotation.asset_id == Asset.id) &
             Annotation.is_latest.is_(True)).where(Asset.project_id == project.id, eligible_assets(project),
-                Annotation.review_status == 'approved', Annotation.reviewer_id.is_not(None))
+                Annotation.review_status == 'approved', Annotation.reviewer_id.is_not(None),
+                Annotation.annotation_data['boxes'].as_string().is_not(None))
         if selected: query = query.where(Asset.id.in_(selected))
         rows = (await db.execute(query.order_by(Asset.id).limit(5001))).all()
         if selected and {asset.id for asset, _ in rows} != selected:

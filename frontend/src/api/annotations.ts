@@ -1,5 +1,6 @@
 // 标注管理API
 import apiClient from './client';
+export type AnnotationKind = 'detection'|'image';
 
 export interface LabelRemovalPreview {
   project_id:string;project_name:string;label:string;scope:'all'|'crops';total_images:number;
@@ -20,6 +21,7 @@ export interface Annotation {
   version: number;
   is_latest: boolean;
   review_status: 'pending' | 'approved' | 'rejected';
+  review_by_kind?: Partial<Record<AnnotationKind, Annotation['review_status']>> | null;
   review_comment?: string;
   reviewed_at?: string;
   created_at: string;
@@ -30,17 +32,22 @@ export interface AnnotationCreate {
   asset_id: string;
   annotation_data: any;
   base_version?: number;
+  kind?: AnnotationKind;
 }
 
 export interface AnnotationUpdate {
   annotation_data: any;
   base_version: number;
+  kind?: AnnotationKind;
 }
 
 export interface AnnotationReview {
   approved: boolean;
   review_comment?: string;
+  kind?: AnnotationKind;
 }
+
+export const annotationReviewStatus=(annotation:Annotation,kind?:AnnotationKind)=>kind?annotation.review_by_kind?.[kind]??annotation.review_status:annotation.review_status;
 
 export interface PaginatedResponse<T> {
   items: T[];
@@ -56,6 +63,10 @@ export const getAnnotations = async (params?: {
   scope?: 'all' | 'annotation';
   latest_only?: boolean;
   review_status?: string;
+  kind?: AnnotationKind|'all';
+  ai_pending?: boolean;
+  work_job_id?: string;
+  image_kind?: 'all'|'originals'|'crops';
   page?: number;
   page_size?: number;
 }): Promise<PaginatedResponse<Annotation>> => {

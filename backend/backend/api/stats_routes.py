@@ -34,7 +34,7 @@ async def project_distribution(project_id: UUID, db: AsyncSession = Depends(get_
         images_by_status=dict(Counter(a.annotation_status for a in assets)),
         images_by_device=dict(Counter(str((a.device_info or {}).get('device_id') or (a.device_info or {}).get('deviceId') or '未知') for a in assets)),
         images_by_quality=dict(Counter(str(a.quality_score) if a.quality_score is not None else '未评分' for a in assets)),
-        unannotated_images=len(assets)-len(annotations), negative_images=sum(not a.annotation_data.get('boxes') for a in annotations))
+        unannotated_images=len(assets)-len(annotations), negative_images=sum(a.annotation_data.get('boxes')==[] for a in annotations))
 
 
 class ProjectStatsResponse(BaseModel):

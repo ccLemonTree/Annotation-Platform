@@ -2,9 +2,12 @@
 批量操作API路由
 提供资产和标注的批量操作功能
 """
+from collections import Counter, defaultdict
+from itertools import batched
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import any_, delete, literal, select, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from typing import List
 from uuid import UUID
 
@@ -16,6 +19,7 @@ from models.annotation import Annotation
 from api.deps import get_current_user, get_tenant_id
 from pydantic import BaseModel
 from services.annotations import locked_annotation, review, remove
+from services.project_access import project_condition
 
 
 router = APIRouter()
@@ -23,12 +27,12 @@ router = APIRouter()
 
 async def scoped_annotation_ids(db, annotation_ids, tenant_id):
     result = await db.execute(select(Annotation.id).join(Asset).join(Project).where(
-        Annotation.id.in_(annotation_ids), Project.tenant_id == tenant_id))
+        Annotation.id.in_(annotation_ids), Project.tenant_id == tenant_id,project_condition(db)))
     ids = list(result.scalars().all())
-    if not ids:
+    if len(ids)!=len(set(annotation_ids)):
         raise HTTPException(status_code=404, detail="未找到可操作的标注")
     # Acquire every asset before counter updates, matching single-write lock order.
-    await db.execute(select(Asset).join(Project).join(Annotation).where(
+    await db.execute(select(Asset).join(Project).join(Annotation,Annotation.asset_id==Asset.id).where(
         Annotation.id.in_(ids), Project.tenant_id == tenant_id)
         .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset))
     return ids
@@ -130,35 +134,37 @@ async def batch_delete_assets(
             detail="资产ID列表不能为空"
         )
 
-    # 验证资产属于当前租户
-    stmt = (
-        select(Asset)
-        .join(Project)
-        .where(
-            Asset.id.in_(asset_ids),
-            Project.tenant_id == tenant_id
-        )
-        .order_by(Asset.project_id, Asset.id)
-        .with_for_update(of=Asset)
-    )
-    result = await db.execute(stmt)
-    assets = result.scalars().all()
+    ids = sorted(set(asset_ids))
+    if db.get_bind().dialect.name == 'postgresql':
+        conditions = (Asset.id == any_(literal(ids, type_=ARRAY(Asset.id.type))),)
+    else:
+        conditions = (Asset.id.in_(batch) for batch in batched(ids, 500))
 
-    if not assets:
+    counts = defaultdict(Counter)
+    for condition in conditions:
+        targets = (select(Asset.id).join(Project)
+            .where(condition, Project.tenant_id == tenant_id, project_condition(db))
+            .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset).cte('locked_assets'))
+        # Database foreign keys preserve the same cascades as deleting each asset.
+        result = await db.execute(delete(Asset).where(Asset.id.in_(select(targets.c.id)))
+            .returning(Asset.project_id, Asset.annotation_status).execution_options(synchronize_session=False))
+        for project_id, annotation_status in result:
+            counts[project_id][annotation_status] += 1
+
+    if not counts:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="未找到属于当前租户的资产"
         )
 
-    # 批量删除
     deleted_count = 0
-    for asset in assets:
-        await db.delete(asset)
-        await db.execute(update(Project).where(Project.id == asset.project_id).values(
-            total_assets=Project.total_assets - 1,
-            annotated_count=Project.annotated_count - int(asset.annotation_status in ('completed', 'reviewed')),
-            reviewed_count=Project.reviewed_count - int(asset.annotation_status == 'reviewed')))
-        deleted_count += 1
+    for project_id, statuses in sorted(counts.items()):
+        total = statuses.total()
+        await db.execute(update(Project).where(Project.id == project_id).values(
+            total_assets=Project.total_assets - total,
+            annotated_count=Project.annotated_count - statuses['completed'] - statuses['reviewed'],
+            reviewed_count=Project.reviewed_count - statuses['reviewed']))
+        deleted_count += total
 
     await db.commit()
 

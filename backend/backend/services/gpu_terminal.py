@@ -73,8 +73,7 @@ async def load_access(db,auth,include_connection=False):
             if not row.enabled:raise HTTPException(409,'GPU服务器连接已停用')
             if not row.password_encrypted:raise HTTPException(409,'GPU服务器未保存密码')
             result.update(revision=row.revision,name=row.name,server='platform_terminal')
-            if include_connection:result['connection']=dict(host=row.host,port=row.port,username=row.username,
-                password=gpu_servers.decrypt_password(row.password_encrypted))
+            if include_connection:result['connection']=gpu_servers.connection(row)
         return result
     finally:
         await db.rollback()

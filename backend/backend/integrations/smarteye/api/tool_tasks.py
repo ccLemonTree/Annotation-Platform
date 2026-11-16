@@ -1,4 +1,4 @@
-from integrations.smarteye.runtime import cached_image, response_bytes
+from integrations.smarteye.runtime import cached_image, response_bytes, device_source
 from integrations.smarteye.runtime import DurableTasks, tracked_run, save_image_content
 from integrations.smarteye.configuration import download_root
 # -*- coding: utf-8 -*-
@@ -89,9 +89,9 @@ def fetch_page_data(base_url: str, token_info: dict, device_id: str,
         return [], 0
 
 
-def download_single_image(img_url: str, save_path: str, task_id: str, collection_name=None) -> bool:
+def download_single_image(img_url: str, save_path: str, task_id: str, collection_name=None, device_info=None) -> bool:
     """下载单张图片"""
-    if cached_image(save_path):
+    if cached_image(save_path, device_info=device_info, collection_name=collection_name):
         return True
     try:
         for attempt in range(TOOL_TASK_RETRY + 1):
@@ -101,7 +101,7 @@ def download_single_image(img_url: str, save_path: str, task_id: str, collection
                 rsp.raise_for_status()
 
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                if not save_image_content(save_path, response_bytes(rsp), collection_name=collection_name):
+                if not save_image_content(save_path, response_bytes(rsp), collection_name=collection_name, device_info=device_info):
                     return False
 
                 # 更新进度
@@ -183,7 +183,7 @@ def run_tool_task(task_id: str, platform_name: str, device_id: str,
             from urllib.parse import urlparse, unquote
             name = Path(unquote(urlparse(capture_path).path).replace('\\', '/')).name
             save_path = save_dir / (name or f'{uuid.uuid4().hex}.jpg')
-            download_tasks.append((back_path, str(save_path)))
+            download_tasks.append((back_path, str(save_path), device_source(platform_name, record, platform.get("plat_id"), device_id)))
 
         with _lock:
             tool_tasks[task_id]["total"] = len(download_tasks)
@@ -194,8 +194,8 @@ def run_tool_task(task_id: str, platform_name: str, device_id: str,
         success_count = 0
         with ThreadPoolExecutor(max_workers=TOOL_TASK_CONCURRENCY) as executor:
             futures = {
-                executor.submit(download_single_image, url, path, task_id, platform_name): (url, path)
-                for url, path in download_tasks
+                executor.submit(download_single_image, url, path, task_id, platform_name, source): (url, path)
+                for url, path, source in download_tasks
             }
 
             for future in as_completed(futures):

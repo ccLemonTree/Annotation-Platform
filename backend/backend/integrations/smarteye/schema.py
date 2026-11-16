@@ -9,7 +9,8 @@ def upgrade_schema(conn):
     conn.execute(text('''CREATE TABLE IF NOT EXISTS platforms (
         id SERIAL PRIMARY KEY, platform_name TEXT UNIQUE NOT NULL, plat_id TEXT UNIQUE NOT NULL,
         base_url TEXT DEFAULT '', username TEXT DEFAULT '', password TEXT DEFAULT '',
-        login_url TEXT DEFAULT '/api/oauth/anyTenant/login', state TEXT DEFAULT '1')'''))
+        login_url TEXT DEFAULT '/api/oauth/anyTenant/login', state TEXT DEFAULT '1',
+        managed BOOLEAN NOT NULL DEFAULT false)'''))
     conn.execute(text('''CREATE TABLE IF NOT EXISTS alarm_types (
         id SERIAL PRIMARY KEY, plat_id TEXT NOT NULL, alarm_name TEXT NOT NULL, alarm_code TEXT NOT NULL,
         UNIQUE(plat_id, alarm_code))'''))

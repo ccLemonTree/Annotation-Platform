@@ -1,29 +1,32 @@
 import { useEffect,useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Alert,Button,Card,Input,Select,Space,Table,Tag,Typography } from 'antd';
+import { Alert,Button,Card,Select,Space,Table,Tag,Typography } from 'antd';
 import { createMatchReviewBatch,getMatchQueries,getWorkJobs,reviewMatch,type MatchQuery,type MatchHit,type WorkJob } from '../api/projectWork';
-import { getModelServices,type ModelService } from '../api/modelServices';
+import { getModelServices,isModelOffline,type ModelService } from '../api/modelServices';
 import AssetImage from './AssetImage';
 import JsonView from './JsonView';
+import { useCurrentUser } from './currentUser';
+import PromptEditor from './PromptEditor';
 
 const statuses={pending:'待审核',approved:'已通过',rejected:'已驳回'};
 export default function MatchReviews({projectId}:{projectId:string}){
   const [queries,setQueries]=useState<MatchQuery[]>([]),[page,setPage]=useState(1),[reload,setReload]=useState(0),[loading,setLoading]=useState(true),[busy,setBusy]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState<string>();
   const [models,setModels]=useState<ModelService[]>([]),[model,setModel]=useState<string>(),[prompt,setPrompt]=useState(''),[scope,setScope]=useState('all'),[info,setInfo]=useState(''),[jobs,setJobs]=useState<WorkJob[]>([]);
-  const [admin]=useState(()=>{try{return JSON.parse(localStorage.getItem('user')||'null')?.role==='admin';}catch{return false;}});
+  const [reviewPrompt,setReviewPrompt]=useState('');
+  const admin=useCurrentUser()?.role==='admin';
   const fail=(cause:unknown)=>{const error=cause as {response?:{data?:{detail?:unknown}}};setError(typeof error.response?.data?.detail==='string'?error.response.data.detail:'读取或审核失败，请刷新重试');};
-  useEffect(()=>{let active=true;getModelServices({enabled:true}).then(rows=>{if(active)setModels(rows.filter(m=>m.kind==='caption'&&m.protocol==='openai_chat'));}).catch(cause=>{if(active)fail(cause);});return()=>{active=false;};},[]);
+  useEffect(()=>{if(!admin)return;let active=true;getModelServices({enabled:true}).then(rows=>{if(active)setModels(rows.filter(m=>m.kind==='caption'&&m.protocol==='openai_chat'));}).catch(cause=>{if(active)fail(cause);});return()=>{active=false;};},[admin]);
   useEffect(()=>{let active=true,pending=false;
     const load=async()=>{if(pending)return;pending=true;try{
-      const [rows,jobs]=await Promise.all([getMatchQueries(projectId,page),getWorkJobs(projectId)]);
+      const [rows,jobs]=await Promise.all([getMatchQueries(projectId,page),admin?getWorkJobs(projectId):Promise.resolve([])]);
       if(active){setQueries(current=>rows.map(row=>{const newer=current.find(q=>q.id===row.id&&q.version>row.version);return newer||row;}));setJobs(jobs.filter(job=>job.operation==='match_review'));}
     }catch(cause){if(active)fail(cause);}finally{pending=false;if(active)setLoading(false);}};
     void load();const timer=setInterval(load,3000);return()=>{active=false;clearInterval(timer);};
-  },[projectId,page,reload]);
+  },[projectId,page,reload,admin]);
   const rows=queries.flatMap(query=>query.hits.filter(hit=>hit.judgment!=='unknown').map(hit=>({key:query.id+hit.asset_id,query,hit})));
   const needsManual=(hit:MatchHit)=>(hit.review_status||'pending')==='pending'&&hit.ai_review?.status==='needs_review';
   const audit=async()=>{if(!model)return;setBusy('ai');setError('');setInfo('');try{
-    const batches=await createMatchReviewBatch(projectId,{model_id:model,prompt,...(scope==='page'?{query_ids:queries.map(q=>q.id)}:{})});
+    const batches=await createMatchReviewBatch(projectId,{model_id:model,prompt,review_prompt:reviewPrompt.trim(),...(scope==='page'?{query_ids:queries.map(q=>q.id)}:{})});
     setInfo(`已排队 ${batches.reduce((n,job)=>n+job.total,0)} 条匹配关系，完成后自动更新；可在后台处理队列取消或重试。`);setReload(v=>v+1);
   }catch(cause){fail(cause);}finally{setBusy('');}};
   const review=async(query:MatchQuery,hit:MatchHit,approved:boolean)=>{setBusy(query.id+hit.asset_id);setError('');
@@ -33,10 +36,12 @@ export default function MatchReviews({projectId}:{projectId:string}){
     <Typography.Paragraph type="secondary">正确 / 错误针对每次查询单独保存，不计入图片描述或分类数量。历史匹配判定也可在此审核；修改判定后重新待审，已驳回关系不参与新导出的训练数据。</Typography.Paragraph>
     {admin&&<Space orientation="vertical" style={{width:'100%',marginBottom:16}}>
       <Typography.Text>大模型独立判断：与人工一致自动通过（包括共同判错），分歧或无法判断转人工复核。</Typography.Text>
-      <Space wrap><Select aria-label="匹配大模型审核模型" placeholder="选择视觉对话审核模型" value={model} disabled={!!busy} onChange={setModel} style={{width:280,maxWidth:'100%'}} options={models.map(m=>({value:m.id,label:`${m.name} · r${m.revision}`}))}/>
+      <Space wrap><Select aria-label="匹配大模型审核模型" placeholder="选择视觉对话审核模型" value={model} disabled={!!busy} onChange={id=>{setModel(id);setReviewPrompt(models.find(row=>row.id===id)?.chat_prompts?.match_review||'');setPrompt('');}} style={{width:280,maxWidth:'100%'}} options={models.map(m=>({value:m.id,disabled:isModelOffline(m),label:`${m.name} · r${m.revision}${isModelOffline(m)?' · 离线':''}`}))}/>
         <Select aria-label="匹配大模型审核范围" value={scope} disabled={!!busy} onChange={setScope} style={{width:240,maxWidth:'100%'}} options={[{value:'all',label:'当前项目全部待审匹配'},{value:'page',label:'本页查询中的待审匹配'}]}/>
-        <Button type="primary" aria-label="大模型审核待审匹配" loading={busy==='ai'} disabled={!model||loading||!!busy||(scope==='page'&&!queries.length)} onClick={audit}>大模型审核待审匹配</Button><Link to="/models">编辑模型核心提示词</Link></Space>
-      <Input.TextArea aria-label="匹配大模型审核补充要求" value={prompt} disabled={!!busy} onChange={e=>setPrompt(e.target.value)} maxLength={2000} autoSize={{minRows:2,maxRows:5}} placeholder="本批补充审核要求（可选），例如只核对上衣颜色，不根据阴影猜测"/>
+        <Button type="primary" aria-label="大模型审核待审匹配" loading={busy==='ai'} disabled={!model||loading||!!busy||(scope==='page'&&!queries.length)} onClick={audit}>大模型审核待审匹配</Button></Space>
+      <Space wrap><PromptEditor key={`${projectId}:${model}`} title="本批匹配审核核心提示词" buttonLabel="编辑匹配审核提示词" value={reviewPrompt} disabled={!!busy||!model} onChange={setReviewPrompt} defaultValue={models.find(row=>row.id===model)?.chat_prompts?.match_review}
+        help="选择模型后显示默认指令，仅用于本批审核；留空使用模型默认提示词。" readOnlyContext="系统追加当前查询、候选图片与结果格式，不向模型提供人工判定或检索分数。"/>
+        <PromptEditor key={`supplement:${projectId}:${model}`} title="匹配大模型审核补充要求" buttonLabel="编辑匹配补充要求" value={prompt} disabled={!!busy} onChange={setPrompt} maxLength={2000} defaultValue="" referencePrompt={reviewPrompt||models.find(row=>row.id===model)?.chat_prompts?.match_review} referenceLabel="本批匹配审核核心提示词" help="本批补充审核要求（可选），例如只核对上衣颜色，不根据阴影猜测。"/></Space>
       {!!jobs.length&&<Typography.Text type="secondary">最近匹配审核批次：排队 {jobs.reduce((n,j)=>n+(j.counts.pending||0),0)} · 处理中 {jobs.reduce((n,j)=>n+(j.counts.running||0),0)} · 完成 {jobs.reduce((n,j)=>n+(j.counts.completed||0),0)} · 失败 {jobs.reduce((n,j)=>n+(j.counts.failed||0),0)}</Typography.Text>}
     </Space>}
     {info&&<Alert type="success" title={info} style={{marginBottom:12}}/>}

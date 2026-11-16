@@ -45,8 +45,14 @@ def queue(client,headers,data,trust=False):
     return url
 
 
+def uploaded_image(client,headers):
+    job=client.get('/api/image-uploads',headers=headers).json()[0]
+    image_id=client.get('/api/image-uploads/'+job['id']+'/images',headers=headers).json()['image_ids'][0]
+    return {'id':image_id}
+
+
 def attach(client,headers,project):
-    image=client.get('/api/images',headers=headers).json()['items'][0]
+    image=uploaded_image(client,headers)
     result=client.post('/api/images/associate',headers=headers,json=dict(project_id=str(project),image_ids=[image['id']],include_imported_annotations=True))
     assert result.status_code==200,result.text
     return image,result.json()
@@ -61,8 +67,8 @@ async def test_library_source_is_saved_without_project_and_copied_on_request(cli
     await process_one(async_sessionmaker(test_engine,expire_on_commit=False))
     assert client.get(url,headers=auth_headers).json()['result']['annotated']==1
     assert client.get('/api/annotations',headers=auth_headers).json()['total']==0
-    image=client.get('/api/images',headers=auth_headers).json()['items'][0]
-    assert image['has_imported_annotation']
+    image=uploaded_image(client,auth_headers)
+    assert client.get('/api/images',headers=auth_headers).json()['total']==0
     plain=client.post('/api/images/associate',headers=auth_headers,json=dict(project_id=str(test_project.id),image_ids=[image['id']]))
     assert plain.status_code==200 and client.get('/api/annotations',headers=auth_headers).json()['total']==0
     response=client.post('/api/images/associate',headers=auth_headers,json=dict(project_id=str(test_project.id),image_ids=[image['id']],include_imported_annotations=True))
@@ -70,6 +76,8 @@ async def test_library_source_is_saved_without_project_and_copied_on_request(cli
     from models import Project,LibraryImage
     from uuid import UUID
     other=Project(tenant_id=1,project_name='other',task_type='detection',label_schema={'labels':['fire']});test_db.add(other);await test_db.commit()
+    source=client.get('/api/annotations',headers=auth_headers,params={'project_id':str(test_project.id)}).json()['items'][0]
+    assert client.post('/api/annotations/'+source['id']+'/review',headers=auth_headers,json={'approved':True}).status_code==200
     attach(client,auth_headers,other.id)
     first=client.get('/api/annotations',headers=auth_headers,params={'project_id':str(test_project.id)}).json()['items'][0]
     assert client.put('/api/annotations/'+first['id'],headers=auth_headers,json=dict(base_version=1,annotation_data={'boxes':[]})).status_code==200
@@ -95,7 +103,7 @@ async def test_yolo_import_preserves_class_order_geometry_and_pending_review(cli
     assert len(annotations)==1 and annotations[0]['annotation_source']=='import_yolo'
     assert annotations[0]['annotation_data']['boxes']==[dict(label='fire',x=16.0,y=12.0,width=32.0,height=24.0)]
     assert annotations[0]['review_status']=='pending' and annotations[0]['reviewer_id'] is None
-    assert client.get('/api/images',headers=auth_headers).json()['total']==1
+    assert client.get(url+'/images',headers=auth_headers).json()['total']==1
     assert client.get('/api/projects/'+str(test_project.id),headers=auth_headers).json()['annotated_count']==1
 
 
@@ -152,21 +160,21 @@ async def test_unused_archive_classes_do_not_block_project_import(client,auth_he
     await test_db.refresh(test_project)
     assert test_project.label_schema=={'labels':['fire','smoke','star']}
     annotation=client.get('/api/annotations',headers=auth_headers).json()['items'][0]
-    assert annotation['review_status']=='approved'
+    assert annotation['review_status']=='pending'  # The target's star category is absent from the archive's names.
     assert len(annotation['annotation_data']['boxes'])==bool(label)
 
 
 @pytest.mark.asyncio
-async def test_actual_unknown_box_class_still_rejected_without_partial_project_writes(client,auth_headers,test_project,test_db,test_engine,mock_image_data):
+async def test_outside_project_class_reuses_image_without_creating_negative_annotation(client,auth_headers,test_project,test_db,test_engine,mock_image_data):
     from services.image_uploads import process_one
     test_project.label_schema={'labels':['fire','smoke','star']};await test_db.commit()
     data=archive('zip',[('classes.txt',b'fire\nsmoke\nhotwork\n'),('a.jpg',mock_image_data.getvalue()),('a.txt',b'2 .5 .5 .1 .1')])
     queue(client,auth_headers,data)
     await process_one(async_sessionmaker(test_engine,expire_on_commit=False))
-    image=client.get('/api/images',headers=auth_headers).json()['items'][0]
+    image=uploaded_image(client,auth_headers)
     response=client.post('/api/images/associate',headers=auth_headers,json=dict(project_id=str(test_project.id),image_ids=[image['id']],include_imported_annotations=True))
-    assert response.status_code==400 and 'hotwork' in response.json()['detail']
-    assert client.get('/api/assets',headers=auth_headers,params={'project_id':str(test_project.id)}).json()['total']==0
+    assert response.status_code==200 and response.json()['annotation_skipped']==1
+    assert client.get('/api/assets',headers=auth_headers,params={'project_id':str(test_project.id)}).json()['total']==1
     assert client.get('/api/annotations',headers=auth_headers).json()['total']==0
 
 
@@ -192,9 +200,11 @@ def test_shared_label_skips_both_ambiguous_images_and_resume_keeps_later_image(t
     from services.yolo_import import import_items
     path=tmp_path/'shared.zip'
     path.write_bytes(archive('zip',[('classes.txt',b'fire'),('images/a.jpg',b'image'),('images/a.png',b'image'),
-        ('labels/a.txt',b''),('images/good.jpg',b'image'),('labels/good.txt',b'')]))
-    items=list(import_items(path,'shared.zip',0))
-    assert [item[3] for item in items]==['invalid','invalid',None]
+        ('labels/a.txt',b''),('images/good.jpg',b'image'),('labels/good.txt',b''),('labels/orphan.txt',b'')]))
+    totals=[]
+    items=list(import_items(path,'shared.zip',0,on_total=totals.append))
+    assert totals==[4]
+    assert [item[3] for item in items]==['invalid','invalid',None,'ignored']
     assert all('同一TXT' in item[5] for item in items[:2])
     assert list(import_items(path,'shared.zip',2))==items[2:]
 
@@ -212,7 +222,7 @@ async def test_bad_yolo_entries_do_not_block_later_valid_images(client,auth_head
     assert receipt['status']=='completed',receipt
     assert (result['imported'],result['annotated'],result['invalid'],result['ignored'])==(1,1,3,1)
     assert len(result['errors'])==4
-    assert client.get('/api/images',headers=auth_headers).json()['total']==1
+    assert client.get(url+'/images',headers=auth_headers).json()['total']==1
 
 
 @pytest.mark.asyncio
@@ -263,7 +273,7 @@ async def test_reusing_imported_annotation_requires_scoped_detection_project(cli
     url=queue(client,auth_headers,data)
     await process_one(async_sessionmaker(test_engine,expire_on_commit=False))
     assert client.get(url,headers=auth_headers).json()['status']=='completed'
-    image=client.get('/api/images',headers=auth_headers).json()['items'][0]
+    image=uploaded_image(client,auth_headers)
     payload=dict(project_id=str(other.id),image_ids=[image['id']],include_imported_annotations=True)
     assert client.post('/api/images/associate',headers=auth_headers,json=payload).status_code==404
     test_project.task_type='classification';await test_db.commit();payload['project_id']=str(test_project.id)

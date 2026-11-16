@@ -1,19 +1,25 @@
 import React, { useEffect, useState } from 'react';
+import { redirectToLogin } from '../src/utils/authNavigation';
 export type Destination = { purpose: 'download' | 'annotation'; projectId: string; collectionId?:string; minLongEdge?: number };
 let destination: Destination = { purpose: 'download', projectId: '' };
 export function setDestination(value: Destination) { destination = value; }
 export function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
-  headers.set('Authorization', `Bearer ${localStorage.getItem('token') || ''}`);
   const url = String(input);
-  const createsData = init.method === 'POST' && /\/(download|download-images|start|create|upload|upload-folder|import-urls|import-existing|configure|jobs)$/.test(url);
-  if (createsData) {
+  const local = new URL(input instanceof Request ? input.url : url, window.location.origin);
+  const internal = local.origin === window.location.origin && local.pathname.startsWith('/api/');
+  if (internal) headers.set('Authorization', `Bearer ${localStorage.getItem('token') || ''}`);
+  const createsData = init.method === 'POST' && !local.pathname.startsWith('/api/smarteye/device-capture/') && /\/(download|download-images|start|create|upload|upload-folder|import-urls|import-existing|configure|jobs)$/.test(local.pathname);
+  if (internal && createsData) {
     headers.set('X-SmartEye-Purpose', destination.purpose);
     if(destination.collectionId)headers.set('X-SmartEye-Collection',destination.collectionId);
     if(destination.minLongEdge!==undefined)headers.set('X-SmartEye-Min-Long-Edge',String(destination.minLongEdge));
     if (destination.purpose === 'annotation') headers.set('X-SmartEye-Project', destination.projectId);
   }
-  return window.fetch(input, { ...init, headers });
+  return window.fetch(input, { ...init, headers }).then(response => {
+    if (internal && response.status === 401 && local.pathname !== '/api/auth/login') redirectToLogin();
+    return response;
+  });
 }
 export async function download(url: string) {
   const local = new URL(url, window.location.origin);

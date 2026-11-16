@@ -26,12 +26,14 @@ def recognize_captcha(captcha_binary: bytes) -> str:
                     ]
                 }
             ],
+            "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": 20,
             "temperature": 0.0
         }
         response = requests.post(CAPTCHA_MODEL_API, json=payload, timeout=60)
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        code = response.json()["choices"][0]["message"]["content"].strip()
+        return code if re.fullmatch(r"-?\d+", code) else ""
     except Exception as e:
         print(f"验证码识别异常: {e}")
         return ""
@@ -89,52 +91,60 @@ def get_token_by_login() -> Dict[str, Any]:
         包含 token, tenantId, expire_time 的字典，失败时返回含有 error 的信息
     """
     try:
-        # 1. 准备验证码参数
-        t = round(time.time() * 1000)
-        key = f"29EABBD97500C16F9423DEEB{t}"
-        captcha_url = f"{API_BASE_URL}/api/anyTenant/captcha?key={key}&_t={t}"
+        last_error = "验证码识别失败"
+        for _ in range(3):
+            # 1. 准备验证码参数
+            t = round(time.time() * 1000)
+            key = f"29EABBD97500C16F9423DEEB{t}"
+            captcha_url = f"{API_BASE_URL}/api/anyTenant/captcha?key={key}&_t={t}"
 
-        # 2. 获取验证码图片
-        captcha_rsp = requests.get(captcha_url, timeout=5)
-        captcha_rsp.raise_for_status()
+            # 2. 获取验证码图片
+            captcha_rsp = requests.get(captcha_url, timeout=5)
+            captcha_rsp.raise_for_status()
 
-        # 3. 调用大模型识别
-        code = recognize_captcha(captcha_rsp.content)
-        if not code:
-            return {"success": False, "msg": "验证码识别失败"}
+            # 3. 调用大模型识别
+            code = recognize_captcha(captcha_rsp.content)
+            if not code:
+                last_error = "验证码识别失败"
+                continue
 
-        # 4. 执行登录
-        login_url = f"{API_BASE_URL}/api/anyTenant/login"
-        login_data = {
-            "username": get_env("LOGIN_USER"),
-            "password": get_env("PASSWORD"),
-            "code": code,
-            "grantType": "CAPTCHA",
-            "key": key
-        }
-        login_headers = {
-            "Authorization": "bGFtcF93ZWJfcHJvOmxhbXBfd2ViX3Byb19zZWNyZXQ=",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
-        }
-
-        login_rsp = requests.post(login_url, headers=login_headers, json=login_data, timeout=5)
-        login_rsp.raise_for_status()
-        res = login_rsp.json()
-
-        # 5. 解析结果
-        if res.get("code") == 0 and res.get("data"):
-            data = res["data"]
-            # 记录过期时间（通常为2小时）
-            expire_time = (datetime.now() + timedelta(seconds=7100)).strftime("%Y-%m-%d %H:%M:%S")
-            return {
-                "success": True,
-                "token": data.get("token"),
-                "tenantId": data.get("tenantId"),
-                "expire_time": expire_time
+            # 4. 执行登录
+            login_url = f"{API_BASE_URL}/api/anyTenant/login"
+            login_data = {
+                "username": get_env("LOGIN_USER"),
+                "password": get_env("PASSWORD"),
+                "code": code,
+                "grantType": "CAPTCHA",
+                "key": key
             }
-        else:
-            return {"success": False, "msg": res.get("msg", "登录接口返回错误")}
+            login_headers = {
+                "Authorization": "bGFtcF93ZWJfcHJvOmxhbXBfd2ViX3Byb19zZWNyZXQ=",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
+            }
+
+            login_rsp = requests.post(login_url, headers=login_headers, json=login_data, timeout=5)
+            res = login_rsp.json()
+            if res.get("code") == -9:
+                last_error = res.get("msg", "验证码不正确")
+                continue
+            login_rsp.raise_for_status()
+
+            # 5. 解析结果
+            if res.get("code") == 0 and res.get("data"):
+                data = res["data"]
+                # 记录过期时间（通常为2小时）
+                expire_time = (datetime.now() + timedelta(seconds=7100)).strftime("%Y-%m-%d %H:%M:%S")
+                return {
+                    "success": True,
+                    "token": data.get("token"),
+                    "tenantId": data.get("tenantId"),
+                    "expire_time": expire_time
+                }
+            else:
+                return {"success": False, "msg": res.get("msg", "登录接口返回错误")}
+
+        return {"success": False, "msg": f"{last_error}，已尝试3次"}
 
     except Exception as e:
         return {"success": False, "msg": f"登录流程异常: {str(e)}"}

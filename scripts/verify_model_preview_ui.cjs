@@ -6,7 +6,7 @@ async page=>{
   const checks=[],inputs=[],writes=[],errors=[];let job,reads=0,failNext=false;
   const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jUKcAAAAASUVORK5CYII=','base64');
   page.on('pageerror',error=>errors.push(error.message));
-  const make=(request)=>({id,set_id:id,name:'preview.png',status:'pending',total:2,processed:0,failed_count:0,error:null,created_at:'2026-10-19T03:00:00Z',updated_at:'2026-10-19T03:00:00Z',
+  const make=(request)=>({id,set_id:id,name:request.video_interval?'clip.mp4':'preview.png',...(request.video_interval?{video:{name:'clip.mp4',interval:request.video_interval,duration:4}}:{}),status:'pending',total:2,processed:0,failed_count:0,error:null,created_at:'2026-10-19T03:00:00Z',updated_at:'2026-10-19T03:00:00Z',
     model:{id:request.model_id||model,revision:1,name:request.checkpoint?'RF-DETR checkpoint':request.model_id===grounding?'GroundingPI':'UI detector',...(request.checkpoint?{source:'checkpoint'}:{}),...(request.model_id===grounding?{score_type:'uncalibrated'}:{})},
     config:{inference_confidence:request.confidence,confidence:request.confidence,nms_iou:request.iou,labels:request.labels||[]},metrics:{},
     items:[{id:'33333333-3333-4333-8333-333333333333',original_name:'preview.png',width:64,height:48,status:'pending',predictions:[],truth:[],evaluation:{}},
@@ -16,7 +16,7 @@ async page=>{
     const json=(body,status=200)=>route.fulfill({json:body,status});
     if(request.method()!=='GET')writes.push(path);
     if(path==='/api/auth/me')return json({id:1,username:'preview-admin',role:'admin',is_active:true});
-    if(path==='/api/model-previews/config')return json({max_images:5000,max_upload_size:10*1024**3,max_expanded_size:20*1024**3,max_image_size:100*1024**2});
+    if(path==='/api/model-previews/config')return json({max_images:5000,max_upload_size:10*1024**3,max_expanded_size:20*1024**3,max_image_size:100*1024**2,max_video_size:512*1024**2});
     if(path==='/api/model-services')return json([{id:model,name:'UI detector',enabled:true,kind:'detection',protocol:'model_service',endpoint:'/detect/test',labels:['person']},{id:grounding,name:'GroundingPI',enabled:true,kind:'detection',protocol:'model_service',endpoint:'/detect/grounding',labels:['electric bicycle']},{id:'caption',name:'Do not call caption',enabled:true,kind:'caption'}]);
     if(path==='/api/training/servers')return json([{id:'default',name:'CPU fixture',enabled:true}]);
     if(path==='/api/training/runs')return json({items:[],total:0});
@@ -26,10 +26,11 @@ async page=>{
       const body=request.postDataBuffer().toString('utf8'),match=body.match(/name="request"\r\n\r\n([^\r]+)/);
       if(!match)throw Error('Missing multipart JSON request');
       const input=JSON.parse(match[1]);inputs.push(input);
-      if(!body.includes('filename="preview.png"'))throw Error('Missing uploaded image');
+      if(!body.includes('filename="preview.png"')&&!body.includes('filename="clip.mp4"'))throw Error('Missing uploaded file');
       job=make(input);reads=0;return json(job,201);
     }
     if(path.endsWith('/image'))return route.fulfill({contentType:'image/png',body:png});
+    if(path.endsWith('/video'))return route.fulfill({contentType:'video/mp4',body:Buffer.from('mock video')});
     if(path==='/api/model-previews/'+id&&request.method()==='GET'){
       if(++reads>1){job={...job,status:'completed',processed:2,items:job.items.map((item,index)=>({...item,status:'completed',predictions:index?[]:[{label:'person',x:5,y:6,width:20,height:30,score:job.model.score_type==='uncalibrated'?.5:.93}]}))};}
       return json(job);
@@ -38,7 +39,7 @@ async page=>{
     throw Error('Unexpected API '+request.method()+' '+path);
   });
   const select=async(label,option)=>{await page.getByRole('combobox',{name:label,exact:true}).click();await page.getByText(option,{exact:true}).last().click();};
-  const upload=()=>page.getByLabel('选择模型预览图片',{exact:true}).setInputFiles([{name:'preview.png',mimeType:'image/png',buffer:png},{name:'empty.png',mimeType:'image/png',buffer:png}]);
+  const upload=()=>page.getByLabel('选择模型预览图片或视频',{exact:true}).setInputFiles([{name:'preview.png',mimeType:'image/png',buffer:png},{name:'empty.png',mimeType:'image/png',buffer:png}]);
   try{
     await page.setViewportSize({width:1440,height:1000});await page.goto(origin+'/model-preview');
     await page.getByRole('menuitem',{name:'模型效果预览',exact:true}).waitFor();
@@ -90,6 +91,15 @@ async page=>{
     await page.getByText('此模型不提供检测置信度，也不执行 NMS；保留全部检测结果。',{exact:true}).waitFor();
     if(await page.getByRole('spinbutton',{name:'预览置信度',exact:true}).count())throw Error('Initial URL model did not apply capabilities');
     checks.push('Model deep link initializes default labels and capabilities after models load');
+    await page.getByLabel('选择模型预览图片或视频',{exact:true}).setInputFiles({name:'clip.mp4',mimeType:'video/mp4',buffer:Buffer.from('mock video')});
+    const interval=page.getByRole('spinbutton',{name:'视频分析间隔秒数',exact:true});await interval.fill('0.5');
+    await page.getByRole('button',{name:'开始模型预览',exact:true}).click();
+    await page.getByRole('button',{name:'下载画框视频 MP4'}).waitFor();
+    await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.textContent?.includes('下载画框视频')&&!button.disabled));
+    if(inputs.at(-1).video_interval!==.5)throw Error('Decimal video interval not sent');
+    const pendingDownload=page.waitForEvent('download');await page.getByRole('button',{name:'下载画框视频 MP4'}).click();
+    if(!(await pendingDownload).suggestedFilename().endsWith('-检测结果.mp4'))throw Error('Video download filename incorrect');
+    checks.push('Video interval reaches upload request and completed preview downloads boxed MP4');
     if(errors.length||writes.some(path=>!path.startsWith('/api/model-previews')))throw Error(JSON.stringify({errors,writes}));
     return {checks,createRequests:inputs.length,businessWrites:0,scope:'Real LAN UI; controlled inference and upload responses; no model or annotation writes'};
   }catch(error){await page.screenshot({path:'output/playwright/model-preview-ui-error.png'});throw Error(error.message+'; completed checks: '+checks.join('; '));}

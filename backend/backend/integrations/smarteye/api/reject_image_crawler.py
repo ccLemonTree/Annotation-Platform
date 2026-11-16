@@ -103,6 +103,7 @@ def get_reject_image_data(
                     "targetType": t_name,
                     "targetColor": "gray",
                     "device": record.get("deviceName", "-"),
+                    "deviceId": record.get("deviceId", ""),
                     "timestamp": record.get("createTime", record.get("alarmTime", "-")),
                     "picUrl": pic
                 }

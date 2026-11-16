@@ -39,6 +39,51 @@ def test_model_config_crud_and_validation(client, auth_headers):
     assert client.get('/api/model-services').status_code==401
 
 
+def test_model_connection_state_is_separate_from_enabled_and_survives_refresh(client, auth_headers, monkeypatch):
+    from fastapi import HTTPException
+    from api import model_service_routes as routes
+    record = client.post('/api/model-services', headers=auth_headers, json=config()).json()
+    assert record.get('connection_check') is None
+    async def offline(_):
+        raise HTTPException(504, '模型服务超时，请稍后重试')
+    monkeypatch.setattr(routes, 'test_connection', offline)
+    assert client.post(f"/api/model-services/{record['id']}/test", headers=auth_headers).status_code == 504
+    checked = client.get('/api/model-services', headers=auth_headers).json()[0]
+    assert checked['enabled'] is True
+    assert checked['connection_check']['status'] == 'offline'
+    assert checked['connection_check']['checked_revision'] == 1
+    assert checked['connection_check']['checked_at']
+    async def online(_):
+        return {'ok': True, 'detail': '模型ID可用'}
+    monkeypatch.setattr(routes, 'test_connection', online)
+    assert client.post(f"/api/model-services/{record['id']}/test", headers=auth_headers).status_code == 200
+    assert client.get('/api/model-services', headers=auth_headers).json()[0]['connection_check']['status'] == 'online'
+    payload = config(); payload['enabled'] = False
+    changed = client.put(f"/api/model-services/{record['id']}", headers=auth_headers, json=payload)
+    assert changed.status_code == 200
+    assert changed.json()['connection_check'] is None
+
+
+@pytest.mark.asyncio
+async def test_old_model_probe_cannot_overwrite_new_configuration(client, auth_headers, monkeypatch, test_engine):
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from api import model_service_routes as routes
+    from models import ModelService
+    from uuid import UUID
+    record = client.post('/api/model-services', headers=auth_headers, json=config()).json()
+    async def changed_during_probe(_):
+        async with async_sessionmaker(test_engine)() as db:
+            await db.execute(update(ModelService).where(ModelService.id == UUID(record['id'])).values(revision=2))
+            await db.commit()
+        return {'ok': True, 'detail': '旧地址可连接'}
+    monkeypatch.setattr(routes, 'test_connection', changed_during_probe)
+    response = client.post(f"/api/model-services/{record['id']}/test", headers=auth_headers)
+    assert response.status_code == 409, response.text
+    latest = client.get('/api/model-services', headers=auth_headers).json()[0]
+    assert latest['connection_check'] is None
+
+
 @pytest.mark.asyncio
 async def test_detection_adapter_uses_multipart_and_normalizes_boxes():
     from schemas.model_service import ModelServiceConfig
@@ -138,12 +183,12 @@ async def test_predict_is_readonly_scoped_and_rejects_stale_config(client,auth_h
 
 
 @pytest.mark.asyncio
-async def test_normal_user_cannot_modify_model_config(client,auth_headers,test_db,test_user):
+async def test_normal_user_cannot_access_model_config(client,auth_headers,test_db,test_user):
     from services.auth import create_access_token
     test_user.role='annotator';await test_db.commit()
     token=create_access_token({'user_id':test_user.id,'tenant_id':test_user.tenant_id,'username':test_user.username})
     headers={'Authorization':'Bearer '+token}
-    assert client.get('/api/model-services',headers=headers).status_code==200
+    assert client.get('/api/model-services',headers=headers).status_code==403
     assert client.post('/api/model-services',headers=headers,json=config()).status_code==403
     assert client.post('/api/model-services/defaults',headers=headers).status_code==403
 
@@ -171,7 +216,7 @@ def test_known_defaults_are_idempotent_and_do_not_overwrite_edits(client,auth_he
     records=response.json();assert len(records)==9
     assert next(row for row in records if row['key']=='rfdetr_fire_sahi')['enabled'] is False
     qwen=next(row for row in records if row['key']=='qwen')
-    payload={key:value for key,value in qwen.items() if key not in ('id','revision')};payload['name']='My Qwen'
+    payload={key:value for key,value in qwen.items() if key not in ('id','revision','connection_check')};payload['name']='My Qwen'
     assert client.put('/api/model-services/'+qwen['id'],headers=auth_headers,json=payload).status_code==200
     again=client.post('/api/model-services/defaults',headers=auth_headers).json()
     assert len(again)==9 and next(row for row in again if row['key']=='qwen')['name']=='My Qwen'

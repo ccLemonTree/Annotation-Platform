@@ -20,6 +20,7 @@ from sqlalchemy.pool import NullPool
 from config.settings import settings
 from models import Asset, ExportSnapshot, ImageUpload, LibraryImage, SmarteeyeDownload
 from services.storage import LocalStorage, get_storage
+from services.snapshot_manifests import read_manifest
 
 GRACE_SECONDS = 7 * 86400
 KEY = re.compile(r'images/([0-9a-f]{2})/([0-9a-f]{64})\.(jpg|png|bmp|webp)')
@@ -95,7 +96,8 @@ def _runtime_references(root):
 def _reference_queries(legacy_exists, validation_exists=False, training_exists=False, matches_exists=False):
     queries = [('library_image', select(LibraryImage.blob_path, LibraryImage.content_hash)),
         ('asset', select(Asset.blob_path, Asset.content_hash, Asset.device_info)),
-        ('frozen_export', select(ExportSnapshot.blob_path, ExportSnapshot.content_hash, ExportSnapshot.manifest))]
+        ('frozen_export', select(ExportSnapshot.blob_path, ExportSnapshot.content_hash,
+                                 ExportSnapshot.manifest_path, ExportSnapshot.manifest))]
     if legacy_exists:
         queries.append(('smarteye_legacy', select(SmarteeyeDownload.blob_path, SmarteeyeDownload.content_hash)))
     if validation_exists:
@@ -121,7 +123,10 @@ async def _references(db, root):
         for name, query in _reference_queries(legacy_exists, validation_exists, training_exists, matches_exists):
             refs[name] = set()
             for row in await db.execute(query):
-                _remember(refs[name], _strings(list(row)), root)
+                values = list(row)
+                if name == 'frozen_export':
+                    values[-1] = await read_manifest(values[-2], values[-1])
+                _remember(refs[name], _strings(values), root)
         uploads = await db.scalar(select(func.count()).select_from(ImageUpload).where(ImageUpload.status != 'completed'))
         refs['smarteye_runtime'], downloads = await asyncio.to_thread(_runtime_references, root)
     except (SQLAlchemyError, OSError):

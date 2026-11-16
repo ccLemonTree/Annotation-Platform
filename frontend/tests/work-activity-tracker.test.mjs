@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { webcrypto } from 'node:crypto';
 import ts from 'typescript';
 
 function harness() {
@@ -23,7 +24,7 @@ function harness() {
   document.removeEventListener = window.removeEventListener;
   const exports = {};
   vm.runInNewContext(source, {
-    exports, window, document, crypto: { randomUUID: () => 'session-test' },
+    exports, window, document, crypto: webcrypto,
     Date: class extends Date { static now() { return now; } },
     require(name) {
       if (name.includes('api/analytics')) return { postActivity: async data => {

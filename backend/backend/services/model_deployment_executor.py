@@ -98,6 +98,96 @@ def destination(target):
     return real(target['repository'])/target['model_name']
 
 
+def discover(target):
+    names=command(['docker','ps','--format','{{.Names}}']).splitlines()
+    result=dict(containers=sorted(set(names)),models=[],triton_config='')
+    if not target.get('repository'):return result
+    repository=real(target['repository'])
+    if not repository.is_dir():return result
+    result['models']=sorted(p.name for p in repository.iterdir() if p.is_dir() and not p.is_symlink() and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}',p.name))[:200]
+    name=target.get('model_name')
+    if name in result['models']:
+        config=repository/name/'config.pbtxt'
+        if config.is_file() and not config.is_symlink() and config.stat().st_size<=64000:
+            result['triton_config']=config.read_text(encoding='utf-8')
+    return result
+
+
+def service_path(args,mounts):
+    path=option(args,'--model-repository') or option(args,'--model-store')
+    runtime='triton_plan' if path else 'vllm'
+    if not path:path=option(args,'--model') or next((args[i+1] for i,a in enumerate(args[:-1]) if a=='serve' and args[i+1].startswith('/')),None)
+    if not path or not path.startswith('/'):return None
+    matching=[m for m in mounts if path==m['destination'].rstrip('/') or path.startswith(m['destination'].rstrip('/')+'/')]
+    if not matching:return None
+    mount=max(matching,key=lambda m:len(m['destination']))
+    mapped=mount['source'].rstrip('/')+path[len(mount['destination'].rstrip('/')):]
+    return dict(repository=str(Path(mapped).parent) if runtime=='vllm' else mapped,runtime=runtime,
+        **(dict(only_model=Path(mapped).name) if runtime=='vllm' else {}))
+
+
+def platform_services(target):
+    services=[]
+    if target['environment']!='k8s':
+        ids=target.get('containers') or command(['docker','ps','-q']).splitlines()
+        if len(ids)>200:raise ValueError('运行容器超过200个，请使用高级服务配置指定范围')
+        containers=json.loads(command(['docker','inspect']+ids)) if ids else []
+        for container in containers:
+            config=container['Config'];args=(config.get('Entrypoint') or [])+(config.get('Cmd') or [])
+            mounts=[dict(source=m['Source'],destination=m['Destination']) for m in container['Mounts'] if m['Type']=='bind']
+            found=service_path(args,mounts)
+            if found:services.append(dict(containers=[container['Name'].lstrip('/')],**found))
+    else:
+        ns=target['namespace'];file_host=target['connections'][target['file_server']]['host'];pv_cache={}
+        workloads=json.loads(command(['kubectl','get','deployments,statefulsets','-n',ns,'-o','json']))['items']
+        for workload in workloads:
+            spec=workload['spec']['template']['spec']
+            for container in spec['containers']:
+                mounts=[]
+                for mount in container.get('volumeMounts',[]):
+                    if mount.get('subPathExpr'):continue
+                    volume=next(v for v in spec.get('volumes',[]) if v['name']==mount['name']);nfs=volume.get('nfs')
+                    if 'persistentVolumeClaim' in volume:
+                        claim=volume['persistentVolumeClaim']['claimName']
+                        if claim not in pv_cache:
+                            pvc=json.loads(command(['kubectl','get','pvc',claim,'-n',ns,'-o','json']))
+                            pv=json.loads(command(['kubectl','get','pv',pvc['spec']['volumeName'],'-o','json']));pv_cache[claim]=pv['spec'].get('nfs')
+                        nfs=pv_cache[claim]
+                    if nfs and nfs['server']==file_host:mounts.append(dict(source=nfs['path'].rstrip('/')+('/'+mount['subPath'] if mount.get('subPath') else ''),destination=mount['mountPath']))
+                found=service_path(container.get('command',[])+container.get('args',[]),mounts)
+                if found:services.append(dict(namespace=ns,workload_kind=workload['kind'],workload=workload['metadata']['name'],container=container['name'],containers=[],**found))
+    return dict(services=services)
+
+
+def platform_models(target):
+    repository=real(target['repository'])
+    if not repository.is_dir():
+        candidates=[]
+        if shutil.which('exportfs'):
+            current=None
+            for line in command(['exportfs','-v']).splitlines():
+                if line.startswith('/'):current=line.split()[0]
+                if current and re.search(r'\bfsid=(?:0|root)(?:,|\))',line):
+                    candidate=real(current.rstrip('/')+target['repository'])
+                    if candidate.is_dir():candidates.append(candidate)
+        if len(set(candidates))!=1:raise ValueError('无法定位服务器模型仓库，请在高级服务配置核对宿主机路径')
+        repository=candidates[0]
+    models=[];unsupported=[]
+    for path in sorted(repository.iterdir()):
+        if path.is_symlink() or not path.is_dir() or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}',path.name):continue
+        if target.get('only_model') and path.name!=target['only_model']:continue
+        config=path/'config.pbtxt';runtime=None
+        if config.is_file() and not config.is_symlink() and config.stat().st_size<=64000:
+            text=re.sub(r'#.*','',config.read_text(encoding='utf-8'))
+            if re.search(r'platform\s*:\s*[\'\"]tensorrt_plan[\'\"]',text):runtime='triton_plan'
+            elif re.search(r'backend\s*:\s*[\'\"]vllm[\'\"]',text):runtime='triton_vllm'
+        elif target.get('runtime')=='vllm' and (path/'config.json').is_file():runtime='vllm'
+        if runtime:models.append(dict(name=path.name,runtime=runtime))
+        else:unsupported.append(path.name)
+        if len(models)+len(unsupported)>500:raise ValueError('模型目录超过500个，请缩小服务配置的仓库范围')
+    return dict(repository=str(repository),models=models,unsupported=unsupported)
+
+
 def target_state(target):
     path=destination(target)
     if path.is_symlink():raise ValueError('目标模型不能为符号链接')
@@ -267,22 +357,23 @@ def execution(target,instance):
 
 def model_mount(target,args,mounts):
     if target['runtime']=='vllm':
-        model=option(args,'--model') or next((a for a in args if a.startswith('/models/')),None)
-    else:model=option(args,'--model-repository')
+        model=option(args,'--model') or next((args[i+1] for i,a in enumerate(args[:-1]) if a=='serve' and args[i+1].startswith('/')),None) or next((a for a in args if a.startswith('/models/')),None)
+    else:model=option(args,'--model-repository') or option(args,'--model-store')
     if not model:raise ValueError('无法从启动参数识别模型路径，请使用显式模型路径')
     if target['runtime']!='vllm' and option(args,'--model-control-mode')!='explicit':raise ValueError('Triton必须使用explicit模型控制模式')
     if target['runtime']=='triton_vllm' and not any(option(args,'--load-model')==name or '--load-model='+name in args for name in ('*',target['model_name'])):
         raise ValueError('大模型重启生效要求启动参数--load-model包含目标模型或*')
     expected=str(destination(target)) if target['runtime']=='vllm' else target['repository']
-    matching=[]
+    matching=[];mapped_paths=[]
     for mount in mounts:
         root=mount['destination'].rstrip('/')
         if model==root or model.startswith(root+'/'):
             mapped=mount['source'].rstrip('/')+model[len(root):]
             candidates=[mapped]
             if mount.get('nfs4'):candidates.extend(root.rstrip('/')+mapped for root in target.get('nfs4_roots',[]))
+            mapped_paths.extend(candidates)
             if expected in candidates:matching.append(mount)
-    if len(matching)!=1:raise ValueError('推理模型挂载与文件服务器目标路径不一致')
+    if len(matching)!=1:raise ValueError('推理模型挂载与文件服务器目标路径不一致；目标：'+expected+'；实际映射：'+'、'.join(mapped_paths))
     port=int(option(args,'--port' if target['runtime']=='vllm' else '--http-port','8000'))
     if not 0<port<65536:raise ValueError('推理HTTP端口无效')
     return dict(port=port,served_model=option(args,'--served-model-name',model),
@@ -357,6 +448,12 @@ def compatibility(target,instance):
     return json.loads(command(execution(target,instance)+['python3','-c',code],90))
 
 
+def platform_runtime(target):
+    state=inventory(target)
+    if len(state['instances'])!=state['desired'] or not all(row['ready'] for row in state['instances']):raise ValueError('推理实例未全部就绪，无法核验GPU和TensorRT环境')
+    return dict(instances=[dict(name=row['name'],uid=row['uid'],image_id=row['image_id'],**compatibility(target,row)) for row in state['instances']])
+
+
 def probe(target,instance,action='ready',absent=False):
     name=target['model_name']
     path='/v1/models' if target['runtime']=='vllm' else '/v2/models/'+name+'/ready'
@@ -385,6 +482,10 @@ def restart(target,instance=None,controller=None,token=''):
 
 def dispatch(payload):
     action=payload['action'];target=payload.get('target',{});job=payload.get('job_id')
+    if action=='discover':return discover(target)
+    if action=='platform_services':return platform_services(target)
+    if action=='platform_models':return platform_models(target)
+    if action=='platform_runtime':return platform_runtime(target)
     if action=='source':
         result=inspect_source(payload['source']);result['file_count']=len(result.pop('files'));return result
     if action=='audit':

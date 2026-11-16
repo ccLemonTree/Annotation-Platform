@@ -2,12 +2,14 @@
 import { useState } from 'react';
 import { Form, Input, Button, Card, message, Tabs, Alert } from 'antd';
 import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { login, register, getCurrentUser } from '../api/auth';
 import type { LoginRequest, RegisterRequest } from '../api/auth';
+import { authWindow, currentReturnPath, safeReturnPath } from '../utils/authNavigation';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('login');
   const [notice, noticeContext] = message.useMessage();
@@ -26,7 +28,10 @@ export default function LoginPage() {
       localStorage.setItem('user', JSON.stringify(user));
 
       notice.success('登录成功！');
-      navigate(user.role === 'admin' ? '/' : '/annotations');
+      const target = authWindow();
+      const next = user.role === 'admin' ? safeReturnPath(params.get('next') || (target !== window ? currentReturnPath() : '/')) : '/annotations';
+      if (target !== window) target.location.replace(next);
+      else navigate(next, { replace: true });
     } catch (error: any) {
       setErrorMessage(typeof error.response?.data?.detail === 'string' ? error.response.data.detail : '登录失败，请检查用户名和密码');
     } finally {

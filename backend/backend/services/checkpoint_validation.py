@@ -72,7 +72,7 @@ async def validate_context(db,run,lock=False):
         if server['name']!=settings.GPU_SERVER_NAME:raise HTTPException(409,'默认服务器连接已变化')
     else:
         current=await gpu_servers.scoped_server(db,UUID(server['id']),run.tenant_id,lock=lock)
-        if not current.enabled or current.revision!=server['revision']:raise HTTPException(409,'验证服务器连接已变化')
+        if not current.enabled or not gpu_servers.matches_connection(current,server):raise HTTPException(409,'验证服务器连接已变化')
 
 
 async def stop(db,run):

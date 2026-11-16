@@ -1,8 +1,24 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import react from '@vitejs/plugin-react';
 
+const mainDocument = (request: IncomingMessage, _response: ServerResponse, next: () => void) => {
+  const url = new URL(request.url || '/', 'http://vite.local');
+  if ((request.method === 'GET' || request.method === 'HEAD') && request.headers.accept?.includes('text/html') &&
+      (url.pathname === '/smarteye' || url.pathname === '/smarteye/')) {
+    request.url = '/index.html' + url.search;
+  }
+  next();
+};
+
+const smarteyeEntry: Plugin = {
+  name: 'smarteye-document-entry',
+  configureServer(server) { server.middlewares.use(mainDocument); },
+  configurePreviewServer(server) { server.middlewares.use(mainDocument); },
+};
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [smarteyeEntry, react()],
   build: {
     rollupOptions: {
       input: { main: 'index.html', smarteye: 'smarteye/index.html' },

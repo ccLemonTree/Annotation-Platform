@@ -3,7 +3,8 @@
 """
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, func, BigInteger, Index
+from sqlalchemy import String, Integer, DateTime, func, BigInteger, Index, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
 
@@ -19,6 +20,7 @@ class Tenant(Base):
     tenant_name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, comment="租户名称")
     contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="联系邮箱")
     is_active: Mapped[bool] = mapped_column(default=True, comment="是否激活")
+    training_defaults: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'"))
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")

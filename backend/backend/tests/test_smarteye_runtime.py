@@ -19,6 +19,104 @@ def image():
     Image.new('RGB', (20, 15), 'red').save(data, format='PNG')
     return data.getvalue()
 
+
+def test_device_sources_inherit_scenes_and_union_without_visual_queue(tmp_path, monkeypatch):
+    from integrations.smarteye.management import update_device
+    from integrations.smarteye import runtime as module
+    from models import LibraryImage
+    from sqlalchemy import select
+    r=runtime(tmp_path,monkeypatch)
+    monkeypatch.setattr(module,'_runtime',r)
+    for device,labels in [('one',['工厂']),('two',['河边'])]:
+        update_device(1,'p',device,{'device_name':device,'scene_status':'completed','scene_source':'manual','scene_labels':labels})
+        r.create(device,'device-capture',{'status':'running'},{'tenant_id':1,'user_id':1})
+        r.save_image(device,r.root/'smarteye'/device/'a.png',image(),1,
+                     device_info={'plat_id':'p','device_id':device,'device_name':device,'platform_name':'平台'})
+    with r.engine.connect() as conn:
+        row=conn.execute(select(LibraryImage.__table__)).mappings().one()
+        assert row['scene_status']=='completed' and set(row['scene_labels'])=={'工厂','河边'}
+        assert len(row['device_info']['sources'])==2
+        assert row['scene_metadata']['basis']=='device_name'
+        assert all(value['metadata']['device_info']['plat_id']=='p' for value in conn.execute(select(module.files)).mappings())
+
+
+def test_nonperiodic_device_images_share_pending_device_without_visual_jobs(tmp_path,monkeypatch):
+    from integrations.smarteye.management import get_device
+    from integrations.smarteye import runtime as module
+    from models import LibraryImage,ImageIngestSettings
+    from schemas.image_ingest import ImageIngestConfig
+    from sqlalchemy import select
+    r=runtime(tmp_path,monkeypatch);monkeypatch.setattr(module,'_runtime',r)
+    with r.engine.begin() as conn:
+        conn.execute(ImageIngestSettings.__table__.insert().values(tenant_id=1,revision=1,config=ImageIngestConfig(classification_enabled=True).model_dump()))
+    for task in ('first','second'):
+        r.create(task,'ledger',{'status':'running'},{'tenant_id':1,'user_id':1})
+        r.save_image(task,r.root/'smarteye'/task/'a.png',image(),1,device_info={
+            'plat_id':'p','device_id':'d','device_name':' 工厂 大门 ','platform_name':'平台'})
+    device=get_device(1,'p','d')
+    assert device['scene_status']=='pending' and device['scene_revision']==1
+    with r.engine.connect() as conn:
+        row=conn.execute(select(LibraryImage.__table__)).mappings().one()
+        assert row['scene_status']!='pending' and len(row['device_info']['sources'])==1
+
+
+def test_empty_image_source_is_ignored_and_alias_replacement_keeps_prior_scene_propagation(tmp_path,monkeypatch):
+    from integrations.smarteye import runtime as module
+    from integrations.smarteye.management import update_device
+    from models import LibraryImage
+    from sqlalchemy import select,update
+    r=runtime(tmp_path,monkeypatch);monkeypatch.setattr(module,'_runtime',r)
+    update_device(1,'p','d',{'scene_status':'completed','scene_source':'manual','scene_labels':['工厂']})
+    r.create('task','device-capture',{'status':'running'},{'tenant_id':1,'user_id':1})
+    source={'plat_id':'p','device_id':'d','device_name':'工厂','platform_name':'P'}
+    target=r.root/'smarteye/task/same.png'
+    r.save_image('task',target,image(),1,device_info=source)
+    blue=BytesIO();Image.new('RGB',(20,15),'blue').save(blue,format='PNG')
+    r.save_image('task',target,blue.getvalue(),1,device_info=source)
+    update_device(1,'p','d',{'scene_status':'completed','scene_source':'manual','scene_labels':['河边']})
+    with r.engine.begin() as conn:
+        module.propagate_device_scenes(conn,1,'p','d')
+        assert conn.execute(select(LibraryImage.__table__.c.scene_labels)).scalars().all()==[['河边'],['河边']]
+        image_id=conn.execute(select(LibraryImage.__table__.c.id)).scalars().first()
+        conn.execute(update(LibraryImage.__table__).where(LibraryImage.__table__.c.id==image_id).values(device_info=None))
+        module.inherit_device_scenes(conn,image_id,1)
+
+
+def test_historical_capture_name_cannot_undo_device_sync_rename(tmp_path,monkeypatch):
+    from integrations.smarteye import runtime as module
+    from integrations.smarteye.management import update_device,get_device
+    r=runtime(tmp_path,monkeypatch);monkeypatch.setattr(module,'_runtime',r)
+    update_device(1,'p','d',{'device_name':'新设备名','scene_status':'completed','scene_source':'manual','scene_labels':['工厂']})
+    r.create('task','device-capture',{'status':'running'},{'tenant_id':1,'user_id':1})
+    r.save_image('task',r.root/'smarteye/task/old-record.png',image(),1,device_info={
+        'plat_id':'p','device_id':'d','device_name':'旧设备名','platform_name':'平台'})
+    assert get_device(1,'p','d')['device_name']=='新设备名'
+
+
+def test_device_rename_preserves_old_source_scene_and_new_name_inherits_new_scene(tmp_path,monkeypatch):
+    from integrations.smarteye import runtime as module
+    from integrations.smarteye.management import update_device
+    from models import LibraryImage
+    from sqlalchemy import select
+    r=runtime(tmp_path,monkeypatch);monkeypatch.setattr(module,'_runtime',r)
+    update_device(1,'p','d',{'device_name':'工厂摄像头','scene_status':'completed','scene_source':'manual','scene_labels':['工厂']})
+    r.create('old','device-capture',{'status':'running'},{'tenant_id':1,'user_id':1})
+    r.save_image('old',r.root/'smarteye/old/first.png',image(),1,device_info={
+        'plat_id':'p','device_id':'d','device_name':'工厂摄像头','platform_name':'平台'})
+    update_device(1,'p','d',{'device_name':'河边摄像头','scene_labels':['河边'],'scene_status':'completed'})
+    with r.engine.begin() as conn:module.propagate_device_scenes(conn,1,'p','d')
+    blue=BytesIO();Image.new('RGB',(20,15),'blue').save(blue,format='PNG')
+    r.create('new','device-capture',{'status':'running'},{'tenant_id':1,'user_id':1})
+    r.save_image('new',r.root/'smarteye/new/second.png',blue.getvalue(),1,device_info={
+        'plat_id':'p','device_id':'d','device_name':'河边摄像头','platform_name':'平台'})
+    # Reusing the old capture after a rename must keep its completed name snapshot.
+    r.save_image('old',r.root/'smarteye/old/again.png',image(),1,device_info={
+        'plat_id':'p','device_id':'d','device_name':'工厂摄像头','platform_name':'平台'})
+    with r.engine.connect() as conn:
+        rows=conn.execute(select(LibraryImage.__table__)).mappings().all()
+        assert {row['device_info']['device_name']:row['scene_labels'] for row in rows}=={
+            '工厂摄像头':['工厂'],'河边摄像头':['河边']}
+
 def test_platform_names_group_same_original_without_copy(tmp_path,monkeypatch):
     r=runtime(tmp_path,monkeypatch)
     for task,name in [('first','平台A'),('second','平台B')]:
@@ -93,8 +191,11 @@ def test_replacing_alias_preserves_old_original_and_updates_reference(tmp_path, 
 
 def test_crop_temporary_original_is_not_associated(tmp_path, monkeypatch):
     r = runtime(tmp_path, monkeypatch)
+    from services.image_ingest import sync_collection
+    with r.engine.begin() as conn:
+        collection,_=sync_collection(conn,1,'测试图片集')
     r.create('crop', 'ledger', {'status': 'running'},
-             {'tenant_id': 1, 'user_id': 1, 'project_id': 'test-project'})
+             {'tenant_id': 1, 'user_id': 1, 'project_id': 'test-project','collection_id':str(collection['id'])})
     associations = []
     monkeypatch.setattr(r, '_associate', lambda *args: associations.append(args))
     r.save_image('crop', r.root / 'smarteye/crop/original.png', image(), 1, associate=False)

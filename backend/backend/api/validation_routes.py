@@ -12,6 +12,7 @@ from models.validation import ValidationSet, ValidationRun, ValidationItem
 from schemas.common import PaginationParams
 from schemas.validation import ValidationSetCreate, ValidationRunCreate, ValidationView, CaptionReview
 from services import validation
+from api.asset_routes import scoped_project
 
 router = APIRouter()
 
@@ -61,11 +62,14 @@ async def create_run(request: ValidationRunCreate, db: AsyncSession = Depends(ge
 
 
 @router.get('/runs')
-async def list_runs(set_id: UUID | None = None, pagination: PaginationParams = Depends(),
+async def list_runs(set_id: UUID | None = None, project_id: UUID | None = None, pagination: PaginationParams = Depends(),
                     task_type: Literal['detection','caption','embedding']='detection',
                     db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     query = select(ValidationRun).where(ValidationRun.tenant_id == user.tenant_id,ValidationRun.model_snapshot['preview'].as_boolean().is_not(True))
     if set_id: query = query.where(ValidationRun.set_id == set_id)
+    if project_id:
+        await scoped_project(db,project_id,user.tenant_id)
+        query=query.join(ValidationSet,ValidationSet.id==ValidationRun.set_id).where(ValidationSet.project_id==project_id)
     query=query.where(validation.multimodal.kind_filter(ValidationRun.model_snapshot,task_type))
     return await page_result(db, query, ValidationRun, pagination, validation.run_dict)
 

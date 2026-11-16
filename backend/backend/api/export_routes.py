@@ -5,7 +5,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import JSONB
 from typing import Optional
 from uuid import UUID
 import json
@@ -19,12 +20,16 @@ from collections import Counter
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.background import BackgroundTask
-from models import ExportSnapshot, AnnotationEvent, TrainingRun, ValidationSet
+from starlette.concurrency import run_in_threadpool
+from models import ExportSnapshot, ExportSnapshotJob, AnnotationEvent, TrainingRun, ValidationSet
 from api.asset_routes import scoped_project, scoped_asset
 from services.storage import get_storage
+from services.snapshot_manifests import manifest_summary, read_manifest, write_manifest
 from services.detection_export import training_package, export_rows, category_labels, coco_document, preview_splits, preview_simple_split
 from services.annotation_scope import eligible_assets
 from services.dataset_splits import SplitPolicy, SplitSource, source_metadata
+from services.project_workflow import dataset_scope
+from services.swift_export import EmbeddingTextSource,TrainingTextSource
 
 from database import get_db_session as get_db
 from models.user import User
@@ -38,15 +43,16 @@ router = APIRouter()
 
 
 @router.get('/projects/{project_id}/summary')
-async def export_summary(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+async def export_summary(project_id: UUID, work_job_id:UUID|None=None, image_kind:Literal['all','originals','crops']='all',
+                         db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     project = await scoped_project(db, project_id, user.tenant_id)
-    rows, _ = await export_rows(db, project, False, lock=False)
+    rows, _ = await export_rows(db, project, False, lock=False, scope=await dataset_scope(db,project,work_job_id,image_kind))
     def counts(annotations):
         return dict(images=len(annotations), images_by_label=dict(Counter(
             label for ann in annotations for label in {box['label'] for box in ann.annotation_data['boxes']})))
     return dict(labels=category_labels(project, rows, None),
         all=counts([ann for _, ann in rows]),
-        approved=counts([ann for _, ann in rows if ann.review_status == 'approved']))
+        approved=counts([ann for _, ann in rows if ann.status_for('detection') == 'approved']))
 
 
 @router.get("/projects/{project_id}/export")
@@ -58,8 +64,13 @@ async def export_project_data(
     approved_only: bool = True,
     package: bool = True,
     dataset_format:Literal['portable','swift_sft','infonce','contrastive','online_contrastive','cosine_similarity']='portable',
-    sample_source:Literal['descriptions','labels','matches']='descriptions',
+    sample_source:TrainingTextSource='descriptions',
+    single_attribute:str|None=Query(None,max_length=3000),
+    explicit_negatives:bool=False,
+    automatic_negative_job_id:UUID|None=None,
     instruction:str=Query('请描述这张图片。',min_length=1,max_length=2000),
+    work_job_id:UUID|None=None,
+    image_kind:Literal['all','originals','crops']='all',
     tenant_id: int = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -83,7 +94,11 @@ async def export_project_data(
     # 查询资产
     if format == 'annotation':
         from services.annotation_export import training_package as image_training_package
-        stream,manifest=await image_training_package(db,project,approved_only,dataset_format,sample_source,instruction)
+        scope=await dataset_scope(db,project,work_job_id,image_kind)
+        stream,manifest=await image_training_package(db,project,approved_only,dataset_format,sample_source,instruction,scope=scope,
+            source={'work_job_id':str(work_job_id) if work_job_id else None,'image_kind':image_kind} if automatic_negative_job_id else None,
+            explicit_negatives=explicit_negatives,automatic_negative_job_id=automatic_negative_job_id,
+            single_attribute=parse_single_attribute(single_attribute))
         db.add(AnnotationEvent(project_id=project.id,user_id=current_user.id,action='export',detail=manifest))
         await db.commit()
         return package_response(stream,f'project_{project.id}_annotations.zip')
@@ -276,7 +291,7 @@ def package_response(stream, filename):
         headers={'Content-Disposition': f'attachment; filename={filename}'}, background=BackgroundTask(stream.close))
 
 class SimpleSelection(BaseModel):
-    mode: Literal['ratio', 'train_only', 'val_only'] = 'ratio'
+    mode: Literal['ratio', 'none', 'train_only', 'val_only'] = 'ratio'
     ratios: dict[str, int] = Field(default_factory=lambda: {'train': 80, 'val': 10, 'test': 10})
     budgets: dict[str, int | None] = Field(default_factory=dict)
     check_duplicates: bool = False
@@ -287,20 +302,50 @@ class SimpleSelection(BaseModel):
 
     @model_validator(mode='after')
     def grouped_check(self):
-        if self.group_similar:self.check_duplicates=True
+        if self.mode=='none':
+            self.group_similar=self.check_duplicates=self.require_source=False
+            self.budgets={}
+        elif self.group_similar:self.check_duplicates=True
         return self
 
 
-class SnapshotRequest(BaseModel):
+class DatasetScopeRequest(BaseModel):
+    work_job_id:UUID|None=None
+    image_kind:Literal['all','originals','crops']='all'
+
+    def source(self):
+        return {'work_job_id':str(self.work_job_id) if self.work_job_id else None,'image_kind':self.image_kind}
+
+
+class SingleAttributeRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
+    key:str|None=Field(default=None,pattern=r'^[a-z][a-z0-9_]{0,49}$')
+    query_value:str|None=Field(default=None,min_length=1,max_length=500)
+    reverse:bool=False
+    positive_count:int|None=Field(default=None,ge=1,le=10000)
+    semantics:Literal['forward','reverse','both']='forward'
+    sample_limit:int|None=Field(default=None,ge=1,le=1000000)
+    negative_count:int=Field(default=3,ge=0,le=20)
+
+
+def parse_single_attribute(value):
+    if value is not None:
+        try:return SingleAttributeRequest.model_validate_json(value).model_dump()
+        except ValueError:raise HTTPException(422,'单属性参数无效') from None
+
+
+class SnapshotRequest(DatasetScopeRequest):
     format: Literal['yolo', 'coco'] = 'yolo'
     labels: list[str] | None = None
     approved_only: bool = True
     splits: dict[str, Literal['train', 'val', 'test']] | None = None
     policy: SplitPolicy | None = None
     selection: SimpleSelection | None = None
+    preview_token:str|None=Field(default=None,min_length=64,max_length=64)
+    version_label:str=Field(default='',max_length=100)
 
 
-class SplitPreviewRequest(BaseModel):
+class SplitPreviewRequest(DatasetScopeRequest):
     model_config = ConfigDict(extra='forbid')
     labels: list[str] | None = None
     approved_only: bool = True
@@ -310,34 +355,161 @@ class SplitPreviewRequest(BaseModel):
     selection: SimpleSelection | None = None
 
 
-class AnnotationSnapshotRequest(BaseModel):
+class AnnotationSnapshotRequest(DatasetScopeRequest):
     model_config = ConfigDict(extra='forbid')
     dataset_format: Literal['swift_sft','infonce','contrastive','online_contrastive','cosine_similarity']
-    sample_source: Literal['descriptions','labels','matches'] = 'descriptions'
+    sample_source: TrainingTextSource = 'descriptions'
     approved_only: bool = True
+    explicit_negatives:bool=False
+    automatic_negative_job_id:UUID|None=None
+    single_attribute:SingleAttributeRequest|None=None
+    version_label:str=Field(default='',max_length=100)
     instruction: str = Field(default='请描述这张图片。',min_length=1,max_length=2000)
+    preview_token:str|None=Field(default=None,min_length=64,max_length=64)
+
+
+@router.post('/projects/{project_id}/annotation-snapshots/preview')
+async def preview_annotation_snapshot(project_id:UUID,request:AnnotationSnapshotRequest,db:AsyncSession=Depends(get_db),
+                                      user:User=Depends(get_current_user)):
+    from services.annotation_export import training_package as image_training_package
+    project=await scoped_project(db,project_id,user.tenant_id)
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
+    return await image_training_package(db,project,request.approved_only,request.dataset_format,request.sample_source,request.instruction,
+        scope=scope,source=request.source(),preview=True,explicit_negatives=request.explicit_negatives,
+        automatic_negative_job_id=request.automatic_negative_job_id,
+        single_attribute=request.single_attribute.model_dump() if request.single_attribute else None)
 
 
 @router.post('/projects/{project_id}/annotation-snapshots',status_code=201)
 async def freeze_annotation_export(project_id:UUID,request:AnnotationSnapshotRequest,db:AsyncSession=Depends(get_db),
                                    user:User=Depends(get_current_user)):
+    return await freeze_annotation_package(db,user,project_id,request)
+
+
+async def freeze_annotation_package(db,user,project_id,request,*,progress=None,job=None):
     from services.annotation_export import training_package as image_training_package
     project=await scoped_project(db,project_id,user.tenant_id)
-    stream,manifest=await image_training_package(db,project,request.approved_only,request.dataset_format,request.sample_source,request.instruction)
-    return await save_snapshot(db,user,project,request.dataset_format,stream,manifest)
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
+    stream,manifest=await image_training_package(db,project,request.approved_only,request.dataset_format,request.sample_source,request.instruction,
+        scope=scope,source=request.source(),preview_token=request.preview_token,explicit_negatives=request.explicit_negatives,
+        automatic_negative_job_id=request.automatic_negative_job_id,
+        single_attribute=request.single_attribute.model_dump() if request.single_attribute else None,progress=progress)
+    return await save_snapshot(db,user,project,request.dataset_format,stream,manifest,request.version_label,job=job)
+
+
+class EmbeddingNegativesRequest(BaseModel):
+    text:str=Field(min_length=1)
+    version:int=Field(ge=0)
+    asset_ids:list[UUID]=Field(max_length=20)
+
+
+class NegativeRecommendationRequest(DatasetScopeRequest):
+    source:EmbeddingTextSource
+    approved_only:bool=True
+
+
+class NegativeRecommendationJobRequest(NegativeRecommendationRequest):
+    automatic:bool=False
+
+
+class NegativeRecommendationSelection(EmbeddingNegativesRequest):
+    asset_id:UUID
+    asset_ids:list[UUID]=Field(min_length=1,max_length=3)
+
+
+class NegativeRecommendationConfirmation(NegativeRecommendationRequest):
+    items:list[NegativeRecommendationSelection]=Field(min_length=1,max_length=12)
+
+
+class ExcludedRecommendation(BaseModel):
+    asset_id:UUID
+    negative_id:UUID
+
+
+class RecommendationBatchConfirmation(BaseModel):
+    excluded:list[ExcludedRecommendation]=Field(default_factory=list,max_length=36)
+
+
+@router.post('/projects/{project_id}/embedding-negative-recommendations/jobs/status')
+async def recommendation_job_status(project_id:UUID,request:NegativeRecommendationJobRequest,
+                                    db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_recommendation_jobs import latest,status
+    project=await scoped_project(db,project_id,user.tenant_id)
+    return await status(db,await latest(db,project,request),include_sample=True)
+
+
+@router.post('/projects/{project_id}/embedding-negative-recommendations/jobs',status_code=202)
+async def start_recommendation_job(project_id:UUID,request:NegativeRecommendationJobRequest,
+                                   db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_recommendation_jobs import start
+    project=await scoped_project(db,project_id,user.tenant_id,for_update=True)
+    return await start(db,project,request,user.id)
+
+
+@router.post('/projects/{project_id}/embedding-negative-recommendations/jobs/{job_id}/confirm',status_code=202)
+async def confirm_recommendation_job(project_id:UUID,job_id:UUID,request:RecommendationBatchConfirmation,
+                                     db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_recommendation_jobs import OPERATION,queue_confirmation
+    from models import ProjectWorkJob
+    project=await scoped_project(db,project_id,user.tenant_id,for_update=True)
+    job=await db.scalar(select(ProjectWorkJob).where(ProjectWorkJob.id==job_id,
+        ProjectWorkJob.project_id==project.id,ProjectWorkJob.operation==OPERATION))
+    if job is None:raise HTTPException(404,'推荐批次不存在')
+    return await queue_confirmation(db,job,request,user.id)
+
+
+@router.post('/projects/{project_id}/embedding-negative-recommendations')
+async def recommend_embedding_negatives(project_id:UUID,request:NegativeRecommendationRequest,after:UUID|None=None,
+                                        db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_negative_recommendations import recommend
+    project=await scoped_project(db,project_id,user.tenant_id)
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
+    return await recommend(db,project,request.source,request.approved_only,scope,after)
+
+
+@router.post('/projects/{project_id}/embedding-negative-recommendations/confirm')
+async def confirm_embedding_negatives(project_id:UUID,request:NegativeRecommendationConfirmation,
+                                       db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_negative_recommendations import confirm
+    project=await scoped_project(db,project_id,user.tenant_id)
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
+    return await confirm(db,project,request.source,request.approved_only,scope,request.items,user.id)
+
+
+@router.get('/projects/{project_id}/embedding-negatives/{asset_id}')
+async def get_embedding_negatives(project_id:UUID,asset_id:UUID,source:EmbeddingTextSource,
+                                  db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_negatives import configured
+    project=await scoped_project(db,project_id,user.tenant_id)
+    asset=await scoped_asset(db,asset_id,user.tenant_id)
+    if asset.project_id!=project.id:raise HTTPException(404,'图片不属于当前项目')
+    _,row,text=await configured(db,project,asset,source)
+    hits=row.hits if row and row.query['text']==text and row.query['content_hash']==asset.content_hash else []
+    return dict(text=text,version=row.version if row else 0,asset_ids=[hit['asset_id'] for hit in hits])
+
+
+@router.put('/projects/{project_id}/embedding-negatives/{asset_id}')
+async def set_embedding_negatives(project_id:UUID,asset_id:UUID,source:EmbeddingTextSource,request:EmbeddingNegativesRequest,
+                                  db:AsyncSession=Depends(get_db),user:User=Depends(get_current_superuser)):
+    from services.embedding_negatives import save
+    project=await scoped_project(db,project_id,user.tenant_id)
+    asset=await scoped_asset(db,asset_id,user.tenant_id,for_update=True)
+    if asset.project_id!=project.id:raise HTTPException(404,'图片不属于当前项目')
+    return await save(db,project,asset,source,request,user.id)
 
 
 @router.post('/projects/{project_id}/splits/preview')
 async def preview_project_splits(project_id: UUID, request: SplitPreviewRequest, db: AsyncSession = Depends(get_db),
                                  user: User = Depends(get_current_user)):
     project = await scoped_project(db, project_id, user.tenant_id)
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
     if request.selection is not None:
         if request.splits is not None or request.suggest:
             raise HTTPException(400, '简化划分不能同时指定手动划分或自动分组建议')
-        return await preview_simple_split(db, project, request.labels, request.approved_only, request.selection.model_dump())
+        return await preview_simple_split(db, project, request.labels, request.approved_only, request.selection.model_dump(),scope=scope)
     if request.suggest and request.splits is not None:
         raise HTTPException(400, '自动建议不能同时提供手动划分')
-    return await preview_splits(db, project, request.labels, request.approved_only, request.policy, request.splits, request.suggest)
+    return await preview_splits(db, project, request.labels, request.approved_only, request.policy, request.splits, request.suggest,scope=scope)
 
 
 @router.patch('/projects/{project_id}/assets/{asset_id}/split-source')
@@ -371,12 +543,46 @@ async def project_split_sources(project_id: UUID, db: AsyncSession = Depends(get
 @router.post('/projects/{project_id}/snapshots', status_code=201)
 async def freeze_export(project_id: UUID, request: SnapshotRequest, db: AsyncSession = Depends(get_db),
                         user: User = Depends(get_current_user)):
+    return await freeze_detection_package(db,user,project_id,request)
+
+
+async def freeze_detection_package(db,user,project_id,request,*,progress=None,job=None):
     project = await scoped_project(db, project_id, user.tenant_id)
     if request.selection is not None and request.splits:
         raise HTTPException(400, '简化划分不能同时指定手动划分')
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
     stream, manifest = await training_package(db, project, request.format, request.labels, request.approved_only,
-        request.splits, request.policy, request.selection.model_dump() if request.selection else None)
-    return await save_snapshot(db,user,project,request.format,stream,manifest)
+        request.splits, request.policy, request.selection.model_dump() if request.selection else None,
+        scope=scope,source=request.source(),preview_token=request.preview_token,progress=progress)
+    return await save_snapshot(db,user,project,request.format,stream,manifest,request.version_label,job=job)
+
+
+@router.post('/projects/{project_id}/snapshots/jobs', status_code=202)
+async def queue_detection_snapshot(project_id:UUID,request:SnapshotRequest,db:AsyncSession=Depends(get_db),
+                                   user:User=Depends(get_current_user)):
+    from services.snapshot_jobs import enqueue
+    if request.selection is not None and request.splits:
+        raise HTTPException(400, '简化划分不能同时指定手动划分')
+    return await enqueue(db,user,project_id,'detection',request)
+
+
+@router.post('/projects/{project_id}/annotation-snapshots/jobs', status_code=202)
+async def queue_annotation_snapshot(project_id:UUID,request:AnnotationSnapshotRequest,db:AsyncSession=Depends(get_db),
+                                    user:User=Depends(get_current_user)):
+    from services.snapshot_jobs import enqueue
+    return await enqueue(db,user,project_id,'annotation',request)
+
+
+@router.get('/projects/{project_id}/snapshot-jobs')
+async def list_snapshot_jobs(project_id:UUID,db:AsyncSession=Depends(get_db),user:User=Depends(get_current_user)):
+    from services.snapshot_jobs import ACTIVE, summary
+    await scoped_project(db,project_id,user.tenant_id)
+    job=ExportSnapshotJob
+    recent=select(job.id).where(job.project_id==project_id,job.status.not_in(ACTIVE))
+    recent=recent.order_by(job.created_at.desc(),job.id.desc()).limit(10)
+    rows=await db.scalars(select(job).where(job.project_id==project_id,
+        job.status.in_(ACTIVE)|job.id.in_(recent)).order_by(job.created_at.desc(),job.id.desc()))
+    return [summary(row) for row in rows]
 
 
 @router.post('/projects/{project_id}/packages')
@@ -385,37 +591,104 @@ async def download_project_package(project_id: UUID, request: SnapshotRequest, d
     project = await scoped_project(db, project_id, user.tenant_id)
     if request.selection is not None and request.splits:
         raise HTTPException(400, '简化划分不能同时指定手动划分')
+    scope=await dataset_scope(db,project,request.work_job_id,request.image_kind)
     stream, _ = await training_package(db, project, request.format, request.labels, request.approved_only,
-        request.splits, request.policy, request.selection.model_dump() if request.selection else None)
+        request.splits, request.policy, request.selection.model_dump() if request.selection else None,
+        scope=scope,source=request.source(),preview_token=request.preview_token)
     return package_response(stream, f'project_{project.id}_{request.format}.zip')
 
 
-async def save_snapshot(db,user,project,format,stream,manifest):
-    snapshot_id = uuid.uuid4()
+async def save_snapshot(db,user,project,format,stream,manifest,version_label='',*,job=None):
+    if version_label.strip():manifest={**manifest,'version_label':version_label.strip()}
+    snapshot_id = job.id if job else uuid.uuid4()
     key = f'exports/{snapshot_id}.zip'
+    manifest_path = f'exports/manifests/{snapshot_id}.json'
+    storage = get_storage()
+    saved = False
     try:
-        digest = hashlib.sha256()
-        for chunk in iter(lambda: stream.read(65536), b''): digest.update(chunk)
-        stream.seek(0)
-        await get_storage().save_file(stream, key)
+        task_type = project.task_type
+        if job:
+            job.status = 'saving'
+            job.packed = job.total = len(manifest['assets'])
+            await db.commit()
+        def checksum():
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            stream.seek(0)
+            return digest
+        digest = await run_in_threadpool(checksum)
+        await storage.save_file(stream, key)
+        saved = True
+        await write_manifest(manifest, manifest_path)
+        project = await scoped_project(db, project.id, user.tenant_id, for_update=True)
+        if project.task_type != task_type:
+            raise HTTPException(409, '项目任务类型已变化，请刷新后重新导出')
+        summary = manifest_summary(manifest)
         snapshot = ExportSnapshot(id=snapshot_id, project_id=project.id, user_id=user.id,
-            export_format=format, blob_path=key, content_hash=digest.hexdigest(), manifest=manifest)
+            export_format=format, blob_path=key, content_hash=digest, manifest_path=manifest_path,
+            list_metadata=summary)
         db.add(snapshot)
-        db.add(AnnotationEvent(project_id=project.id, user_id=user.id, action='freeze_export', detail={'snapshot_id':str(snapshot_id), **manifest}))
+        db.add(AnnotationEvent(project_id=project.id, user_id=user.id, action='freeze_export',
+            detail=dict(summary, snapshot_id=str(snapshot_id), manifest_path=manifest_path, format=format)))
+        if job:
+            job.status = 'completed'
         await db.commit()
+        if job:
+            return
         return {'id':str(snapshot.id), 'format':snapshot.export_format, 'content_hash':snapshot.content_hash, 'manifest':manifest,
+            **({'version_label':manifest['version_label']} if 'version_label' in manifest else {}),
             'created_at':snapshot.created_at.replace(tzinfo=timezone.utc)}
+    except Exception:
+        if saved:
+            for path in (key, manifest_path):
+                try:
+                    await storage.delete_file(path)
+                except Exception:
+                    logging.getLogger(__name__).exception('Could not remove unpublished snapshot file %s', path)
+        raise
     finally:
         stream.close()
 
 @router.get('/projects/{project_id}/snapshots')
-async def list_snapshots(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user), summary_only: bool = False):
+async def list_snapshots(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user),
+                         summary_only: bool = False, training_only: bool = False, detection_only: bool = False):
     await scoped_project(db, project_id, user.tenant_id)
-    rows = (await db.execute(select(ExportSnapshot).where(ExportSnapshot.project_id == project_id)
+    scope = [ExportSnapshot.project_id == project_id]
+    if detection_only:
+        scope.append(ExportSnapshot.export_format.in_(('yolo', 'coco')))
+    if training_only or summary_only:
+        snapshot=ExportSnapshot
+        manifest=snapshot.manifest
+        assets=manifest['assets']
+        if db.bind.dialect.name=='sqlite':
+            fallback=func.json_object('training',manifest['training'],'version_label',manifest['version_label'].as_string(),
+                'asset_count',func.coalesce(func.json_array_length(assets),0))
+        else:
+            fallback=func.jsonb_build_object('training',manifest['training'],'version_label',manifest['version_label'],
+                'asset_count',func.coalesce(func.jsonb_array_length(assets.cast(JSONB)),0))
+        metadata=func.coalesce(snapshot.list_metadata,fallback,type_=JSONB)
+        rows=(await db.execute(select(snapshot.id,snapshot.export_format,snapshot.content_hash,snapshot.created_at,metadata)
+            .where(*scope).order_by(snapshot.created_at.desc(),snapshot.id.desc()))).all()
+        listed=[]
+        for id,format,content_hash,created_at,meta in rows:
+            item=dict(id=str(id),format=format,content_hash=content_hash,created_at=created_at.replace(tzinfo=timezone.utc))
+            if training_only:
+                item['manifest']={'training':meta.get('training')}
+                if meta.get('version_label'):
+                    item['version_label']=meta['version_label']
+            else:
+                item.update(version_label=meta.get('version_label'),asset_count=meta['asset_count'],
+                    sample_count=(meta.get('training') or {}).get('samples'))
+            listed.append(item)
+        return listed
+    rows = (await db.execute(select(ExportSnapshot).where(*scope)
         .order_by(ExportSnapshot.created_at.desc()))).scalars().all()
-    return [dict(id=str(row.id), format=row.export_format, content_hash=row.content_hash,
-        **({'asset_count': len(row.manifest.get('assets', []))} if summary_only else {'manifest': row.manifest}),
-        created_at=row.created_at.replace(tzinfo=timezone.utc)) for row in rows]
+    listed = []
+    for row in rows:
+        manifest = await read_manifest(row.manifest_path, row.manifest)
+        listed.append(dict(id=str(row.id), format=row.export_format, content_hash=row.content_hash,
+            version_label=manifest.get('version_label'), manifest=manifest,
+            created_at=row.created_at.replace(tzinfo=timezone.utc)))
+    return listed
 
 @router.get('/snapshots/{snapshot_id}/download')
 async def download_snapshot(snapshot_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):

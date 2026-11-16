@@ -13,6 +13,12 @@ def install_hooks(app):
     if _installed:
         return
     _installed = True
+    from integrations.smarteye.management import register_routes as register_management
+    from integrations.smarteye.device_capture import register_routes as register_capture
+    from integrations.smarteye.device_scenes import register_routes as register_scenes
+    register_management(app)
+    register_capture(app)
+    register_scenes(app)
 
     @app.before_request
     def before():
@@ -20,6 +26,8 @@ def install_hooks(app):
         if not owner:
             return jsonify(code=401, message='请登录'), 401
         data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify(code=400, message='请求须为JSON对象'), 400
         requested_tenant = data.get('tenant_id') or request.args.get('tenant_id')
         if requested_tenant is not None and str(requested_tenant) != str(owner['tenant_id']):
             return jsonify(code=403, message='不能操作其他租户的数据'), 403
@@ -35,7 +43,7 @@ def install_hooks(app):
             owner['session_id'] = owner['session_id'] or uuid.uuid4().hex
         for name in ('task_id', 'job_id', 'sched_id'):
             value = (request.view_args or {}).get(name) or data.get(name)
-            if value and ('scheduler' not in request.path or name == 'task_id'):
+            if value and not request.path.startswith('/device-capture/schedules/') and ('scheduler' not in request.path or name == 'task_id'):
                 job = get_runtime().get(value)
                 # Watch jobs use their original SQL table, scoped to the single main tenant.
                 if name != 'job_id' and (not job or job['tenant_id'] != owner['tenant_id']):
@@ -58,9 +66,15 @@ def install_hooks(app):
         if '/scheduler/' in request.path and request.path.endswith('/start'):
             sched_id = data.get('sched_id')
             with get_runtime().engine.connect() as conn:
-                payload = conn.execute(select(schedules.c.payload).where(schedules.c.sched_id == sched_id)).scalar()
-            if payload:
-                owner.update(payload.get('owner', {}))
+                saved = conn.execute(select(schedules.c.tenant_id, schedules.c.payload)
+                    .where(schedules.c.sched_id == sched_id)).mappings().first()
+            if saved:
+                saved_owner = saved['payload'].get('owner', {})
+                if saved['tenant_id'] != owner['tenant_id'] or ('tenant_id' in saved_owner and saved_owner['tenant_id'] != owner['tenant_id']):
+                    return jsonify(code=404, message='调度配置不存在'), 404
+                for key in ('project_id', 'collection_id', 'min_long_edge'):
+                    owner.pop(key, None)
+                owner.update(saved_owner)
         if request.path.endswith('/scheduler/configure'):
             interval = data.get('interval_minutes', 120)
             duration = data.get('task_duration_hours', 0)
@@ -102,6 +116,8 @@ def install_hooks(app):
     @app.route('/tasks/<task_id>/cancel', methods=['POST'])
     def cancel(task_id):
         job = get_runtime().get(task_id)
+        if job['kind'] in ('device-sync', 'device-scenes', 'device-capture', 'platform-check') and actor.get().get('role') != 'admin':
+            return jsonify(code=403, message='仅管理员可取消平台或设备管理任务'), 403
         get_runtime().cancel(task_id)
         if job['kind'] == 'watch':
             from integrations.smarteye.api.ledger_watch_downloader import stop_watch_job
@@ -176,8 +192,17 @@ def startup():
         payload = row['payload']
         configure_scheduler(sched_id=row['sched_id'], enabled=False, **{k: payload.get(k) for k in
             ('name', 'interval_minutes', 'task_duration_hours', 'platform_ids', 'alarm_type_filter', 'small_model_mode')})
+    from integrations.smarteye.device_capture import start_worker
+    from integrations.smarteye.device_scenes import recover, start_worker as start_device_scenes
+    recover()
+    start_device_scenes()
+    start_worker()
 
 def shutdown():
+    from integrations.smarteye.device_capture import shutdown_worker
+    shutdown_worker()
+    from integrations.smarteye.device_scenes import shutdown_worker as stop_device_scenes
+    stop_device_scenes()
     from integrations.smarteye.api.ledger_image_downloader import get_all_schedulers, stop_scheduler
     from integrations.smarteye.api.ledger_watch_downloader import _stop_events
     for sched in get_all_schedulers():

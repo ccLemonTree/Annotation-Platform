@@ -1,0 +1,22 @@
+.attribute-editor { display: grid; gap: 12px; }
+.attribute-editor-row { display: grid; gap: 10px; padding: 16px 12px; border-bottom: 1px solid var(--ui-border); }
+.attribute-editor-row:nth-child(odd) { background: var(--ui-background); }
+.attribute-editor-row:focus-within { outline: 1px solid var(--ui-primary); outline-offset: -1px; }
+.attribute-editor-preannotation { justify-self: start; max-width: 100%; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.attribute-editor-main { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(0, 1.6fr) auto; gap: 10px; align-items: center; }
+.attribute-editor-main > .ant-select { width: 100%; min-width: 0; }
+.attribute-editor-main > .ant-checkbox-wrapper { margin: 0; white-space: nowrap; }
+.attribute-editor-candidates { display: flex; flex-wrap: wrap; gap: 6px; }
+.attribute-editor-candidates .ant-btn { height: auto; min-height: 28px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.attribute-editor-details { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: var(--ui-muted); }
+.attribute-editor-details > details { min-width: 0; }
+.attribute-editor-details > details[open] { flex-basis: 100%; }
+.attribute-editor-details summary { margin: 0; line-height: 18px; }
+.attribute-editor-details details[open] > summary { margin-bottom: 8px; }
+@media (max-width: 480px) {
+  .attribute-editor-main { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .attribute-editor-main > .ant-typography { grid-column: 1 / -1; }
+}
+@media (pointer: coarse) {
+  .attribute-editor-candidates .ant-btn { min-height: 44px; }
+}

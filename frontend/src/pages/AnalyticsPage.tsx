@@ -5,16 +5,17 @@ import { getAnalytics } from '../api/analytics';
 import type { Analytics, AnalyticsFilters, EfficiencyUser } from '../api/analytics';
 import { getProjects } from '../api/projects';
 import type { Project } from '../api/projects';
+import ProjectWorkflow from '../components/ProjectWorkflow';
 
 const duration = (value: number | null) => value === null ? '未采集' : `${(value/60).toFixed(1)} 分钟`;
 const rate = (value: number | null) => value === null ? '未采集' : `${value.toFixed(1)} 次/小时`;
 
 export default function AnalyticsPage() {
-  const [params] = useSearchParams();
+  const [params,setParams] = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState<string | undefined>(params.get('project_id') || undefined);
+  const projectId=params.get('project_id')||undefined;
   const [start, setStart] = useState(''), [end, setEnd] = useState('');
-  const [filters, setFilters] = useState<AnalyticsFilters>({ project_id: projectId });
+  const [filters, setFilters] = useState<AnalyticsFilters>({});
   const [data, setData] = useState<Analytics>();
   const [loading, setLoading] = useState(true), [error, setError] = useState('');
   const [projectError, setProjectError] = useState('');
@@ -34,11 +35,12 @@ export default function AnalyticsPage() {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    getAnalytics(filters, controller.signal).then(result => { if (!controller.signal.aborted) setData(result); })
+    setLoading(true);setError('');setData(undefined);
+    getAnalytics({...filters,project_id:projectId}, controller.signal).then(result => { if (!controller.signal.aborted) setData(result); })
       .catch(() => { if (!controller.signal.aborted) setError('统计读取失败，请重试'); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [filters]);
+  }, [filters,projectId]);
   const apply = () => {
     if (start && end && start > end) { setError('开始日期不能晚于结束日期'); return; }
     const exclusiveEnd = end ? new Date(`${end}T00:00:00`) : undefined;
@@ -48,13 +50,15 @@ export default function AnalyticsPage() {
       end: exclusiveEnd?.toISOString() });
   };
   const q = data?.quality, w = data?.workload, e = data?.efficiency;
+  const project=projects.find(project=>project.id===projectId);
   return <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+    {project&&<ProjectWorkflow project={project} active="review"/>}
     <Card>
-      <Space wrap>
+      <Space wrap align="end">
         <Select aria-label="统计项目" allowClear placeholder="全部项目" style={{ minWidth: 240 }} value={projectId}
-          onChange={setProjectId} options={projects.map(p => ({ value: p.id, label: p.project_name }))} />
-        <label>开始日期 <Input aria-label="统计开始日期" type="date" value={start} onChange={ev => setStart(ev.target.value)} /></label>
-        <label>结束日期 <Input aria-label="统计结束日期" type="date" value={end} onChange={ev => setEnd(ev.target.value)} /></label>
+          onChange={id=>{const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');setParams(next);}} options={projects.map(p => ({ value: p.id, label: p.project_name }))} />
+        <label>开始日期 <Input aria-label="统计开始日期" type="date" style={{height:'var(--ant-control-height, 36px)'}} value={start} onChange={ev => setStart(ev.target.value)} /></label>
+        <label>结束日期 <Input aria-label="统计结束日期" type="date" style={{height:'var(--ant-control-height, 36px)'}} value={end} onChange={ev => setEnd(ev.target.value)} /></label>
         <Button type="primary" loading={loading} onClick={apply}>查询统计</Button>
       </Space>
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>日期按浏览器本地时区、包含结束当天；不填为全部时间。当前状态按最新版本创建日期筛选，工作量按事件发生日期筛选。</Typography.Paragraph>
@@ -71,7 +75,7 @@ export default function AnalyticsPage() {
         ].map(([title, value]) => <Col key={title} xs={12} md={4}><Statistic title={title} value={value} /></Col>)}</Row>
         <Typography.Paragraph style={{ marginTop: 16 }}>流程通过率（通过 / 已审核）：{q.process_pass_rate === null ? '尚无已审核数据' : `${(q.process_pass_rate*100).toFixed(1)}%`}</Typography.Paragraph>
         {q.process_pass_rate !== null && <Progress percent={Number((q.process_pass_rate*100).toFixed(1))} />}
-        <Typography.Paragraph>最新版本来源：人工 {q.sources.manual} · 模型 {q.sources.model} · 未知 {q.sources.unknown}；审核来源：人工 {q.review_origins.human} · 自动 {q.review_origins.automatic} · 未知 {q.review_origins.unknown}</Typography.Paragraph>
+        <Typography.Paragraph>最新版本来源：人工 {q.sources.manual} · 模型 {q.sources.model} · 未知 {q.sources.unknown} · 项目复用 {q.sources.reuse||0}；审核来源：人工 {q.review_origins.human} · 自动 {q.review_origins.automatic} · 未知 {q.review_origins.unknown}</Typography.Paragraph>
         <Table size="small" rowKey="label" dataSource={q.categories} pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无检测框类别' }}
           columns={[{ title: '类别', dataIndex: 'label' }, { title: '框数', dataIndex: 'boxes' }, { title: '涉及图片数', dataIndex: 'assets' }]} />
         <Typography.Paragraph type="secondary">{data?.definitions.quality} 负样本仅统计明确的空 boxes 列表；类别分布按最新版本检测框统计。</Typography.Paragraph>
@@ -80,6 +84,7 @@ export default function AnalyticsPage() {
     <Card title="工作量与人工效率" loading={loading}>
       {w && e && <>
         <Row gutter={[16, 16]}>{[
+          ['人工标注（张）', w.human_annotation_images], ['人工审核（张）', w.human_review_images],
           ['人工标注保存（次）', w.human_annotation_events], ['人工审核（次）', w.human_review_events],
           ['模型自动生成（次）', w.automatic_annotation_events], ['自动审核（次）', w.automatic_review_events],
           ['人工返工（次）', w.rework_events], ['来源未知事件', w.unknown_events],
@@ -92,7 +97,8 @@ export default function AnalyticsPage() {
         </Row>
         <Typography.Paragraph style={{ marginTop: 16 }}>有计时证据的人工操作：标注 {e.timed_annotation_events} 次、审核 {e.timed_review_events} 次；自动工作量不计入人工每小时产出。</Typography.Paragraph>
         <Table<EfficiencyUser> size="small" rowKey="user_id" dataSource={e.users} scroll={{ x: 1080 }} pagination={{ pageSize: 10 }} columns={[
-          { title: '用户', dataIndex: 'username' }, { title: '人工标注（次）', dataIndex: 'annotation_events' },
+          { title: '用户', dataIndex: 'username' }, { title: '人工标注（张）', dataIndex: 'annotation_images' },
+          { title: '人工审核（张）', dataIndex: 'review_images' }, { title: '人工标注（次）', dataIndex: 'annotation_events' },
           { title: '人工审核（次）', dataIndex: 'review_events' },
           { title: '去重活跃时长', dataIndex: 'active_seconds', render: duration },
           { title: '标注时长', dataIndex: 'annotation_seconds', render: duration },

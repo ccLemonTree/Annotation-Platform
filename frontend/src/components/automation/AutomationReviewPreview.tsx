@@ -3,19 +3,23 @@ import { Link } from 'react-router-dom';
 import { Alert, Button, Input, Modal, Space, Spin, Typography } from 'antd';
 import { getAnnotation } from '../../api/annotations';
 import { getAsset } from '../../api/assets';
+import { getProject } from '../../api/projects';
 import { resolveAutomationItem } from '../../api/automation';
 import type { AutomationItem } from '../../api/automation';
 import type { Annotation } from '../../api/annotations';
+import { labelColor } from '../detectionEditor';
 import type { Box } from '../detectionEditor';
 import AssetImage from '../AssetImage';
 import AutomationEvidence from './AutomationEvidence';
 
-export default function AutomationReviewPreview({ item, projectId, onClose, onResolved }: {
-  item: AutomationItem; projectId?: string; onClose: () => void; onResolved: () => void;
+export default function AutomationReviewPreview({ item, projectId, from='review', onClose, onResolved }: {
+  item: AutomationItem; projectId?: string; from?:'review'|'automation-review'; onClose: () => void; onResolved: () => void;
 }) {
   const [annotation, setAnnotation] = useState<Annotation>();
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [assetProjectId, setAssetProjectId] = useState<string>();
+  const [labels, setLabels] = useState<string[]>([]);
+  const [labelsLoading, setLabelsLoading] = useState(false), [labelsError, setLabelsError] = useState(''), [labelsRevision, setLabelsRevision] = useState(0);
   const [error, setError] = useState(''), [comment, setComment] = useState('');
   const [conflicted, setConflicted] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -40,9 +44,19 @@ export default function AutomationReviewPreview({ item, projectId, onClose, onRe
         .finally(() => { if (current) setLoading(false); });
     return () => { current = false; active.current = false; };
   }, [item.annotation_id, item.asset_id, item.annotation_version, projectId]);
+  useEffect(() => {
+    let current = true; setLabels([]); setLabelsError('');
+    if (!assetProjectId) { setLabelsLoading(false); return () => { current = false; }; }
+    setLabelsLoading(true);
+    getProject(assetProjectId).then(project => {
+      if (current) setLabels(Array.isArray(project.label_schema?.labels) ? project.label_schema.labels.filter((label): label is string => typeof label === 'string' && !!label.trim()) : []);
+    }).catch(() => { if (current) setLabelsError('项目类别读取失败，框颜色暂不可用。'); })
+      .finally(() => { if (current) setLabelsLoading(false); });
+    return () => { current = false; };
+  }, [assetProjectId, labelsRevision]);
   const rawBoxes = annotation?.annotation_data?.boxes ?? item.result?.boxes;
   const boxes: Box[] = Array.isArray(rawBoxes) ? rawBoxes : [];
-  const canApprove = !loading && !conflicted && !error && !!size.width && !!item.annotation_id && !!annotation && !!assetProjectId;
+  const canApprove = !loading && !labelsLoading && !labelsError && !conflicted && !error && !!size.width && !!item.annotation_id && !!annotation && !!assetProjectId;
   const resolve = async (approved: boolean) => {
     if (saving.current || loading || (approved && !canApprove)) return;
     saving.current = true; setBusy(true);
@@ -55,7 +69,7 @@ export default function AutomationReviewPreview({ item, projectId, onClose, onRe
       saving.current = false; if (active.current) setBusy(false);
     }
   };
-  const search = new URLSearchParams({ from: 'review', ...((assetProjectId || projectId) ? { project_id: assetProjectId || projectId } : {}) });
+  const search = new URLSearchParams({ from, ...((assetProjectId || projectId) ? { project_id: assetProjectId || projectId } : {}) });
   return <Modal open title="管理员审核预览" width={1000} styles={{ body: { maxHeight: '65dvh', overflowY: 'auto' } }} onCancel={() => { if (!saving.current) onClose(); }} closable={!busy} mask={{ closable: !busy }}
     footer={<Space wrap>
       <Button disabled={busy} onClick={onClose}>关闭预览</Button>
@@ -63,20 +77,29 @@ export default function AutomationReviewPreview({ item, projectId, onClose, onRe
       <Button aria-label="批准" type="primary" disabled={!canApprove || busy} loading={busy} onClick={() => { void resolve(true); }}>批准</Button>
     </Space>}>
     <Space orientation="vertical" style={{ width: '100%' }} size="middle">
+      {(item.project_name||item.asset_name)&&<Typography.Text strong>{item.project_name||'当前项目'} · {item.asset_name||'原图已移除'}</Typography.Text>}
       {error && <Alert type="error" showIcon title={error} />}
+      {labelsLoading && <Alert type="info" showIcon title="正在读取项目类别…" />}
+      {labelsError && <Alert type="error" showIcon title={labelsError} action={<Button size="small" disabled={busy} onClick={() => setLabelsRevision(value => value + 1)}>重试读取项目类别</Button>} />}
       {!item.annotation_id && <Alert type="warning" showIcon title="候选框尚未保存；可以驳回移出队列，或打开标注工作台修正类别并保存。" />}
       <Alert type="info" showIcon title="驳回仅移出旧候选，不修改新的人工标注" description="无标注、标注过期、原图删除或类别变动的旧候选均可驳回。批准仍须核对原图与当前标注版本。" />
       {loading && <Spin description="读取任务所引用的标注版本…"><div style={{ minHeight: 40 }} /></Spin>}
-      <Typography.Text>标注来源：{annotation?.annotation_source === 'manual' ? '人工（AI审核不修改人工框）' : annotation?.annotation_source || '尚无标注'}；版本：{annotation?.version ?? '—'}</Typography.Text>
+      <Typography.Text>标注来源：{annotation?.annotation_source === 'manual' ? '人工（AI审核不修改人工框）' : annotation?.annotation_source === 'reuse' ? '项目复用' : annotation?.annotation_source || '尚无标注'}；版本：{annotation?.version ?? '—'}</Typography.Text>
       <div style={{ position: 'relative', width: '100%', maxWidth: size.width || 640, lineHeight: 0 }}>
         <AssetImage assetId={item.asset_id} width="100%" alt="审核原图" preview={false}
           onLoad={event => { const image = event.target as HTMLImageElement; setSize({ width: image.naturalWidth, height: image.naturalHeight }); }} />
         {!!size.width && !!boxes.length && <svg aria-label="审核框预览" role="img" viewBox={`0 0 ${size.width} ${size.height}`}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-          {boxes.map((box, index) => <g key={index}>
-            <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#1677ff" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-            <text x={box.x} y={Math.max(16, box.y - 4)} fill="#0958d9" fontSize={Math.max(16, size.width / 48)}>{index + 1} · {box.label}</text>
-          </g>)}
+          {boxes.map((box, index) => {
+            const color = labelsLoading || labelsError ? '#aeb7c6' : labelColor(box.label, labels);
+            const fontSize = Math.max(16, size.width / 48);
+            return <g key={index}>
+              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#0b101b" strokeWidth={6} vectorEffect="non-scaling-stroke" />
+              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="white" strokeWidth={4} vectorEffect="non-scaling-stroke" />
+              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              <text x={box.x} y={Math.max(fontSize, box.y - 4)} fill="white" stroke="#0b101b" strokeWidth={Math.max(3, fontSize * .2)} paintOrder="stroke" strokeLinejoin="round" fontSize={fontSize}>{index + 1} · {box.label}</text>
+            </g>;
+          })}
         </svg>}
       </div>
       {!loading && !boxes.length && <Alert type="warning" showIcon title="零框不能自动认定为负样本，请管理员核对原图后决定。" />}

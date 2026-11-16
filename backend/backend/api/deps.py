@@ -2,7 +2,7 @@
 API通用依赖注入
 """
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,10 +16,30 @@ from schemas.user import TokenData
 # OAuth2认证
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
+# Exact route templates: new management endpoints stay administrator-only by default.
+ANNOTATION_ROUTES = {
+    'GET': {'/api/auth/me','/api/projects','/api/projects/{project_id}',
+        '/api/projects/{project_id}/stats','/api/projects/{project_id}/annotation-models',
+        '/api/projects/{project_id}/attributes','/api/projects/{project_id}/attribute-options','/api/projects/{project_id}/crop-labels',
+        '/api/assets','/api/assets/selection','/api/assets/collections','/api/assets/{asset_id}',
+        '/api/assets/{asset_id}/content','/api/assets/{asset_id}/neighbors','/api/assets/{asset_id}/source','/api/assets/{asset_id}/source/content',
+        '/api/annotations','/api/annotations/{annotation_id}','/api/annotations/assets/{asset_id}/events',
+        '/api/annotations/assets/{asset_id}/analysis-models',
+        '/api/projects/{project_id}/matches','/api/projects/{project_id}/matches/smart-search/platforms',
+        '/api/projects/{project_id}/matches/{query_id}/source/{asset_id}',
+        '/api/images','/api/images/{image_id}/content'},
+    'POST': {'/api/annotations','/api/annotations/{annotation_id}/review','/api/annotations/assets/{asset_id}/analyze',
+        '/api/batch/annotations/approve','/api/batch/annotations/reject','/api/analytics/activity',
+        '/api/projects/{project_id}/matches/search','/api/projects/{project_id}/matches/smart-search',
+        '/api/projects/{project_id}/matches/{query_id}/review'},
+    'PUT': {'/api/annotations/{annotation_id}','/api/projects/{project_id}/matches/{query_id}'},
+}
+
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    request: Request = None
 ) -> User:
     """
     获取当前登录用户
@@ -63,6 +83,12 @@ async def get_current_user(
             detail="用户已被禁用"
         )
 
+    if request is not None:
+        route=request.scope.get('route')
+        if user.role!='admin' and getattr(route,'path',None) not in ANNOTATION_ROUTES.get(request.method,set()):
+            raise HTTPException(status_code=403,detail='普通用户仅可操作已分配项目的人工标注和审核')
+        # The database dependency creates a fresh session for each request; never cache identity globally.
+        db.info['current_user']={'id':user.id,'tenant_id':user.tenant_id,'role':user.role}
     return user
 
 

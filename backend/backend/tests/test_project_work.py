@@ -1,6 +1,7 @@
 from io import BytesIO
 from types import SimpleNamespace
 from uuid import UUID,uuid4
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -10,6 +11,144 @@ import pytest_asyncio
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
+
+
+@pytest.mark.parametrize('value',[0,129])
+def test_worker_concurrency_setting_bounds(value):
+    from config.settings import Settings
+    from pydantic import ValidationError
+    assert Settings.model_fields['PROJECT_WORK_CONCURRENCY'].default==4
+    with pytest.raises(ValidationError):Settings(PROJECT_WORK_CONCURRENCY=value)
+
+
+@pytest.mark.parametrize('value',[16,32,64,128])
+def test_worker_concurrency_accepts_benchmark_levels(value):
+    from config.settings import Settings
+    assert Settings(PROJECT_WORK_CONCURRENCY=value).PROJECT_WORK_CONCURRENCY==value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit',[1,4,16,64,128])
+async def test_worker_bounded_parallelism_and_cancellation(monkeypatch,limit):
+    from services import project_work as service
+    client_factory=httpx.AsyncClient
+    monkeypatch.setattr(service.httpx,'AsyncClient',lambda **kwargs:client_factory(transport=httpx.MockTransport(lambda request:httpx.Response(200)),**kwargs))
+    monkeypatch.setattr(service,'settings',SimpleNamespace(PROJECT_WORK_CONCURRENCY=limit),raising=False)
+    reached=asyncio.Event();blocked=asyncio.Event();active=0;clients=set()
+    async def process(sessions,client):
+        nonlocal active
+        active+=1;clients.add(id(client))
+        if active==limit:reached.set()
+        try:await blocked.wait()
+        finally:active-=1
+        return True
+    monkeypatch.setattr(service,'process_one',process)
+    task=asyncio.create_task(service.run_worker(None))
+    try:
+        await asyncio.wait_for(reached.wait(),3)
+        assert active==limit and len(clients)==1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
+    assert active==0
+
+
+@pytest.mark.asyncio
+async def test_high_concurrency_has_enough_http_connections(monkeypatch):
+    from services import project_work as service
+    limit=128;reached=asyncio.Event();release=asyncio.Event();handlers=set();active=0
+    async def respond(reader,writer):
+        nonlocal active
+        handlers.add(asyncio.current_task())
+        try:
+            await reader.readuntil(b'\r\n\r\n');active+=1
+            if active==limit:reached.set()
+            await release.wait()
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');await writer.drain()
+        except ConnectionError:pass
+        finally:
+            active-=1;writer.close()
+            try:await writer.wait_closed()
+            except ConnectionError:pass
+    server=await asyncio.start_server(respond,'127.0.0.1',0,backlog=256)
+    url='http://127.0.0.1:'+str(server.sockets[0].getsockname()[1])
+    monkeypatch.setattr(service,'settings',SimpleNamespace(PROJECT_WORK_CONCURRENCY=limit),raising=False)
+    async def process(sessions,client):
+        response=await client.get(url);assert response.status_code==200;return True
+    monkeypatch.setattr(service,'process_one',process)
+    task=asyncio.create_task(service.run_worker(None))
+    try:
+        await asyncio.wait_for(reached.wait(),3);assert active==limit
+    finally:
+        task.cancel();release.set();server.close();await server.wait_closed()
+        with pytest.raises(asyncio.CancelledError):await task
+        await asyncio.gather(*handlers,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_fresh_connections_between_batches(monkeypatch):
+    from services import project_work as service
+    done=asyncio.Event();blocked=asyncio.Event();peers=[];handlers=set();writers=set();calls=0
+    async def respond(reader,writer):
+        handlers.add(asyncio.current_task());writers.add(writer)
+        try:
+            while await reader.readuntil(b'\r\n\r\n'):
+                peers.append(writer.get_extra_info('peername'))
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n');await writer.drain()
+        except (ConnectionError,asyncio.IncompleteReadError):pass
+        finally:writer.close()
+    server=await asyncio.start_server(respond,'127.0.0.1',0)
+    url='http://127.0.0.1:'+str(server.sockets[0].getsockname()[1])
+    monkeypatch.setattr(service,'settings',SimpleNamespace(PROJECT_WORK_CONCURRENCY=2),raising=False)
+    async def process(sessions,client):
+        nonlocal calls
+        if calls>=4:await blocked.wait()
+        response=await client.get(url);assert response.status_code==200
+        calls+=1
+        if calls==4:done.set()
+        return True
+    monkeypatch.setattr(service,'process_one',process)
+    task=asyncio.create_task(service.run_worker(None))
+    try:
+        await asyncio.wait_for(done.wait(),3)
+        assert len(peers)==len(set(peers))==4
+    finally:
+        task.cancel();server.close();await server.wait_closed()
+        with pytest.raises(asyncio.CancelledError):await task
+        for writer in writers:writer.close()
+        await asyncio.gather(*handlers,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_recovers_only_after_other_requests_finish(monkeypatch):
+    from services import project_work as service
+    client_factory=httpx.AsyncClient
+    monkeypatch.setattr(service.httpx,'AsyncClient',lambda **kwargs:client_factory(transport=httpx.MockTransport(lambda request:httpx.Response(200)),**kwargs))
+    monkeypatch.setattr(service,'settings',SimpleNamespace(PROJECT_WORK_CONCURRENCY=4),raising=False)
+    started=asyncio.Event();release=asyncio.Event();recovered=asyncio.Event();active=0;calls=0
+    async def process(sessions,client):
+        nonlocal active,calls
+        calls+=1
+        if calls==1:
+            await started.wait()
+            raise RuntimeError('isolated worker error')
+        if calls>4:return False
+        active+=1
+        if active==3:started.set()
+        try:await release.wait()
+        finally:active-=1
+        return True
+    async def recover(sessions):
+        assert active==0,'Recovery must not fail other requests that are still running'
+        recovered.set()
+    monkeypatch.setattr(service,'process_one',process);monkeypatch.setattr(service,'recover_running',recover)
+    task=asyncio.create_task(service.run_worker(None))
+    try:
+        await asyncio.wait_for(started.wait(),1);assert not recovered.is_set()
+        release.set();await asyncio.wait_for(recovered.wait(),1)
+    finally:
+        release.set();task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
 
 
 def test_project_work_contract_exists():
@@ -46,6 +185,44 @@ async def work_env(test_engine, test_db, test_project, test_asset, test_user, tm
     yield SimpleNamespace(db=test_db,project=test_project,asset=test_asset,user=test_user,models=models,
         sessions=async_sessionmaker(test_engine,expire_on_commit=False))
     reset_storage()
+
+
+@pytest.mark.asyncio
+async def test_delete_terminal_queue_job_preserves_crop_results(client,auth_headers,work_env):
+    from models import Asset, ProjectWorkItem, ProjectWorkJob
+    s=work_env
+    path=f'/api/projects/{s.project.id}/work/jobs'
+    created=client.post(path,headers=auth_headers,json={'operation':'crop','model_id':str(s.models[0].id),
+        'asset_ids':[str(s.asset.id)],'follow_uploads':True})
+    assert created.status_code==201,created.text
+    job_id=UUID(created.json()['id'])
+    url=f'{path}/{job_id}'
+    assert client.delete(url,headers=auth_headers).status_code==409
+    assert client.put(url+'/follow-uploads',headers=auth_headers,json={'enabled':False}).status_code==200
+    assert client.delete(url,headers=auth_headers).status_code==409
+    assert client.put(url+'/follow-uploads',headers=auth_headers,json={'enabled':True}).status_code==200
+    crop=Asset(project_id=s.project.id,original_name='derived.png',blob_path=s.asset.blob_path,
+        content_hash='test-queue-delete-crop',source_type='model_crop',file_size=1)
+    async with s.sessions() as db:
+        db.add(crop)
+        await db.flush()
+        item=await db.scalar(select(ProjectWorkItem).where(ProjectWorkItem.job_id==job_id))
+        item.status='completed'
+        item.result={'asset_ids':[str(crop.id)]}
+        item_id,crop_id=item.id,crop.id
+        await db.commit()
+    assert client.delete(url,headers=auth_headers).status_code==409
+    assert client.put(url+'/follow-uploads',headers=auth_headers,json={'enabled':False}).status_code==200
+    assert client.delete(url,headers=auth_headers).status_code==204
+    assert client.get(path,headers=auth_headers).json()==[]
+    assert client.get(url,headers=auth_headers).status_code==404
+    assert client.post(url+'/retry',headers=auth_headers).status_code==404
+    async with s.sessions() as db:
+        assert await db.get(ProjectWorkJob,job_id)
+        assert (await db.get(ProjectWorkItem,item_id)).result['asset_ids']==[str(crop_id)]
+        assert await db.get(Asset,crop_id)
+    response=client.get('/api/assets',headers=auth_headers,params={'project_id':str(s.project.id),'crop_job_id':str(job_id)})
+    assert response.status_code==200 and response.json()['items'][0]['id']==str(crop_id)
 
 
 @pytest.mark.asyncio
@@ -94,12 +271,37 @@ async def test_full_frame_crop_still_creates_project_private_derivative(work_env
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('operation,scope,legacy_flag',[
+    ('crop','all',True), ('crop','crops',False), ('detect_attributes','all',True),
+])
+async def test_cut_jobs_preserve_project_annotation_scope(work_env,operation,scope,legacy_flag):
+    from models import Project
+    from schemas.project_work import WorkCreate
+    from services.project_work import create_job
+    s=work_env
+    schema={'annotation_scope':scope}
+    options={}
+    if operation=='detect_attributes':
+        s.project.task_type='caption'
+        schema['object_attributes']={'target_label':'person','fields':[{'key':'color','name':'颜色'}]}
+        options['attribute_model_id']=s.models[1].id
+    s.project.label_schema=schema
+    await s.db.commit()
+    await create_job(s.db,s.project,WorkCreate(operation=operation,model_id=s.models[0].id,
+        asset_ids=[s.asset.id],crops_only=legacy_flag,**options),s.user.id)
+    async with s.sessions() as db:
+        assert (await db.get(Project,s.project.id)).label_schema==schema
+
+
+@pytest.mark.asyncio
 async def test_no_detection_leaves_crop_only_queue_empty(work_env):
     from services import project_work as service
     from services.annotation_scope import eligible_assets
     from schemas.project_work import WorkCreate
     from models import Asset,Project
     s=work_env
+    s.project.label_schema={'annotation_scope':'crops'}
+    await s.db.commit()
     await service.create_job(s.db,s.project,WorkCreate(operation='crop',model_id=s.models[0].id,asset_ids=[s.asset.id]),s.user.id)
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'detections':[]}))) as client:
         await service.process_one(s.sessions,client)

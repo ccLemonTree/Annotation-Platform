@@ -13,7 +13,8 @@ class ModelOutputCreate(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     format:Literal['onnx','tensorrt','merge']
     server_id:str=Field(default='default',max_length=36)
-    gpu_uuid:str=Field(pattern=r'^GPU-[A-Za-z0-9-]{1,80}$')
+    onnx_server_id:str=Field(default='',max_length=36)
+    gpu_uuid:str=Field(default='',pattern=r'^GPU-[A-Za-z0-9-]{1,80}$|^$')
     source_gpu_uuid:str=Field(default='',pattern=r'^GPU-[A-Za-z0-9-]{1,80}$|^$')
     onnx_image:str=Field(default='',max_length=500,pattern=r'^[A-Za-z0-9][A-Za-z0-9./_:@-]*$|^$')
     source_path:str=Field(min_length=2,max_length=500)
@@ -48,6 +49,8 @@ class ModelOutputCreate(BaseModel):
     @model_validator(mode='after')
     def valid(self):
         if self.server_id!='default':UUID(self.server_id)
+        if self.onnx_server_id not in ('','default'):UUID(self.onnx_server_id)
+        if self.format!='onnx' and not self.gpu_uuid:raise ValueError('TensorRT构建和LoRA合并须选择GPU')
         if self.dynamic_batch and not self.min_batch<=self.opt_batch<=self.max_batch:
             raise ValueError('动态batch须满足 min ≤ opt ≤ max')
         if self.format=='merge' and self.dynamic_batch:raise ValueError('LoRA合并不使用动态batch')

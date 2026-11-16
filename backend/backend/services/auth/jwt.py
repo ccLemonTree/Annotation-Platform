@@ -11,7 +11,6 @@ from config.settings import settings
 # JWT配置
 JWT_SECRET_KEY = settings.JWT_SECRET_KEY
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION = settings.JWT_EXPIRATION
 
 
 # 密码加密上下文
@@ -41,12 +40,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """
     to_encode = data.copy()
 
+    now = datetime.utcnow()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(seconds=JWT_EXPIRATION)
+        expire = now + timedelta(seconds=settings.JWT_EXPIRATION)
 
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    to_encode.update({"exp": expire, "iat": now})
 
     encoded_jwt = jwt.encode(
         to_encode,

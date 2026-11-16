@@ -18,7 +18,8 @@ async def deployment_tables(test_engine):
         await conn.run_sync(lambda c:TrainingRun.__table__.create(c,checkfirst=True))
         await conn.run_sync(lambda c:TrainingGpuHold.__table__.create(c,checkfirst=True))
         from models.model_deployment import ModelRelease,DeploymentTarget,DeploymentLease
-        for table in (ModelRelease.__table__,DeploymentTarget.__table__,DeploymentLease.__table__):
+        from models.model_repository import ModelRepositoryItem
+        for table in (ModelRepositoryItem.__table__,ModelRelease.__table__,DeploymentTarget.__table__,DeploymentLease.__table__):
             await conn.run_sync(lambda c:table.create(c,checkfirst=True))
         await conn.run_sync(lambda c:ModelDeployment.__table__.create(c,checkfirst=True))
 

@@ -54,7 +54,7 @@ async def test_prompt_permissions_and_tenant_scope(client, auth_headers, test_db
     created = client.post('/api/model-services', headers=auth_headers, json=config()).json()
     test_user.role = 'annotator'
     await test_db.commit()
-    assert client.get('/api/model-services/prompt-defaults', headers=auth_headers).status_code == 200
+    assert client.get('/api/model-services/prompt-defaults', headers=auth_headers).status_code == 403
     assert client.put('/api/model-services/' + created['id'], headers=auth_headers,
                       json=config(chat_prompts={'caption': '更改描述'})).status_code == 403
     test_user.role = 'admin'; test_user.tenant_id = 2

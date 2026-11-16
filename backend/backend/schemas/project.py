@@ -1,7 +1,7 @@
 """
 项目相关的数据模型
 """
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, StrictInt
 from typing import Optional
 from datetime import datetime
 from uuid import UUID
@@ -9,6 +9,9 @@ from models.project import TaskType, ProjectStatus
 
 
 def validate_label_schema(value):
+    if value and 'object_attributes' in value:
+        from schemas.object_attributes import AttributeSchema
+        value={**value,'object_attributes':AttributeSchema.model_validate(value['object_attributes']).model_dump()}
     if value and value.get('annotation_scope','all') not in ('all','crops'):
         raise ValueError('标注范围必须为all或crops')
     if value and value.get('classification_mode', 'single') not in ('single', 'multi'):
@@ -27,7 +30,7 @@ def validate_label_schema(value):
 class ProjectBase(BaseModel):
     """项目基础模型"""
     project_name: str = Field(..., min_length=1, max_length=200, description="项目名称")
-    task_type: TaskType = Field(..., description="任务类型")
+    task_type: TaskType = Field(TaskType.DETECTION, description="旧项目的默认标注工作台")
     description: Optional[str] = Field(None, description="项目描述")
     label_schema: Optional[dict] = None
     _labels = field_validator('label_schema')(validate_label_schema)
@@ -38,9 +41,39 @@ class ProjectCreate(ProjectBase):
     pass
 
 
+class ProjectAssignments(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    user_ids:list[StrictInt]=Field(max_length=10000)
+
+
+class ProjectLabelsAdd(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
+    labels:list[str]=Field(min_length=1,max_length=100)
+
+    @field_validator('labels')
+    @classmethod
+    def label_names(cls, values):
+        if any(not value.strip() or len(value.strip())>100 for value in values):
+            raise ValueError('类别名称须为1至100字符')
+        return list(dict.fromkeys(value.strip() for value in values))
+
+
+class YoloClassMapping(ProjectLabelsAdd):
+    batch_id: UUID | None
+    labels:list[str]=Field(min_length=1,max_length=100)
+
+    @field_validator('labels')
+    @classmethod
+    def label_names(cls, values):
+        if any(not value.strip() or len(value.strip())>100 for value in values):
+            raise ValueError('类别名称须为1至100字符')
+        return [value.strip() for value in values]
+
+
 class ProjectUpdate(BaseModel):
     """更新项目请求"""
     project_name: Optional[str] = Field(None, min_length=1, max_length=200)
+    task_type: Optional[TaskType] = None
     description: Optional[str] = None
     status: Optional[ProjectStatus] = None
     label_schema: Optional[dict] = None

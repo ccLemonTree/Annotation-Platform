@@ -6,6 +6,7 @@ import { getModelServices, type ModelService } from '../api/modelServices';
 import { createSemanticJob, getSemanticJob, getSemanticJobs, searchSemantics, semanticJobAction,
   type SemanticDetail, type SemanticJob, type SemanticResults, type SemanticStatus } from '../api/imageSemantics';
 import AssetImage from '../components/AssetImage';
+import PromptEditor from '../components/PromptEditor';
 
 const statusText: Record<SemanticStatus, string> = { pending: '等待中', running: '生成中', completed: '完成', failed: '失败', cancelled: '已取消' };
 function errorText(error: unknown) {
@@ -30,13 +31,14 @@ export default function ImageSemanticsPage() {
   const imageLoading = imageData?.key !== imageKey;
   const images = imageLoading ? [] : imageData!.items, imageTotal = imageLoading ? 0 : imageData!.total;
   const detail = jobDetail?.id === jobId && jobDetail?.page === itemPage ? jobDetail : undefined;
+  const captionService = models.find(model => model.id === captionModel);
   const invalidateSearch = () => { searchRequest.current++; searchController.current?.abort(); setResults(undefined); setSearching(false); };
 
   useEffect(() => {
     mounted.current = true;
     let active = true;
     Promise.all([getImageCollections(), getModelServices({ enabled: true })]).then(([groups, services]) => {
-      if (active) { setCollections(groups); setModels(services); }
+      if (active) { setCollections(groups); setModels(services.filter(model=>model.protocol!=='jev_decide')); }
     }).catch(error => { if (active) setError(errorText(error)); });
     const abortSearch = () => { searchRequest.current++; searchController.current?.abort(); };
     return () => { active = false; mounted.current = false; abortSearch(); };
@@ -117,7 +119,8 @@ export default function ImageSemanticsPage() {
           onChange={value => { invalidateSearch(); setEmbeddingModel(value); }} disabled={working} />
       </Space>
       <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>模型来自模型管理；至少选择一种模型后生成。更改模型配置后需新建批次，旧版本索引不会混入检索。取消不会删除原图或已完成结果。</Typography.Paragraph>
-      <Input.TextArea aria-label="本批描述提示词" placeholder="本批描述提示词（可选）：留空使用模型管理中的描述核心提示词，填写后覆盖本批描述指令。" value={captionPrompt} onChange={event => setCaptionPrompt(event.target.value)} maxLength={2000} showCount autoSize={{ minRows: 2, maxRows: 8 }} disabled={working || !captionModel} style={{ marginBottom: 20 }} />
+      {captionService?.protocol==='model_service'?<Typography.Text type="secondary">所选服务内部提供固定提示词。</Typography.Text>:
+        <PromptEditor key={captionModel??'none'} title="本批描述提示词" buttonLabel="编辑提示词" ariaLabel="本批描述提示词" help="本批描述提示词（可选）：留空使用模型管理中的描述核心提示词，填写后覆盖本批描述指令。" defaultValue={captionService?.chat_prompts?.caption} value={captionPrompt} onChange={setCaptionPrompt} maxLength={2000} disabled={working || !captionModel} />}
       <Space wrap style={{ marginBottom: 12 }}>
         <Button type="primary" loading={working} disabled={working || !selected.length || (!captionModel && !embeddingModel)} onClick={() => create()}>生成所选 {selected.length} 张</Button>
         <Button disabled={working || !collection || (!captionModel && !embeddingModel)} onClick={() => create(true)}>生成当前图片集</Button>

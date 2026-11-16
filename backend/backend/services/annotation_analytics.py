@@ -1,10 +1,10 @@
 """Workflow quality and observed human effort, never inferred annotation accuracy."""
 from collections import Counter, defaultdict
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, cast, String, func, true
 from sqlalchemy.exc import IntegrityError
 
 from models import Annotation, AnnotationEvent, Asset, Project, User
@@ -67,12 +67,24 @@ def seconds(intervals):
 
 
 def during(timestamp, intervals):
-    return any(start <= timestamp < end for start, end in intervals)
+    position=bisect_right(intervals,timestamp,key=lambda interval:interval[0])-1
+    return position>=0 and timestamp<intervals[position][1]
 
 
 def automatic_review(annotation):
     comment = annotation.review_comment or ''
     return annotation.reviewer_id is None and (comment.startswith('AI审核通过：') or '自动审核' in comment)
+
+
+def count_rework(updates, rejects):
+    earliest={}
+    for event in rejects:
+        version=(event.detail or {}).get('version')
+        if version is not None:
+            key=(event.asset_id,version)
+            earliest[key]=min(earliest.get(key,event.created_at),event.created_at)
+    return sum((event.asset_id,(event.detail or {}).get('previous_version')) in earliest and
+        earliest[(event.asset_id,(event.detail or {}).get('previous_version'))]<=event.created_at for event in updates)
 
 
 async def annotation_analytics(db, user, project_id, window):
@@ -86,19 +98,26 @@ async def annotation_analytics(db, user, project_id, window):
         return ([column >= window.start] if window.start else []) + ([column < window.end] if window.end else [])
 
     # shortcut: aggregate scoped evidence in Python; move distributions into SQL when project volume requires it.
-    annotations = (await db.scalars(select(Annotation).join(Asset).join(Project).where(
-        *scope, Annotation.is_latest.is_(True), *dated(Annotation.created_at)))).all()
+    annotation_query = select(Annotation).join(Project,Annotation.project_id==Project.id).where(*scope)
+    if project_id:
+        annotation_query=annotation_query.where(Annotation.project_id==project_id)
+    latest_query = annotation_query.where((Annotation.is_latest == true()), *dated(Annotation.created_at))
+    annotations = (await db.scalars(latest_query)).all()
     status = Counter(a.review_status or 'pending' for a in annotations)
-    sources = Counter(a.annotation_source if a.annotation_source in ('manual', 'model') else 'unknown' for a in annotations)
+    sources = Counter(a.annotation_source if a.annotation_source in ('manual', 'model', 'reuse') else 'unknown' for a in annotations)
     categories, category_assets = Counter(), Counter()
     negative = 0
     review_origins = Counter()
-    reviewed_ids = [str(a.id) for a in annotations if a.review_status in ('approved', 'rejected')]
+    # UUIDs are stored without hyphens by the isolated SQLite fixtures.
+    annotation_id = func.replace(cast(Annotation.id, String), '-', '')
+    event_annotation_id = func.replace(AnnotationEvent.detail['annotation_id'].as_string(), '-', '')
+    reviewed_ids = latest_query.with_only_columns(annotation_id).where(
+        Annotation.review_status.in_(['approved', 'rejected'])).correlate(None)
     review_sources = {}
-    if reviewed_ids:
+    if annotations:
         review_events = (await db.scalars(select(AnnotationEvent).join(Project, Project.id == AnnotationEvent.project_id)
             .where(*scope, AnnotationEvent.action.in_(['approve', 'reject']),
-                   AnnotationEvent.detail['annotation_id'].as_string().in_(reviewed_ids))
+                   event_annotation_id.in_(reviewed_ids))
             .order_by(AnnotationEvent.created_at.desc(), AnnotationEvent.id.desc()))).all()
         for event in review_events:
             detail = event.detail or {}
@@ -121,31 +140,33 @@ async def annotation_analytics(db, user, project_id, window):
             review_origins[origin] += 1
     reviewed = status['approved'] + status['rejected']
     quality = dict(total=len(annotations), approved=status['approved'], rejected=status['rejected'], pending=status['pending'],
-        negative_samples=negative, sources={key: sources[key] for key in ('manual', 'model', 'unknown')},
+        negative_samples=negative, sources={**{key: sources[key] for key in ('manual', 'model', 'unknown')},
+            **({'reuse': sources['reuse']} if sources['reuse'] else {})},
         review_origins={key: review_origins[key] for key in ('human', 'automatic', 'unknown')},
         process_pass_rate=status['approved']/reviewed if reviewed else None,
         categories=[dict(label=label, boxes=count, assets=category_assets[label]) for label, count in sorted(categories.items())])
 
-    events = (await db.scalars(select(AnnotationEvent).join(Project, Project.id == AnnotationEvent.project_id)
-        .where(*scope, *dated(AnnotationEvent.created_at)).order_by(AnnotationEvent.created_at, AnnotationEvent.id))).all()
-    annotation_ids = set()
-    for event in events:
-        try:
-            annotation_ids.add(UUID(str((event.detail or {}).get('annotation_id'))))
-        except (ValueError, TypeError):
-            pass
-    event_annotations = (await db.scalars(select(Annotation).join(Asset).join(Project)
-        .where(*scope, Annotation.id.in_(annotation_ids)))).all() if annotation_ids else []
+    event_query = select(AnnotationEvent).join(Project, Project.id == AnnotationEvent.project_id).where(
+        *scope, *dated(AnnotationEvent.created_at))
+    events = (await db.scalars(event_query.order_by(AnnotationEvent.created_at, AnnotationEvent.id))).all()
+    event_source=AnnotationEvent.detail['source'].as_string()
+    event_ids = event_query.with_only_columns(event_annotation_id).where(
+        event_source.is_(None)|event_source.not_in(['manual','ai','model','reuse'])).correlate(None)
+    event_annotations = (await db.execute(annotation_query.with_only_columns(
+        Annotation.id,Annotation.annotation_source,Annotation.reviewer_id,Annotation.review_comment)
+        .where(annotation_id.in_(event_ids)))).all() if events else []
     by_id = {str(a.id): a for a in event_annotations}
     workload = dict(human_annotation_events=0, automatic_annotation_events=0, human_review_events=0,
                     automatic_review_events=0, rework_events=0, unknown_events=0)
     human_events = []
     for event in events:
-        if event.action not in ('create', 'update', 'approve', 'reject'):
+        if event.action not in ('create', 'update', 'approve', 'reject', 'match_judgment', 'match_review'):
             continue
         detail = event.detail or {}
+        if detail.get('source') == 'reuse':
+            continue
         annotation = by_id.get(str(detail.get('annotation_id')))
-        activity = 'annotation' if event.action in ('create', 'update') else 'review'
+        activity = 'annotation' if event.action in ('create', 'update', 'match_judgment') else 'review'
         automatic = detail.get('source') in ('ai', 'model')
         if annotation is not None and detail.get('source') not in ('manual', 'ai', 'model'):
             automatic |= (annotation.annotation_source == 'model' if activity == 'annotation' else automatic_review(annotation))
@@ -156,21 +177,25 @@ async def annotation_analytics(db, user, project_id, window):
             human_events.append((event, activity))
         else:
             workload['unknown_events'] += 1
+    for activity in ('annotation', 'review'):
+        workload[f'human_{activity}_images'] = len({e.asset_id for e, kind in human_events
+            if kind == activity and e.asset_id is not None})
     update_events = [e for e, activity in human_events if activity == 'annotation' and e.action == 'update']
     if update_events:
+        update_assets = event_query.with_only_columns(AnnotationEvent.asset_id).where(
+            AnnotationEvent.action == 'update').correlate(None)
         rejects = (await db.scalars(select(AnnotationEvent).join(Project, Project.id == AnnotationEvent.project_id)
-            .where(*scope, AnnotationEvent.action == 'reject', AnnotationEvent.asset_id.in_({e.asset_id for e in update_events})))).all()
-        workload['rework_events'] = sum(any(r.asset_id == e.asset_id and r.created_at <= e.created_at
-            and (r.detail or {}).get('version') == (e.detail or {}).get('previous_version')
-            and (r.detail or {}).get('version') is not None for r in rejects) for e in update_events)
+            .where(*scope, AnnotationEvent.action == 'reject', AnnotationEvent.asset_id.in_(update_assets)))).all()
+        workload['rework_events'] = count_rework(update_events,rejects)
 
     interval_scope = []
     if window.start:
         interval_scope.append(WorkActivityInterval.ended_at > window.start)
     if window.end:
         interval_scope.append(WorkActivityInterval.started_at < window.end)
-    intervals = (await db.scalars(select(WorkActivityInterval).join(Project, Project.id == WorkActivityInterval.project_id)
-        .where(*scope, *interval_scope))).all()
+    interval_query = select(WorkActivityInterval).join(Project, Project.id == WorkActivityInterval.project_id).where(
+        *scope, *interval_scope)
+    intervals = (await db.scalars(interval_query)).all()
     grouped = defaultdict(list)
     for interval in intervals:
         start = max(interval.started_at, window.start) if window.start else interval.started_at
@@ -178,7 +203,10 @@ async def annotation_analytics(db, user, project_id, window):
         grouped[(interval.user_id, interval.activity)].append((start, end))
     grouped = {key: union_intervals(values) for key, values in grouped.items()}
     user_ids = {key[0] for key in grouped} | {e.user_id for e, _ in human_events}
-    names = dict((await db.execute(select(User.id, User.username).where(User.tenant_id == user.tenant_id, User.id.in_(user_ids)))).all())
+    observed_users = event_query.with_only_columns(AnnotationEvent.user_id).correlate(None).union(
+        interval_query.with_only_columns(WorkActivityInterval.user_id).correlate(None))
+    names = dict((await db.execute(select(User.id, User.username).where(
+        User.tenant_id == user.tenant_id, User.id.in_(observed_users)))).all())
     rows = []
     for user_id in sorted(user_ids):
         annotation_intervals, review_intervals = grouped.get((user_id, 'annotation'), []), grouped.get((user_id, 'review'), [])
@@ -187,8 +215,11 @@ async def annotation_analytics(db, user, project_id, window):
         for activity, activity_intervals in [('annotation', annotation_intervals), ('review', review_intervals)]:
             duration = seconds(activity_intervals)
             count = sum(e.user_id == user_id and kind == activity for e, kind in human_events)
+            images = len({e.asset_id for e, kind in human_events
+                if e.user_id == user_id and kind == activity and e.asset_id is not None})
             timed = sum(e.user_id == user_id and kind == activity and during(e.created_at, activity_intervals) for e, kind in human_events)
             row.update({f'{activity}_seconds': duration if activity_intervals else None, f'{activity}_events': count,
+                f'{activity}_images': images,
                 f'timed_{activity}_events': timed, f'{activity}_per_hour': timed*3600/duration if duration else None})
         rows.append(row)
     efficiency = dict(timing_status='collected' if intervals else 'not_collected', users=rows,
@@ -201,6 +232,6 @@ async def annotation_analytics(db, user, project_id, window):
                            f'{activity}_per_hour': count*3600/duration if duration else None})
     return dict(quality=quality, workload=workload, efficiency=efficiency, definitions=dict(
         quality='最新版本按创建时间入选，展示当前流程状态；流程通过率=通过/(通过+拒绝)，不等于独立测试集准确率。不是历史时点快照。',
-        workload='事件按发生时间计数（次，非去重图片数）；自动生成/自动审核单列；返工为驳回版本后的人工修改事件。',
+        workload='事件按发生时间计数（次），包含人工匹配判定/审核；人工图片张数按窗口内发生人工事件的图片去重，每用户分标注/审核去重，总量跨用户去重，不能按用户相加；无图片ID的事件不计张数。自动生成/自动审核单列；复用操作不计人工或自动工作量；返工为驳回版本后的人工修改事件。',
         timing='UTC半开区间[start,end)；每用户跨标签页、跨模式取时间并集，总时长为人秒；分模式并集不能相加。',
         efficiency='每小时工作量仅使用落在同用户同模式活跃区间的人工事件；未计时操作不进入分子。旧数据时长未采集，不按created_at差值估算。'))

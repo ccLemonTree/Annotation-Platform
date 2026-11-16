@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE: int = Field(default=10 * 1024 * 1024, ge=1)
     MAX_ARCHIVE_UPLOAD_SIZE: int = Field(default=10 * 1024**3, ge=1)
     MAX_ARCHIVE_EXPANDED_SIZE: int = Field(default=20 * 1024**3, ge=1)
-    MAX_ARCHIVE_FILES: int = Field(default=50000, ge=1)
+    MAX_IMAGE_ARCHIVE_UPLOAD_SIZE: int = Field(default=100 * 1024**3, ge=1)
+    MAX_IMAGE_ARCHIVE_EXPANDED_SIZE: int = Field(default=100 * 1024**3, ge=1)
+    MAX_ARCHIVE_FILES: int = Field(default=200000, ge=1)
     UPLOAD_RETENTION_DAYS: int = Field(default=7, ge=1)
 
     # EOS配置
@@ -56,6 +58,7 @@ class Settings(BaseSettings):
     QWEN_API_URL: str = "http://localhost:8000/v1"
     QWEN_API_KEY: str = ""
     SCENE_CLASSIFICATION_CONCURRENCY: int = Field(default=4, ge=1, le=16)
+    PROJECT_WORK_CONCURRENCY: int = Field(default=4, ge=1, le=128)
     AUTOMATION_CONCURRENCY: int = Field(default=2, ge=1, le=4)
 
     EMBEDDING_API_URL: str = "http://localhost:8001/v1"
@@ -81,7 +84,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "图像标注数据管理平台"
     VERSION: str = "1.0.0"
     JWT_SECRET_KEY: str = Field(min_length=32, repr=False)
-    JWT_EXPIRATION: int = Field(default=3600, ge=1)
+    JWT_EXPIRATION: int = Field(default=86400, ge=1)
     DEFAULT_TENANT_ID: int = Field(default=1, ge=1)
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"

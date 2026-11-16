@@ -12,11 +12,11 @@ from PIL import Image
 import imagehash
 from fastapi import HTTPException
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import select
+from sqlalchemy import select, true
 from models import Asset, Annotation
 from services.annotations import detection_boxes
 from services.storage import get_storage
-from services.dataset_splits import SplitPolicy, split_report
+from services.dataset_splits import SplitPolicy, split_report, source_groups
 from services.annotation_scope import eligible_assets
 
 
@@ -28,7 +28,7 @@ def split_failure_reason(report, rows):
 
 
 def simple_split(rows, labels, mode, ratios, budgets, groups=None):
-    if mode not in ('ratio', 'train_only', 'val_only'):
+    if mode not in ('ratio', 'none', 'train_only', 'val_only'):
         raise HTTPException(400, '划分模式无效')
     if mode == 'ratio' and (not isinstance(ratios, dict) or set(ratios) != {'train', 'val', 'test'} or
             any(type(value) is not int or value < 0 or value > 100 for value in ratios.values()) or sum(ratios.values()) != 100):
@@ -38,7 +38,9 @@ def simple_split(rows, labels, mode, ratios, budgets, groups=None):
         raise HTTPException(400, '每类图片预算无效')
     ordered = sorted(rows, key=lambda row: sha256(str(row[0].id).encode()).hexdigest())
     splits, train_counts = {}, Counter()
-    if groups is None:
+    if mode=='none':
+        splits={str(asset.id):'all' for asset,_ in ordered}
+    elif groups is None:
         target_train = len(rows) if mode == 'train_only' else 0 if mode == 'val_only' else round(len(rows) * ratios['train'] / 100)
         for asset, annotation in ordered:
             key = str(asset.id)
@@ -51,11 +53,12 @@ def simple_split(rows, labels, mode, ratios, budgets, groups=None):
         if mode == 'val_only':
             splits.update({str(asset.id): 'val' for asset, _ in remaining})
         if mode == 'ratio':
-            holdout_ratio = ratios['val'] + ratios['test']
             val_target = round(len(rows) * ratios['val'] / 100)
-            for index, (asset, _) in enumerate(remaining):
-                split = 'val' if holdout_ratio and len([v for v in splits.values() if v == 'val']) < val_target else 'test'
-                splits[str(asset.id)] = split
+            if ratios['val'] and not ratios['test']:
+                val_target = len(remaining)
+            splits.update((str(asset.id),'val') for asset,_ in remaining[:val_target])
+            if ratios['test']:
+                splits.update((str(asset.id),'test') for asset,_ in remaining[val_target:])
     else:
         ratios = ratios if mode == 'ratio' else dict(train=100 if mode=='train_only' else 0,val=100 if mode=='val_only' else 0,test=0)
         sizes = Counter()
@@ -69,7 +72,7 @@ def simple_split(rows, labels, mode, ratios, budgets, groups=None):
             split = min(candidates,key=lambda candidate:sum((sizes[name]+(len(group) if name==candidate else 0)-len(rows)*ratios[name]/100)**2 for name in ('train','val','test')))
             splits.update(dict.fromkeys(group,split));sizes[split]+=len(group)
             if split=='train':train_counts.update(counts)
-    labels_by_split = {split: {label: 0 for label in labels} for split in ('train', 'val', 'test')}
+    labels_by_split = {split: {label: 0 for label in labels} for split in (('all',) if mode=='none' else ('train', 'val', 'test'))}
     for asset, annotation in rows:
         split = splits.get(str(asset.id))
         if split:
@@ -83,18 +86,16 @@ def simple_split(rows, labels, mode, ratios, budgets, groups=None):
             empty_requested_splits=[name for name in ('train','val','test') if ratios[name]>0 and name not in splits.values()])
     return result
 
-async def export_rows(db, project, approved_only, lock=True):
-    if project.task_type != 'detection':
-        raise HTTPException(400, '训练图片包当前仅支持检测项目')
-    query = select(Asset).where(Asset.project_id == project.id,eligible_assets(project)).order_by(Asset.id)
-    assets = (await db.execute(query.with_for_update(of=Asset) if lock else query)).scalars().all()
-    annotations = (await db.execute(select(Annotation).join(Asset).where(
-        Asset.project_id == project.id, Annotation.is_latest.is_(True)))).scalars().all()
-    latest = {a.asset_id: a for a in annotations}
+async def export_rows(db, project, approved_only, lock=True, *, scope=()):
+    query=select(Asset,Annotation).outerjoin(Annotation,
+        (Annotation.asset_id==Asset.id)&(Annotation.is_latest==true())).where(
+        Asset.project_id==project.id,eligible_assets(project),*scope).order_by(Asset.id)
+    rows_with_annotation=(await db.execute(query.with_for_update(of=Asset) if lock else query)).all()
     rows, excluded = [], []
-    for asset in assets:
-        ann = latest.get(asset.id)
-        if ann is None or (approved_only and ann.review_status != 'approved'):
+    allowed_statuses = ('approved',) if approved_only else ('approved', 'pending')
+    for asset,ann in rows_with_annotation:
+        if (ann is None or 'boxes' not in ann.annotation_data or ann.status_for('detection') not in allowed_statuses
+                or any('yolo_class_id' in box for box in ann.annotation_data['boxes'])):
             excluded.append(str(asset.id))
         else:
             detection_boxes(ann.annotation_data, asset.width, asset.height)
@@ -124,31 +125,43 @@ def coco_document(rows, labels, image_paths):
                 bbox=[box[k] for k in ('x','y','width','height')], area=box['width']*box['height'], iscrowd=0, segmentation=[]))
     return data
 
-async def training_package(db, project, format, selected=None, approved_only=True, splits=None, policy=None, selection=None):
-    rows, excluded = await export_rows(db, project, approved_only)
+def split_token(rows, labels, splits, approved_only):
+    members=[(str(asset.id),asset.content_hash,ann.version,ann.status_for('detection'),splits[str(asset.id)])
+        for asset,ann in rows if str(asset.id) in splits]
+    return sha256(json.dumps([labels,approved_only,sorted(members)],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+
+
+async def training_package(db, project, format, selected=None, approved_only=True, splits=None, policy=None, selection=None,
+                           *, scope=(), source=None, preview_token=None, progress=None):
+    rows, excluded = await export_rows(db, project, approved_only, lock=False, scope=scope)
     selection_result = None
     if selection is not None:
         labels = category_labels(project, rows, selected)
         selection_result = await prepare_selection(rows, labels, selection)
-        ratios = selection['ratios'] if selection['mode'] == 'ratio' else {
+        ratios = selection['ratios'] if selection['mode'] == 'ratio' else None if selection['mode']=='none' else {
             'train': 100 if selection['mode'] == 'train_only' else 0, 'val': 100 if selection['mode'] == 'val_only' else 0, 'test': 0}
         selection_result.update(mode=selection['mode'], ratios=ratios, budgets=selection['budgets'],
             check_duplicates=selection['check_duplicates'], group_similar=selection.get('group_similar',False), phash_distance=selection['phash_distance'],
             color_distance=selection['color_distance'], require_source=selection['require_source'])
         splits = selection_result['splits']
+        if preview_token and preview_token!=split_token(rows,labels,splits,approved_only):
+            raise HTTPException(409,'图片、标注版本或划分已变化，请重新预览后再冻结')
         excluded.extend(selection_result['excluded_asset_ids'])
         rows = [(asset, ann) for asset, ann in rows if str(asset.id) in splits]
+        if selection['mode']=='none':splits=None
         report = selection_result.get('leakage_report')
         if report and report['errors']:
             reason = split_failure_reason(report, rows)
             logging.getLogger(__name__).warning('Export rejected before ZIP: project=%s code=%s reason=%s', project.id, report['errors'][0]['code'], reason)
             raise HTTPException(409, reason)
+    if progress:
+        await db.commit()
     return await run_in_threadpool(lambda: asyncio.run(
-        _build_package(project, rows, excluded, format, selected, approved_only, splits, policy, selection_result)))
+        _build_package(project, rows, excluded, format, selected, approved_only, splits, policy, selection_result, source, progress)))
 
 
-async def preview_splits(db, project, selected, approved_only, policy, splits=None, suggest=False):
-    rows, excluded = await export_rows(db, project, approved_only, lock=False)
+async def preview_splits(db, project, selected, approved_only, policy, splits=None, suggest=False, *, scope=()):
+    rows, excluded = await export_rows(db, project, approved_only, lock=False, scope=scope)
     labels = category_labels(project, rows, selected)
     return dict(await inspect_splits(rows, labels, policy, splits, suggest), labels=labels, excluded_asset_ids=excluded)
 
@@ -190,7 +203,11 @@ async def image_fingerprints(rows):
 
 
 async def prepare_selection(rows, labels, selection):
-    result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'])
+    groups = None
+    if selection['mode']=='ratio':
+        source,_,_=source_groups(rows,('parent_image_id',))
+        if any(len(group)>1 for group in source):groups=source
+    result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'], groups)
     result['can_freeze'] = bool(result['splits'])
     if selection['check_duplicates']:
         policy = SplitPolicy(phash_distance=selection['phash_distance'], color_distance=selection['color_distance'],
@@ -210,17 +227,19 @@ async def prepare_selection(rows, labels, selection):
     return result
 
 
-async def preview_simple_split(db, project, selected, approved_only, selection):
-    rows, excluded = await export_rows(db, project, approved_only, lock=False)
+async def preview_simple_split(db, project, selected, approved_only, selection, *, scope=()):
+    rows, excluded = await export_rows(db, project, approved_only, lock=False, scope=scope)
     labels = category_labels(project, rows, selected)
     result = await prepare_selection(rows, labels, selection)
     result.pop('leakage_report',None)
-    result.update(labels=labels, excluded_asset_ids=excluded + result['excluded_asset_ids'])
+    result.update(labels=labels, excluded_asset_ids=excluded + result['excluded_asset_ids'],
+        preview_token=split_token(rows,labels,result['splits'],approved_only),
+        review_counts=dict(Counter(ann.status_for('detection') for asset,ann in rows if str(asset.id) in result['splits'])))
     return result
 
-async def _build_package(project, rows, excluded, format, selected, approved_only, splits, policy=None, selection_result=None):
+async def _build_package(project, rows, excluded, format, selected, approved_only, splits, policy=None, selection_result=None, source=None, progress=None):
     if not rows:
-        raise HTTPException(400, '没有符合审核范围的已标注图片；请先保存并审核')
+        raise HTTPException(400, '没有符合所选审核范围的已标注图片')
     labels = category_labels(project, rows, selected)
     ids = {str(a.id) for a,_ in rows}
     if splits is not None and (set(splits) != ids or any(v not in ('train','val','test') for v in splits.values())):
@@ -243,6 +262,7 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
     paths = {}
     manifest = dict(project_id=str(project.id), format=format, labels=labels, approved_only=approved_only,
         selected_labels=selected or labels, excluded_asset_ids=excluded, assets=[], distribution={})
+    if source:manifest['input']=source
     if selection_result is not None:
         manifest['selection'] = dict(mode=selection_result['mode'], ratios=selection_result['ratios'], budgets=selection_result['budgets'],
             images_by_split=selection_result['images_by_split'], labels_by_split=selection_result['labels_by_split'],
@@ -253,6 +273,8 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
     counts = Counter()
     fingerprints = {}
     try:
+        if progress:
+            progress(0, len(rows))
         with zipfile.ZipFile(result, 'w', zipfile.ZIP_DEFLATED) as archive:
             for asset,ann in rows:
                 split = splits[str(asset.id)] if splits is not None else 'all'
@@ -288,7 +310,7 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
                 for box in boxes: counts[box['label']] += 1
                 manifest['assets'].append(dict(asset_id=str(asset.id), original_name=asset.original_name,
                     content_hash=asset.content_hash, image_path=image_path, annotation_id=str(ann.id),
-                    annotation_version=ann.version, annotation_data={'boxes':boxes}, review_status=ann.review_status,
+                    annotation_version=ann.version, annotation_data={'boxes':boxes}, review_status=ann.status_for('detection'),
                     source_type=asset.source_type, width=asset.width, height=asset.height, split=split,
                     perceptual_hash=str(fingerprint) if splits is not None and (selection_result is None or selection_result.get('check_duplicates')) else None))
                 if format == 'yolo':
@@ -296,6 +318,8 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
                         f"{(b['y']+b['height']/2)/asset.height:.10f} {b['width']/asset.width:.10f} {b['height']/asset.height:.10f}"
                         for b in boxes]
                     archive.writestr(f'labels/{split}/{asset.id}.txt', '\n'.join(lines))
+                if progress:
+                    progress(len(manifest['assets']), len(rows))
             if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
                 evidence = split_report(rows, labels, policy, splits, fingerprints=fingerprints)
                 if evidence['errors']:

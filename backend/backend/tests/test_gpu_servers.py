@@ -39,9 +39,22 @@ def test_default_server_is_read_only_and_redacted(client, auth_headers):
     assert response.status_code == 200, response.text
     from config.settings import settings
     assert response.json() == [dict(id='default', name=settings.GPU_SERVER_NAME,
-        host=None, port=None, username=None, enabled=True, revision=0,
-        has_password=False, source='ssh_manager')]
+        host=None, port=None, username=None, enabled=True, training_enabled=True, revision=0,
+        has_password=False, source='ssh_manager',jump=None)]
     assert response.headers['cache-control'] == 'no-store'
+
+
+def test_training_marks_only_verified_default_alias(client, auth_headers, monkeypatch):
+    from config.settings import settings
+    from services import training_runs
+    same=create(client,auth_headers,name=settings.GPU_SERVER_NAME.upper(),host='192.0.2.20',training_enabled=True)
+    other=create(client,auth_headers,name=settings.GPU_SERVER_NAME.upper(),host='192.0.2.21',training_enabled=True)
+    monkeypatch.setattr(training_runs,'bridge',lambda server,input:[
+        dict(name=settings.GPU_SERVER_NAME,host='192.0.2.20',port=22,user='root')])
+    response=client.get('/api/training/servers',headers=auth_headers)
+    assert response.status_code==200,response.text
+    assert {row['id'] for row in response.json() if row.get('duplicate_of_default')}=={same['id']}
+    assert other['id'] in {row['id'] for row in response.json()}
 
 
 @pytest.mark.asyncio

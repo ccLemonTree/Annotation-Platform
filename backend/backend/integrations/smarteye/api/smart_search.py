@@ -1,3 +1,4 @@
+from integrations.smarteye.runtime import device_source
 from integrations.smarteye.runtime import cached_image, response_bytes
 from integrations.smarteye.runtime import DurableTasks, save_image_content
 from integrations.smarteye.configuration import download_root
@@ -43,6 +44,7 @@ def login_platform(platform: dict) -> dict:
     plat_name = platform.get("platform_name", base_url)
 
     max_retries = 3
+    error_kind = 'authentication'
     for attempt in range(max_retries):
         try:
             # 1. 获取验证码
@@ -63,6 +65,7 @@ def login_platform(platform: dict) -> dict:
             # 2. 识别验证码（复用 login_utils.recognize_captcha）
             code = recognize_captcha(captcha_rsp.content)
             if not code:
+                error_kind = 'captcha'
                 logger.warning(f"[{plat_name}] 验证码识别失败 (尝试 {attempt + 1}/{max_retries})")
                 continue
 
@@ -88,10 +91,14 @@ def login_platform(platform: dict) -> dict:
                 timeout=10,
                 proxies={"http": "", "https": ""},
             )
-            login_rsp.raise_for_status()
             result = login_rsp.json()
+            if str(result.get("code")) == "-9":
+                error_kind = 'captcha'
+                logger.warning(f"[{plat_name}] 验证码校验失败 (尝试 {attempt + 1}/{max_retries})")
+                continue
+            login_rsp.raise_for_status()
 
-            if result.get("code") == 0 and result.get("data"):
+            if result.get("code") == 0 and result.get("data", {}).get("token"):
                 data = result["data"]
                 expire_time = (datetime.now() + timedelta(seconds=7200)).strftime(
                     "%Y-%m-%d %H:%M:%S"
@@ -103,15 +110,21 @@ def login_platform(platform: dict) -> dict:
                     "expire_time": expire_time,
                 }
             else:
+                error_kind = 'authentication'
                 msg = result.get("msg", "未知错误")
                 logger.warning(f"[{plat_name}] 登录返回错误: {msg} (尝试 {attempt + 1}/{max_retries})")
 
+        except requests.exceptions.Timeout:
+            error_kind = 'timeout'
+            logger.warning(f"[{plat_name}] 登录连接超时 (尝试 {attempt + 1}/{max_retries})")
         except requests.exceptions.ConnectionError:
+            error_kind = 'connection'
             logger.warning(f"[{plat_name}] 连接被拒绝 (尝试 {attempt + 1}/{max_retries})")
         except Exception as e:
+            error_kind = 'response'
             logger.warning(f"[{plat_name}] 登录异常: {str(e)[:50]} (尝试 {attempt + 1}/{max_retries})")
 
-    return {"success": False, "msg": f"登录失败（已重试{max_retries}次）"}
+    return {"success": False, "msg": f"登录失败（已重试{max_retries}次）", "error_kind": error_kind}
 
 
 def search_platform(platform: dict, token_info: dict, search_params: dict) -> dict:
@@ -176,16 +189,20 @@ def search_platform(platform: dict, token_info: dict, search_params: dict) -> di
         return {"success": False, "msg": f"搜索异常: {str(e)[:50]}", "images": []}
 
 
-def download_images(urls: list, save_dir: Path, plat_name: str) -> int:
+def download_images(urls: list, save_dir: Path, plat_name: str, records=None, plat_id=None) -> int:
     """下载图片列表到指定目录，返回成功数量"""
     save_dir.mkdir(exist_ok=True, parents=True)
     success_count = 0
 
+    source_records = {}
+    for item in (records or []):
+        if isinstance(item, dict):source_records.setdefault(item.get("imageUrl"), []).append(item)
     for idx, url in enumerate(urls, 1):
+        source = device_source(plat_name, (source_records.get(url) or [{}]).pop(0), plat_id)
         try:
             safe_name = plat_name.replace("/", "_").replace("\\", "_").replace(":", "_")
             filename = f"{safe_name}_{idx}.jpg"
-            if cached_image(save_dir / filename):
+            if cached_image(save_dir / filename, device_info=source, collection_name=plat_name):
                 success_count += 1
                 continue
             rsp = requests.get(url, timeout=10, stream=True, proxies={"http": "", "https": ""})
@@ -193,7 +210,7 @@ def download_images(urls: list, save_dir: Path, plat_name: str) -> int:
             # 文件名: 时间戳_平台名_序号.jpg
             safe_name = plat_name.replace("/", "_").replace("\\", "_").replace(":", "_")
             filename = f"{safe_name}_{idx}.jpg"
-            if not save_image_content(save_dir / filename, response_bytes(rsp), collection_name=plat_name):
+            if not save_image_content(save_dir / filename, response_bytes(rsp), collection_name=plat_name, device_info=source):
                 continue
             success_count += 1
         except Exception as e:
@@ -263,7 +280,7 @@ def run_smart_search_task(task_id: str, platforms: list, search_params: dict):
         # 3. 下载图片（按平台分子目录）
         result["status"] = "下载中"
         plat_dir = task_dir / plat_name.replace("/", "_").replace("\\", "_").replace(":", "_")
-        downloaded = download_images(images, plat_dir, plat_name)
+        downloaded = download_images(images, plat_dir, plat_name, search_result.get("records"), platform.get("plat_id"))
         result["download_count"] = downloaded
         result["status"] = "成功"
         result["msg"] = f"找到 {len(images)} 张图片，下载 {downloaded} 张"

@@ -6,6 +6,8 @@ import json
 import shutil
 from pathlib import Path
 import tempfile
+import weakref
+from contextlib import AsyncExitStack
 from time import monotonic
 from types import SimpleNamespace
 from uuid import UUID,uuid4
@@ -20,6 +22,8 @@ from services import training_runs
 BUSY=('transferring','activating','rolling_back')
 _tasks={}
 _slots=asyncio.Semaphore(2)
+_bundle_locks=weakref.WeakValueDictionary()
+_service_locks=weakref.WeakValueDictionary()
 
 
 async def servers():
@@ -36,7 +40,23 @@ async def scoped(db,id,tenant_id,lock=False):
 
 def summary(row):
     result={c.name:getattr(row,c.name) for c in row.__table__.columns}
+    if isinstance(row,ModelDeployment):result['deletable']=deletable(row)
     return {key:value.replace(tzinfo=timezone.utc) if isinstance(value,datetime) and value.tzinfo is None else value for key,value in result.items()}
+
+
+def deletable(row):
+    return row.status in ('draft','checked','staged','transfer_failed','activation_failed') and str(row.id) not in _tasks and not any(row.inspection.get(key) for key in ('mutation_started','promotion','apply_started','applied'))
+
+
+async def delete_records(db,user,ids):
+    from models.model_deployment import DeploymentLease
+    rows=(await db.scalars(select(ModelDeployment).where(ModelDeployment.tenant_id==user.tenant_id,ModelDeployment.id.in_(ids)).order_by(ModelDeployment.id).with_for_update())).all()
+    if len(rows)!=len(ids):raise HTTPException(404,'部分记录不存在或无权访问')
+    if any(not deletable(row) for row in rows) or await db.scalar(select(DeploymentLease.resource).where(DeploymentLease.job_id.in_(ids)).limit(1)):
+        raise HTTPException(409,'仅可删除未生效且未在执行的记录；已变更在线服务或保留恢复现场的记录不可删除')
+    for row in rows:await db.delete(row)
+    await db.commit()
+    return dict(deleted=[str(id) for id in ids])
 
 
 async def create(db,user,request):
@@ -103,7 +123,9 @@ def complete_inventory(inventory):
 
 async def inspect_job(db,row):
     await validate_connections(row)
-    if row.source.get('kind')=='local_release':
+    if row.source.get('kind')=='local_repository':
+        _,data=await repository_source(db,row)
+    elif row.source.get('kind')=='local_release':
         release=await local_release(db,row);data=release.archive['source_info']
     else:data=await remote(db,row,'source',source=True)
     state=await remote(db,row,'state')
@@ -120,18 +142,25 @@ async def inspect_job(db,row):
     return inventory
 
 
+def runtime_matches(runtime,gpu_model,tensorrt_version):
+    expected='.'.join(tensorrt_version.split('.')[:3])
+    return runtime.get('tensorrt')==expected and bool(runtime.get('gpus')) and all(gpu.strip()==gpu_model.strip() for gpu in runtime['gpus'])
+
+
 async def check_compatibility(db,row,inventory,data):
     if row.target['runtime']=='triton_plan':
         expected=data['versions'].get('tensorrt_runtime') or data['versions']['tensorrt']
         expected='.'.join(expected.split('.')[:3])
         for instance in inventory['instances']:
             runtime=await remote(db,row,'compatibility',control=True,instance=instance)
-            if runtime['tensorrt']!=expected or not runtime['gpus'] or any(g.strip()!=data['gpu_name'].strip() for g in runtime['gpus']):
+            if not runtime_matches(runtime,data['gpu_name'],expected):
                 raise HTTPException(409,'TensorRT构建与推理环境不匹配：'+instance['name']+'；请在同型号GPU和TensorRT版本重新导出')
 
 
 async def transfer(db,row):
     await inspect_job(db,row)
+    if row.source.get('kind')=='local_repository':
+        await transfer_repository(db,row);return
     if row.source.get('kind')=='local_release':
         release=await local_release(db,row);local=Path(release.archive['path'])
         from services.model_deployment_executor import sha
@@ -175,6 +204,68 @@ async def local_release(db,row):
     path=Path(release.archive['path'])
     if not path.is_file() or path.stat().st_size!=release.archive['bytes']:raise HTTPException(409,'本地归档文件缺失或已变化')
     return release
+
+
+async def repository_source(db,row):
+    from services import distribution_center as center
+    model=await center.repository_model(db,row.repository_id,row.tenant_id)
+    if row.target['runtime']!='triton_plan' or any(getattr(model,key)!=row.source[key] for key in center.REPOSITORY_FIELDS if key not in ('name','version') and (key!='batch_profile' or key in row.source)):
+        raise HTTPException(409,'仓库模型或目标已变化，请使用新记录更新')
+    return model,await asyncio.to_thread(center.repository_info,model)
+
+
+async def batch_repository_bundle(model,row):
+    from services import distribution_center as center,model_repository as repository
+    folder=repository.folder(model)/'deployment-batches'/str(UUID(str(row.batch_id)))
+    if any(p.is_symlink() for p in [folder,*folder.parents]):raise HTTPException(409,'批次模型包路径包含符号链接')
+    key=str(folder);lock=_bundle_locks.setdefault(key,asyncio.Lock())
+    async with lock:
+        folder.mkdir(parents=True,exist_ok=True);archive=folder/'bundle.zip';metadata=folder/'receipt.json'
+        if archive.is_symlink() or metadata.is_symlink() or (folder/'receipt.tmp').is_symlink():raise HTTPException(409,'批次模型包路径包含符号链接')
+        if metadata.is_file():
+            receipt=json.loads(metadata.read_text(encoding='utf-8'))
+            if not archive.is_file() or archive.stat().st_size!=receipt['bytes'] or await asyncio.to_thread(center.sha,archive)!=receipt['sha256']:
+                raise HTTPException(409,'批次模型包校验失败，请核对平台存储')
+            return archive,receipt
+        with tempfile.TemporaryDirectory(prefix='packing-',dir=folder) as temp:
+            staged=Path(temp)/'bundle.zip';packing=asyncio.create_task(asyncio.to_thread(center.pack_repository,model,staged))
+            try:receipt=await asyncio.shield(packing)
+            except asyncio.CancelledError:
+                await packing;raise
+            staged.replace(archive)
+            pending=folder/'receipt.tmp';pending.write_text(json.dumps(receipt),encoding='utf-8');pending.replace(metadata)
+        return archive,receipt
+
+
+async def transfer_repository(db,row):
+    from services import distribution_center as center,model_repository as repository
+    model,_=await repository_source(db,row)
+    temp=tempfile.TemporaryDirectory(prefix='deployment-',dir=repository.folder(model));local=Path(temp.name)/'bundle.zip'
+    try:
+        if row.batch_id:local,receipt=await batch_repository_bundle(model,row)
+        else:
+            packing=asyncio.create_task(asyncio.to_thread(center.pack_repository,model,local))
+            try:receipt=await asyncio.shield(packing)
+            except asyncio.CancelledError:
+                await packing;raise
+        destination=await remote(db,row,'prepare')
+        await authorized(db,row);await validate_connections(row)
+        upload=asyncio.create_task(asyncio.to_thread(training_runs.bridge,row.target['file_server'],
+            dict(upload=dict(localPath=str(local),remotePath=destination['path']))))
+        try:await asyncio.shield(upload)
+        except asyncio.CancelledError:
+            await upload;raise
+        await repository_source(db,row)
+        hashing=asyncio.create_task(asyncio.to_thread(center.sha,local))
+        try:digest=await asyncio.shield(hashing)
+        except asyncio.CancelledError:
+            await hashing;raise
+        if digest!=receipt['sha256']:raise HTTPException(409,'临时部署包在上传期间发生变化')
+        await authorized(db,row);await validate_connections(row)
+        result=await remote(db,row,'receive',sha256=receipt['sha256'])
+        await save(db,row,'仓库模型已传输，包和逐文件校验通过，等待手动生效','staged',
+            transfer=dict(bytes=result['bytes'],sha256=result['sha256'],file_count=result.get('file_count',len(result.get('files',[])))))
+    finally:await asyncio.to_thread(temp.cleanup)
 
 
 async def verify_instances(db,row,inventory,absent=False):
@@ -240,9 +331,11 @@ async def activate(db,row,rollback=False):
     raise HTTPException(504,'等待全部实例就绪超时，请核对状态；不能认定整组生效成功')
 
 
-async def execute(id,tenant,operation):
+async def execute(id,tenant,operation,resources=()):
     try:
-        async with _slots:await execute_job(id,tenant,operation)
+        async with AsyncExitStack() as stack:
+            for key in sorted(resources):await stack.enter_async_context(_service_locks.setdefault(key,asyncio.Lock()))
+            async with _slots:await execute_job(id,tenant,operation)
     finally:_tasks.pop(str(id),None)
 
 
@@ -250,6 +343,9 @@ async def execute_job(id,tenant,operation):
     async with AsyncSessionLocal() as db:
         row=await scoped(db,id,tenant)
         try:
+            if row.target.get('platform_id'):
+                from services import distribution_center as center
+                await center.acquire(db,row);await db.commit()
             if row.kind=='image':
                 from services import image_updates
                 if operation=='transfer':await image_updates.prepare(db,row)
@@ -267,6 +363,12 @@ async def execute_job(id,tenant,operation):
             status='transfer_failed' if operation=='transfer' else 'rollback_failed' if operation=='rollback' else 'activation_failed'
             if operation!='transfer' and (not isinstance(error,HTTPException) or error.status_code>=500):status='unknown'
             await save(db,row,row.error,status)
+            if row.target.get('platform_id') and operation!='transfer' and row.inspection.get('mutation_started'):
+                from services import distribution_center as center
+                from models.model_deployment import DeploymentTarget
+                platform=await center.scoped(db,DeploymentTarget,row.target_id,row.tenant_id,lock=True)
+                versions=dict(platform.observation.get('versions',{}));versions[row.target_key]={'state':'unknown'}
+                platform.observation={**platform.observation,'versions':versions};await db.commit()
         finally:
             if row.status in ('staged','active','rolled_back','transfer_failed') or row.status in ('activation_failed','rollback_failed') and not (row.inspection.get('mutation_started') or row.inspection.get('apply_started')):
                 from services import distribution_center as center
@@ -275,7 +377,9 @@ async def execute_job(id,tenant,operation):
 
 
 def schedule(row,operation):
-    _tasks[str(row.id)]=asyncio.create_task(execute(row.id,row.tenant_id,operation))
+    from services import distribution_center as center
+    resources=center.resources(row) if row.target.get('platform_id') else ()
+    _tasks[str(row.id)]=asyncio.create_task(execute(row.id,row.tenant_id,operation,resources))
 
 
 async def action(db,row,operation,actor=None):
@@ -304,7 +408,7 @@ async def action(db,row,operation,actor=None):
             raise HTTPException(409,'尚未切换在线目录，无需恢复旧版本')
     await authorized(db,row)
     from services import distribution_center as center
-    await center.acquire(db,row)
+    if not row.target.get('platform_id'):await center.acquire(db,row)
     row.status={'transfer':'transferring','activate':'activating','rollback':'rolling_back'}[operation];row.error=None
     try:await db.commit()
     except IntegrityError:

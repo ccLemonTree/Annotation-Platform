@@ -3,7 +3,7 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert,Button,Card,Checkbox,Col,Input,InputNumber,Modal,Radio,Row,Select,Space,Tag,Typography } from 'antd';
 import { isAxiosError } from 'axios';
 import { getImages,uploadImages,type LibraryImage } from '../api/images';
-import { getModelServices,type ModelService } from '../api/modelServices';
+import { getModelServices,isModelOffline,type ModelService } from '../api/modelServices';
 import type { Project } from '../api/projects';
 import { searchMatches,getMatchQueries,judgeMatch,getSmartSearchPlatforms,searchSmartMatches,type MatchQuery,type Judgment,type MatchHit,type SmartSearchReference } from '../api/projectWork';
 import AssetImage from './AssetImage';
@@ -11,13 +11,16 @@ import DeleteCropButton from './DeleteCropButton';
 import DeleteSelectedImages from './DeleteSelectedImages';
 import useAnnotationShortcuts from './useAnnotationShortcuts';
 import SmartSearchCrop from './SmartSearchCrop';
+import { useCurrentUser } from './currentUser';
+import apiClient from '../api/client';
 
 const judgments={correct:'正确',incorrect:'错误',unknown:'无法判断'};
 const localTime=(date:Date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}T${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:${String(date.getSeconds()).padStart(2,'0')}`;
 export default function VectorAnnotation({project,mode}:{project:Project;mode:'text'|'image'}){
+  const admin=useCurrentUser()?.role==='admin';
   const [params,setParams]=useSearchParams();
   const historyPage=Math.max(1,parseInt(params.get('query_page')||'1',10)||1),queryId=params.get('query_id');
-  const [models,setModels]=useState<ModelService[]>([]);
+  const [models,setModels]=useState<Pick<ModelService,'id'|'name'|'revision'|'kind'|'enabled'|'connection_check'>[]>([]);
   const [source,setSource]=useState<'smart'|'local'>('smart'),[platforms,setPlatforms]=useState<{id:string;name:string}[]>([]),[platform,setPlatform]=useState<string>();
   const [platformLoading,setPlatformLoading]=useState(true),[platformReload,setPlatformReload]=useState(0);
   const [start,setStart]=useState(()=>localTime(new Date(new Date().setHours(0,0,0,0)))),[end,setEnd]=useState(()=>localTime(new Date()));
@@ -32,7 +35,7 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
   const mounted=useRef(true),searchGeneration=useRef(0);
   const queryFile=useRef<HTMLInputElement>(null);
   const fail=(error:unknown)=>{if(mounted.current)setError(isAxiosError(error)&&typeof error.response?.data?.detail==='string'?error.response.data.detail:'操作失败，请重试');};
-  useEffect(()=>{mounted.current=true;getModelServices({enabled:true}).then(rows=>{if(mounted.current)setModels(rows);}).catch(fail);return()=>{mounted.current=false;};},[]);
+  useEffect(()=>{mounted.current=true;(admin?getModelServices({enabled:true}):apiClient.get<Pick<ModelService,'id'|'name'|'revision'|'kind'|'enabled'|'connection_check'>[]>(`/api/projects/${project.id}/annotation-models`).then(response=>response.data)).then(rows=>{if(mounted.current)setModels(rows);}).catch(fail);return()=>{mounted.current=false;};},[admin,project.id]);
   useEffect(()=>{let active=true;setPlatformLoading(true);
     getSmartSearchPlatforms(project.id).then(rows=>{if(active){setPlatforms(rows);setPlatform(current=>current||rows.find(p=>p.name==='杭州移动消防平台')?.id);}})
       .catch(fail).finally(()=>{if(active)setPlatformLoading(false);});return()=>{active=false;};
@@ -84,10 +87,10 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
         <label>结束时间 <Input aria-label="智搜结束时间" type="datetime-local" step={1} value={end} disabled={busy} onChange={e=>setEnd(e.target.value)} style={{width:235}}/></label>
       </Space>}
       <Space wrap style={{marginBottom:16}}>
-        {source==='local'&&<Select aria-label="检索向量模型" placeholder="选择已建立索引的模型" style={{width:260,maxWidth:'100%'}} value={embedding} disabled={busy} onChange={value=>{setEmbedding(value);setQuery(undefined);setSelected([]);}} options={models.filter(m=>m.kind==='embedding').map(m=>({value:m.id,label:`${m.name} · r${m.revision}`}))}/>}
+        {source==='local'&&<Select aria-label="检索向量模型" placeholder="选择已建立索引的模型" style={{width:260,maxWidth:'100%'}} value={embedding} disabled={busy} onChange={value=>{setEmbedding(value);setQuery(undefined);setSelected([]);}} options={models.filter(m=>m.kind==='embedding').map(m=>({value:m.id,disabled:isModelOffline(m),label:`${m.name} · r${m.revision}${isModelOffline(m)?' · 离线':''}`}))}/>}
         {mode==='text'?<Input aria-label="匹配查询文本" value={text} disabled={busy} maxLength={2000} placeholder="例如：穿黑色衣服的人" style={{width:300,maxWidth:'100%'}} onChange={e=>setText(e.target.value)}/>:
           source==='smart'?<Typography.Text>{reference?'已选择智搜目标框，可调整时间或数量后再次搜索。':'先在文搜图结果卡片点击“用此图搜图”，框选查询目标。'}</Typography.Text>:<><Select aria-label="匹配查询图片" showSearch filterOption={false} onSearch={imageSearch} placeholder="搜索图片库文件名" style={{width:280,maxWidth:'100%'}} value={queryImage} onChange={setQueryImage} disabled={busy} options={images.map(i=>({value:i.id,label:i.original_name}))}/>
-            <Button disabled={busy} onClick={()=>queryFile.current?.click()}>上传查询图片</Button><input ref={queryFile} type="file" aria-label="上传匹配查询图片" accept="image/jpeg,image/png,image/webp,image/bmp" disabled={busy} style={{display:'none'}} onChange={e=>void uploadQuery(e.target.files?.[0])}/></>}
+            {admin&&<><Button disabled={busy} onClick={()=>queryFile.current?.click()}>上传查询图片</Button><input ref={queryFile} type="file" aria-label="上传匹配查询图片" accept="image/jpeg,image/png,image/webp,image/bmp" disabled={busy} style={{display:'none'}} onChange={e=>void uploadQuery(e.target.files?.[0])}/></>}</>}
         <InputNumber aria-label="匹配返回数量" value={topK} min={1} max={100} disabled={busy} onChange={v=>setTopK(v||20)}/>
         <Button aria-label="检索并标注" type="primary" disabled={busy||(source==='smart'?(!platform||!start||!end||end<start||(mode==='text'?!text.trim():!reference)):(!embedding||(mode==='text'?!text.trim():!queryImage)))} loading={busy} onClick={()=>source==='smart'?void smartSearch():void search()}>检索并标注</Button>
       </Space>
@@ -102,22 +105,22 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
         <Typography.Text type="secondary">1 正确 · 2 错误 · 3 无法判断（自动保存）</Typography.Text>
       </Space>}
       {!!query?.space.failures?.length&&<Alert type="warning" showIcon title={`${query.space.failures.length} 张图片下载或裁剪失败，其他结果可正常标注`} description={query.space.failures.slice(0,5).map(f=>`第 ${f.index} 条：${f.error}`).join('；')} style={{marginBottom:16}}/>}
-      {query&&<><Space wrap style={{marginBottom:16}}><Checkbox checked={query.hits.length>0&&selected.length===query.hits.length} indeterminate={selected.length>0&&selected.length<query.hits.length} disabled={busy||!query.hits.length} onChange={e=>setSelected(e.target.checked?query.hits.map(hit=>hit.asset_id):[])}>全选本次结果</Checkbox><DeleteSelectedImages ids={selected} disabled={busy} onDeleted={removeResults}/><DeleteSelectedImages disabled={busy||!query.hits.length} allLabel="删除本次全部结果" rangeLabel="当前查询已返回的全部图片" loadAll={async()=>query.hits.map(hit=>hit.asset_id)} onDeleted={removeResults}/></Space><Typography.Paragraph>当前查询：{query.query.text||'图片查询'} · {query.query.source==='smart_search'?query.query.platform_name:`模型 r${query.space.revision}`} · {query.hits.length} 个结果</Typography.Paragraph>{query.query.query_asset_id&&<Space style={{marginBottom:16}}><Typography.Text>查询目标</Typography.Text><AssetImage assetId={query.query.query_asset_id} width={100} height={80} style={{objectFit:'contain'}}/></Space>}<Row gutter={[16,16]}>
+      {query&&<>{admin&&<Space wrap style={{marginBottom:16}}><Checkbox checked={query.hits.length>0&&selected.length===query.hits.length} indeterminate={selected.length>0&&selected.length<query.hits.length} disabled={busy||!query.hits.length} onChange={e=>setSelected(e.target.checked?query.hits.map(hit=>hit.asset_id):[])}>全选本次结果</Checkbox><DeleteSelectedImages ids={selected} disabled={busy} onDeleted={removeResults}/><DeleteSelectedImages disabled={busy||!query.hits.length} allLabel="删除本次全部结果" rangeLabel="当前查询已返回的全部图片" loadAll={async()=>query.hits.map(hit=>hit.asset_id)} onDeleted={removeResults}/></Space>}<Typography.Paragraph>当前查询：{query.query.text||'图片查询'} · {query.query.source==='smart_search'?query.query.platform_name:`模型 r${query.space.revision}`} · {query.hits.length} 个结果</Typography.Paragraph>{query.query.query_asset_id&&<Space style={{marginBottom:16}}><Typography.Text>查询目标</Typography.Text><AssetImage assetId={query.query.query_asset_id} width={100} height={80} style={{objectFit:'contain'}}/></Space>}<Row gutter={[16,16]}>
         {query.hits.map(hit=><Col xs={24} sm={12} xl={8} key={hit.asset_id}><Card size="small" id={'match-'+hit.asset_id} role="group" aria-label={`匹配图片 ${hit.original_name}`} tabIndex={0} data-match-active={active?.asset_id===hit.asset_id?'true':undefined}
           style={{borderColor:active?.asset_id===hit.asset_id?'var(--ui-primary)':undefined}}
           onFocusCapture={()=>{if(!writing.current)setFocused({queryId:query.id,assetId:hit.asset_id});}} onPointerDown={()=>{if(!writing.current)setFocused({queryId:query.id,assetId:hit.asset_id});}}
           title={<Space>{active?.asset_id===hit.asset_id&&<Tag color="blue">当前图片</Tag>}<Tag color={hit.judgment==='correct'?'success':hit.judgment==='incorrect'?'error':'default'}>{judgments[hit.judgment]}</Tag></Space>}>
-          <Checkbox aria-label={`选择图片 ${hit.original_name}`} checked={selected.includes(hit.asset_id)} disabled={busy} onChange={e=>setSelected(ids=>e.target.checked?[...ids,hit.asset_id]:ids.filter(id=>id!==hit.asset_id))} style={{marginBottom:12}}>选择图片</Checkbox>
+          {admin&&<Checkbox aria-label={`选择图片 ${hit.original_name}`} checked={selected.includes(hit.asset_id)} disabled={busy} onChange={e=>setSelected(ids=>e.target.checked?[...ids,hit.asset_id]:ids.filter(id=>id!==hit.asset_id))} style={{marginBottom:12}}>选择图片</Checkbox>}
           <AssetImage assetId={hit.asset_id} width="100%" height={180} style={{objectFit:'contain'}} alt={hit.original_name}/>
           <Typography.Paragraph type="secondary">{hit.smart_search?'平台分值':'相似度'} {hit.score.toFixed(4)}{hit.smart_search&&<><br/>{hit.smart_search.record.deviceName} · {hit.smart_search.record.timestamp}</>}</Typography.Paragraph>
           {view==='description'?<Typography.Paragraph style={{minHeight:44}}>{hit.description||'尚无描述，可打开图片编辑'}</Typography.Paragraph>:<Space wrap style={{marginBottom:16}}>{hit.labels?.length?hit.labels.map(label=><Tag key={label}>{label}</Tag>):<Tag>尚无分类</Tag>}</Space>}
           <Radio.Group aria-label={`判定 ${hit.asset_id}`} value={hit.judgment} disabled={busy} onChange={e=>judge(hit.asset_id,e.target.value)} options={Object.entries(judgments).map(([value,label])=>({value,label}))}/>
-          <Space wrap style={{marginTop:12}}>{hit.smart_search&&<Button disabled={busy||!platform||source!=='smart'} onClick={()=>setCropTarget({queryId:query.id,hit})}>用此图搜图</Button>}<Link to={`/annotate/${hit.asset_id}?from=vector&${params}`}>编辑描述 / 分类</Link>{hit.source_type==='model_crop'&&<DeleteCropButton assetId={hit.asset_id} name={hit.original_name} disabled={busy} onDeleted={()=>removeResults([hit.asset_id])}/>}</Space>
+          <Space wrap style={{marginTop:12}}>{hit.smart_search&&<Button disabled={busy||!platform||source!=='smart'} onClick={()=>setCropTarget({queryId:query.id,hit})}>用此图搜图</Button>}<Link to={`/annotate/${hit.asset_id}?from=vector&${params}`}>编辑描述 / 分类</Link>{admin&&hit.source_type==='model_crop'&&<DeleteCropButton assetId={hit.asset_id} name={hit.original_name} disabled={busy} onDeleted={()=>removeResults([hit.asset_id])}/>}</Space>
         </Card></Col>)}
       </Row>{!query.hits.length&&<Alert type="info" title="当前查询没有可用结果，请检查索引或调整查询。"/>}</>}
     </Card>
     {cropTarget&&<SmartSearchCrop key={cropTarget.hit.asset_id} projectId={project.id} queryId={cropTarget.queryId} hit={cropTarget.hit} onCancel={()=>setCropTarget(undefined)} onSearch={chosen=>{setCropTarget(undefined);setReference(chosen);void smartSearch(chosen);}}/>}
-    {query&&<Alert type="info" showIcon title={`判定自动保存 · 已判定 ${query.hits.filter(hit=>hit.judgment!=='unknown').length} / ${query.hits.length}`} description="完成正确 / 错误判定后，进入审核调用大模型；一致自动通过，分歧交人工复核。审核后从“导出与训练”继续。" action={<Link to={`/annotations?project_id=${project.id}`}>下一步：审核匹配 →</Link>}/>}
+    {query&&<Alert type="info" showIcon title={`判定自动保存 · 已判定 ${query.hits.filter(hit=>hit.judgment!=='unknown').length} / ${query.hits.length}`} description={admin?'完成正确 / 错误判定后，进入审核调用大模型；一致自动通过，分歧交人工复核。审核后从“导出与训练”继续。':'完成正确 / 错误判定后，可进入审核匹配页面人工通过或驳回。'} action={<Link to={`/annotations?project_id=${project.id}`}>下一步：审核匹配 →</Link>}/>}
     <Modal title="向量标注快捷键" open={showShortcuts} onCancel={()=>setShowShortcuts(false)} footer={null}>
       <p>← / → 选择上一个 / 下一个匹配结果，也可点击卡片选择当前图片，蓝色边框标示操作对象。</p>
       <p>1 判定正确；2 判定错误；3 标记无法判断。判定立即保存到当前查询，不自动切图。</p>

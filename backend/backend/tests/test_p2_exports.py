@@ -86,6 +86,25 @@ def test_frozen_export_survives_edit_and_has_explicit_split(client, auth_headers
     assert client.get(url, headers=auth_headers).content == before.content
     assert client.get(url).status_code == 401
 
+
+@pytest.mark.asyncio
+async def test_detection_training_ignores_unrelated_manifest_files(client, auth_headers, test_project, test_db):
+    from models import ExportSnapshot
+
+    test_db.add(ExportSnapshot(project_id=test_project.id, user_id=1, export_format='infonce',
+        blob_path='exports/large.zip', content_hash='a' * 64, manifest_path='exports/manifests/missing.json',
+        list_metadata={'training': {'format': 'infonce', 'samples': 310839}, 'asset_count': 81985}))
+    test_db.add(ExportSnapshot(project_id=test_project.id, user_id=1, export_format='yolo',
+        blob_path='exports/detect.zip', content_hash='b' * 64, manifest={'assets': [], 'labels': ['人']}))
+    await test_db.commit()
+    path = f'/api/export/projects/{test_project.id}/snapshots'
+    response = client.get(path, headers=auth_headers, params={'detection_only': True})
+    assert response.status_code == 200
+    assert [(row['format'], row['manifest']['labels']) for row in response.json()] == [('yolo', ['人'])]
+    response = client.get(path, headers=auth_headers, params={'training_only': True})
+    assert response.status_code == 200
+    assert any(row['manifest']['training'] == {'format': 'infonce', 'samples': 310839} for row in response.json())
+
 def test_simple_selection_preview_and_package_supports_ratio_train_only_and_budget(client, auth_headers, test_project, monkeypatch):
     ids = populate(client, auth_headers, test_project.id)
     import api.export_routes as export_routes
@@ -121,6 +140,23 @@ def test_simple_selection_preview_and_package_supports_ratio_train_only_and_budg
     report = response.json()
     assert report['images_by_split'] == {'train': 2}
     assert report['labels_by_split']['train']['人'] <= 1
+
+@pytest.mark.parametrize('format',['yolo','coco'])
+def test_unsplit_detection_package_uses_one_group(client,auth_headers,test_project,format):
+    populate(client,auth_headers,test_project.id)
+    path=f'/api/export/projects/{test_project.id}'
+    request={'labels':['人'],'selection':{'mode':'none','group_similar':True,'budgets':{'人':1}}}
+    preview=client.post(path+'/splits/preview',headers=auth_headers,json=request)
+    assert preview.status_code==200,preview.text
+    assert preview.json()['images_by_split']=={'all':2} and preview.json()['can_freeze']
+    response=client.post(path+'/packages',headers=auth_headers,json={**request,'format':format})
+    assert response.status_code==200,response.text
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        manifest=json.loads(archive.read('manifest.json'))
+        assert manifest['selection']['mode']=='none' and manifest['distribution']['images_by_split']=={'all':2}
+        assert all(asset['image_path'].startswith('images/all/') for asset in manifest['assets'])
+        assert ('data.yaml' if format=='yolo' else 'annotations/instances_all.json') in archive.namelist()
+
 
 def test_bad_split_unknown_label_and_no_approved_data_rejected(client, auth_headers, test_project):
     ids = populate(client, auth_headers, test_project.id)
@@ -264,13 +300,14 @@ def test_schema_change_does_not_silently_drop_existing_boxes(client, auth_header
 async def test_zip_work_does_not_block_request_loop(monkeypatch):
     import asyncio, time
     from types import SimpleNamespace
+    from models import Annotation
     from services import detection_export as module
     image=BytesIO(); Image.new('RGB',(100,50),'red').save(image,format='PNG')
     content=image.getvalue()
     asset=SimpleNamespace(id='one',original_name='one.png',format='PNG',width=100,height=50,
         content_hash=hashlib.sha256(content).hexdigest(),blob_path='one.png',source_type='upload')
-    annotation=SimpleNamespace(id='ann',version=1,review_status='approved',annotation_data={'boxes':[]})
-    async def rows(*args): return [(asset,annotation)],[]
+    annotation=Annotation(version=1,review_status='approved',annotation_data={'boxes':[]})
+    async def rows(*args,**kwargs): return [(asset,annotation)],[]
     class Storage:
         async def get_file(self,path): return BytesIO(content)
     class SlowZip(zipfile.ZipFile):

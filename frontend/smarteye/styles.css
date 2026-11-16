@@ -12,14 +12,15 @@
 .smarteye-content .rounded-xl, .smarteye-content .rounded-2xl { border-radius: var(--ui-radius); }
 .smarteye-content .border-slate-300 { border-color: var(--ui-border); }
 .smarteye-content .text-slate-400 { color: var(--ui-muted); }
-:is(.smarteye-content, .smarteye-legacy-form) input:not(.ant-select-input):not([type='checkbox']):not([type='radio']):not([type='file']), :is(.smarteye-content, .smarteye-legacy-form) select, :is(.smarteye-content, .smarteye-legacy-form) textarea {
+:is(.smarteye-content, .smarteye-legacy-form) input:not(.ant-input):not(.ant-select-input):not([type='checkbox']):not([type='radio']):not([type='file']), :is(.smarteye-content, .smarteye-legacy-form) select, :is(.smarteye-content, .smarteye-legacy-form) textarea {
   color-scheme: dark; background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); min-height: 36px; font-size: 14px; padding-top: 7px; padding-bottom: 7px;
 }
 :is(.smarteye-content, .smarteye-legacy-form) input[type='checkbox'], :is(.smarteye-content, .smarteye-legacy-form) input[type='radio'] { accent-color: var(--ui-primary); }
 .smarteye-content button { border-radius: var(--ui-radius); transition: background-color var(--ui-motion-fast), border-color var(--ui-motion-fast), color var(--ui-motion-fast), transform var(--ui-motion-fast); }
 .smarteye-content button:not(:disabled):active { transform: translateY(1px); }
 .smarteye-content button:disabled { opacity: .5; cursor: not-allowed; }
-.smarteye-content :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
+.smarteye-content :is(button, input:not(.ant-input):not(.ant-select-input), select, textarea):focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
+.smarteye-content .ant-input-affix-wrapper input.ant-input:focus-visible { outline: none; }
 .smarteye-content button.bg-primary { min-height: 36px; background: var(--ui-action); color: white; }
 .smarteye-content button.bg-primary:hover:not(:disabled) { background: var(--ui-action-hover); }
 .smarteye-content button.bg-white { background: var(--ui-surface-raised); color: var(--ui-text); border-color: var(--ui-border); }

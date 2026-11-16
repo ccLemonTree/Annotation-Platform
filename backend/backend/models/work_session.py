@@ -29,4 +29,5 @@ class WorkActivityInterval(Base):
         CheckConstraint("activity IN ('annotation', 'review')", name='ck_work_activity_kind'),
         CheckConstraint('ended_at > started_at', name='ck_work_activity_time'),
         Index('idx_work_activity_project_user_time', 'project_id', 'user_id', 'started_at', 'ended_at'),
+        Index('ix_work_activity_intervals_asset_id', 'asset_id'),
     )

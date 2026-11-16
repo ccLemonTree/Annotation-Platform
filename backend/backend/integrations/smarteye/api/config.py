@@ -10,8 +10,8 @@ import os
 # API 基础地址
 API_HOST = "36.139.165.206:8890"
 API_BASE_URL = f"http://{API_HOST}"
-CAPTCHA_MODEL_API = "http://39.185.65.85:8690/bigv1/chat/completions"
-CAPTCHA_MODEL_NAME = "Qwen3-VL-8B-Instruct"
+CAPTCHA_MODEL_API = "http://10.11.12.123:31030/v1/chat/completions"
+CAPTCHA_MODEL_NAME = "Qwen3.8-27B"
 
 # 各个接口的URL
 URLS = {

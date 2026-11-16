@@ -12,13 +12,15 @@ import LedgerSchedulePage from './components/LedgerSchedulePage';
 import AlarmLogPage from './components/AlarmLogPage';
 import AiImagePage from './components/AiImagePage';
 import ToolTaskPage from './components/ToolTaskPage';
+import PlatformManagementPage from './components/PlatformManagementPage';
+import DeviceCapturePage from './components/DeviceCapturePage';
 import type { AiImageAsset, DetectionRecord } from './types';
 import { API_BASE_URL } from './constants';
 
 const PAGE_SIZE = 20;
 
 const App: React.FC = () => {
-  const [activePage, setActivePage] = useState('detection');
+  const [activePage, setActivePage] = useState(new URLSearchParams(location.search).has('project_id') ? 'device-capture' : 'detection');
   const [data, setData] = useState<DetectionRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
@@ -197,12 +199,12 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="smarteye-app"><IntegrationBar /><div className="smarteye-body">
+    <div className="smarteye-app">{!['platform-management','device-capture'].includes(activePage)&&<IntegrationBar />}<div className="smarteye-body">
     <div className="smarteye-layout">
       <Sidebar activePage={activePage} onPageChange={setActivePage} />
       <main className="smarteye-content flex-1 min-w-0 flex flex-col overflow-auto relative">
 
-        {activePage === 'smart-search' ? (
+        {activePage === 'platform-management' ? <PlatformManagementPage /> : activePage === 'device-capture' ? <DeviceCapturePage /> : activePage === 'smart-search' ? (
           <SmartSearchPage />
         ) : activePage === 'ledger-query' ? (
           <LedgerQueryPage />

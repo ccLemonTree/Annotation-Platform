@@ -1,27 +1,45 @@
-import { useState } from 'react';
-import { Alert,Button,Col,Collapse,Descriptions,Form,Input,Modal,Row,Select,Space,Table,Tag,Typography } from 'antd';
+import { useEffect,useState } from 'react';
+import { Alert,AutoComplete,Button,Col,Collapse,Descriptions,Form,Input,Modal,Row,Select,Space,Table,Tag,Typography } from 'antd';
 import type { FormInstance } from 'antd';
-import { deploymentAction } from '../api/modelDeployments';
+import { deploymentAction,discoverDeploymentServer } from '../api/modelDeployments';
 import type { DeploymentServer,ModelDeployment as Record } from '../api/modelDeployments';
 import {deploymentBusy,deploymentError,deploymentNames} from '../utils/modelDeployment';
 import DeploymentLogs,{DeploymentSshLinks} from './DeploymentLogs';
-export function DeploymentFields({form,servers,kind}:{form:FormInstance;servers:DeploymentServer[];kind:'model'|'image'}){
-  const environment=Form.useWatch('environment',form),runtime=Form.useWatch('runtime',form);
+export function DeploymentFields({form,servers,kind,editing}:{form:FormInstance;servers:DeploymentServer[];kind:'model'|'image';editing:boolean}){
+  const environment=Form.useWatch('environment',form),runtime=Form.useWatch('runtime',form),fileServer=Form.useWatch('file_server',form),controlServer=Form.useWatch('control_server',form),repository=Form.useWatch('repository',form),modelName=Form.useWatch('model_name',form);
+  const [discovered,setDiscovered]=useState<{containers:string[];models:string[];triton_config:string}>({containers:[],models:[],triton_config:''}),[discoverError,setDiscoverError]=useState(''),[readingConfig,setReadingConfig]=useState(false),[readingOptions,setReadingOptions]=useState(false);
+  const server=kind==='model'?fileServer:controlServer;
+  const readOptions=async(signal?:AbortSignal)=>{setReadingOptions(true);setDiscoverError('');try{
+    setDiscovered(await discoverDeploymentServer(server,kind==='model'?form.getFieldValue('repository'):undefined,undefined,signal));
+  }catch(cause){if(!signal?.aborted)setDiscoverError(deploymentError(cause));}finally{if(!signal?.aborted)setReadingOptions(false);}};
+  useEffect(()=>{if(!server||environment==='k8s'){setDiscovered({containers:[],models:[],triton_config:''});return;}
+    setDiscovered({containers:[],models:[],triton_config:''});const controller=new AbortController(),timer=setTimeout(()=>{void readOptions(controller.signal);},350);
+    return()=>{clearTimeout(timer);controller.abort();};
+  },[server,environment,kind]);
+  const readConfig=async()=>{setReadingConfig(true);setDiscoverError('');try{
+    const result=await discoverDeploymentServer(server,repository,modelName);
+    if(result.triton_config)form.setFieldValue('triton_config',result.triton_config);
+    else setDiscoverError('该模型在服务器上没有可读取的 config.pbtxt；可留空沿用或由下发流程生成基础配置。');
+  }catch(cause){setDiscoverError(deploymentError(cause));}finally{setReadingConfig(false);}};
   const options=servers.map(server=>({value:server.name,label:`${server.name} · ${server.host}:${server.port}`}));
   return <>
     <Row gutter={16}><Col xs={24} md={12}><Form.Item name="environment" label="部署环境" rules={[{required:true}]}><Select options={[{value:'k8s',label:'K8s'},{value:'docker',label:'Docker'},{value:'docker_kafka',label:'Docker Kafka worker'}]}/></Form.Item></Col>
       {kind==='model'&&<Col xs={24} md={12}><Form.Item name="runtime" label="推理方式" rules={[{required:true}]}><Select options={[{value:'triton_plan',label:'小模型 · Triton TensorRT'},{value:'triton_vllm',label:'大模型 · Triton vLLM backend'},{value:'vllm',label:'向量 · vLLM'}]}/></Form.Item></Col>}</Row>
     <Row gutter={16}>{kind==='model'&&<Col xs={24} md={12}><Form.Item name="file_server" label="模型文件服务器" rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={options}/></Form.Item></Col>}
       {(kind==='image'||environment==='k8s')&&<Col xs={24} md={12}><Form.Item name="control_server" label={environment==='k8s'?'K8s控制服务器':'SSH服务器'} rules={[{required:true}]}><Select showSearch optionFilterProp="label" options={options}/></Form.Item></Col>}</Row>
+    {!editing&&<Form.Item name="server_copies" label="同时添加到其他服务器" extra="每台服务器保存为独立目标，共用下方的仓库路径、模型名和容器名；如有差异，保存后分别编辑。"><Select mode="multiple" showSearch optionFilterProp="label" options={options}/></Form.Item>}
+    {environment!=='k8s'&&<Button disabled={!server} loading={readingOptions} onClick={()=>void readOptions()}>重新读取服务器容器 / 模型目录</Button>}
     {kind==='model'&&<><Form.Item name="repository" label="服务器模型仓库路径" rules={[{required:true}]} extra="填写真实宿主机 / NFS路径；向量模型填写模型目录的父目录。"><Input/></Form.Item>
-      <Form.Item name="model_name" label="目标模型名 / 目录名" rules={[{required:true},{pattern:/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/,message:'仅字母、数字、下划线和短横线'}]}><Input/></Form.Item></>}
+      <Form.Item name="model_name" label="目标模型名 / 目录名" rules={[{required:true},{pattern:/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/,message:'仅字母、数字、下划线和短横线'}]} extra="可选服务器已有目录；新模型请输入目录名并确认不覆盖其他模型。"><AutoComplete options={discovered.models.map(value=>({value}))} placeholder="选择已有目录或输入新模型名"/></Form.Item></>}
     {environment==='k8s'?<><Row gutter={16}><Col xs={24} md={12}><Form.Item name="namespace" label="命名空间" rules={[{required:true}]}><Input/></Form.Item></Col><Col xs={24} md={12}><Form.Item name="workload_kind" label="工作负载类型"><Select options={['StatefulSet','Deployment'].map(value=>({value,label:value}))}/></Form.Item></Col></Row>
       <Form.Item name="workload" label="工作负载名称" rules={[{required:true}]}><Input/></Form.Item>
       <Form.Item name="container" label={kind==='image'?'待更新镜像的容器名':'推理容器名称'} rules={[{required:true}]}><Input placeholder={kind==='image'?'例如 nexusai 或 triton-server':'triton-server'}/></Form.Item>
       {kind==='image'&&<><Form.Item name="preload_playbook" label="Ansible预分发剧本（可选）" extra="留空自动查找该环境的 /opt/*/ansible/preload-ai-images.yml；例如嘉兴 /opt/jx_k8s/ansible/preload-ai-images.yml。"><Input/></Form.Item>
         <Form.Item name="preload_inventory" label="Ansible节点清单（可选）" extra="留空自动查找覆盖全部实时节点的inventory。准备时控制机拉取，分批4台分发，逐节点核验后才能生效。"><Input/></Form.Item></>}</>:
-      <Form.Item name="containers" label={kind==='image'?'待更新镜像的全部容器':'全部目标推理容器'} rules={[{required:true,type:'array',min:1}]} extra="填写明确的Docker容器名，按回车添加。镜像更新只覆盖所选容器。"><Select mode="tags" tokenSeparators={[',','，']}/></Form.Item>}
-    {kind==='model'&&runtime!=='vllm'&&<Form.Item name="triton_config" label="Triton config.pbtxt（可选）" extra="留空沿用目标现有配置；新模型请核对输入输出与GPU配置。"><Input.TextArea rows={4}/></Form.Item>}
+      <Form.Item name="containers" label={kind==='image'?'待更新镜像的全部容器':'全部目标推理容器'} rules={[{required:true,type:'array',min:1}]} extra="自动列出服务器上的容器，也可手动输入并按回车添加；镜像更新只覆盖所选容器。"><Select mode="tags" tokenSeparators={[',','，']} options={discovered.containers.map(value=>({value}))}/></Form.Item>}
+    {discoverError&&environment!=='k8s'&&<Alert type="warning" showIcon title={discoverError}/>}
+    {kind==='model'&&runtime!=='vllm'&&<><Form.Item name="triton_config" label="Triton config.pbtxt（可选）" extra="留空沿用目标现有配置；新模型由下发流程生成基础配置，生效前请核对输入输出与GPU配置。"><Input.TextArea rows={4}/></Form.Item>
+      <Button disabled={!server||!repository||!modelName} loading={readingConfig} onClick={()=>void readConfig()}>读取服务器现有配置</Button></>}
     {kind==='model'&&runtime==='triton_vllm'&&<Form.Item name="runtime_options" label="vLLM model.json参数（可选）" extra="JSON对象；模型路径自动匹配挂载。"><Input.TextArea rows={4}/></Form.Item>}
   </>;
 }

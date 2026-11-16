@@ -18,9 +18,9 @@ export interface MultimodalMetrics {
   coverage?:{succeeded:number;failed:number;pending:number;canceled:number;complete:boolean;total:number};
 }
 export type MultimodalRun=Omit<ValidationRun,'config'|'metrics'>&{config:{prompt:string;max_tokens:number};metrics:MultimodalMetrics;items?:MultimodalItem[];page?:number};
-export interface MultimodalInput {model_id?:string;checkpoint?:CheckpointInput;task_type:MultimodalKind;prompt?:string;max_tokens?:number;query_text?:string;query_image_index?:number}
-export const listMultimodalSets=async(kind:MultimodalKind,page:number,signal:AbortSignal):Promise<{items:ValidationSet[];total:number}>=>(await api.get('/api/validation/sets',{params:{task_type:kind,page,page_size:20},signal})).data;
-export const listMultimodalRuns=async(kind:MultimodalKind,preview:boolean,page:number,signal:AbortSignal):Promise<{items:MultimodalRun[];total:number}>=>(await api.get(preview?'/api/model-previews':'/api/validation/runs',{params:{task_type:kind,page,page_size:20},signal})).data;
+export interface MultimodalInput {project_id?:string;asset_ids?:string[];model_id?:string;checkpoint?:CheckpointInput;task_type:MultimodalKind;prompt?:string;max_tokens?:number;query_text?:string;query_image_index?:number}
+export const listMultimodalSets=async(kind:MultimodalKind,page:number,signal:AbortSignal,project_id?:string):Promise<{items:ValidationSet[];total:number}>=>(await api.get('/api/validation/sets',{params:{task_type:kind,page,page_size:20,project_id},signal})).data;
+export const listMultimodalRuns=async(kind:MultimodalKind,preview:boolean,page:number,signal:AbortSignal,project_id?:string):Promise<{items:MultimodalRun[];total:number}>=>(await api.get(preview?'/api/model-previews':'/api/validation/runs',{params:{task_type:kind,page,page_size:20,project_id},signal})).data;
 export const multimodalRoot=(preview:boolean)=>preview?'/api/model-previews':'/api/validation/runs';
 export async function multimodalDetail(id:string,preview:boolean,page:number,signal:AbortSignal){
   const root=multimodalRoot(preview);

@@ -9,20 +9,20 @@ export interface ActivityReceipt { duplicate: boolean; accepted_seconds: number 
 export interface EfficiencyUser {
   user_id: number; username: string; active_seconds: number | null;
   annotation_seconds: number | null; review_seconds: number | null;
-  annotation_events: number; review_events: number;
+  annotation_images: number; review_images: number; annotation_events: number; review_events: number;
   timed_annotation_events: number; timed_review_events: number;
   annotation_per_hour: number | null; review_per_hour: number | null;
 }
 export interface Analytics {
   quality: {
     total: number; approved: number; rejected: number; pending: number; negative_samples: number;
-    sources: { manual: number; model: number; unknown: number };
+    sources: { manual: number; model: number; unknown: number; reuse?: number };
     review_origins: { human: number; automatic: number; unknown: number };
     process_pass_rate: number | null;
     categories: { label: string; boxes: number; assets: number }[];
   };
   workload: {
-    human_annotation_events: number; automatic_annotation_events: number;
+    human_annotation_images: number; human_review_images: number; human_annotation_events: number; automatic_annotation_events: number;
     human_review_events: number; automatic_review_events: number; rework_events: number; unknown_events: number;
   };
   efficiency: {

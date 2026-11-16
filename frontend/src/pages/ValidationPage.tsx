@@ -11,8 +11,9 @@ import { CreateValidationRun, CreateValidationSet } from '../components/validati
 import ValidationResults from '../components/validation/ValidationResults';
 import MultimodalWorkspace from '../components/validation/MultimodalWorkspace';
 
-export default function ValidationPage(){
+export default function ValidationPage({embeddedProject}:{embeddedProject?:Project}){
   const [params,setParams]=useSearchParams();
+  if(embeddedProject)return embeddedProject.task_type==='detection'?<DetectionValidationPage embeddedProject={embeddedProject}/>:<MultimodalWorkspace kind={embeddedProject.task_type==='vector'?'embedding':'caption'} embeddedProject={embeddedProject}/>;
   const kind=params.get('task_type')||'detection';
   return <Tabs activeKey={kind} onChange={value=>setParams(previous=>{const next=new URLSearchParams(previous);next.set('task_type',value);next.delete('semantic_run_id');return next;},{preventScrollReset:true})} items={[
     {key:'detection',label:'目标检测',children:<DetectionValidationPage/>},
@@ -27,9 +28,10 @@ function setSource(dataset: ValidationSet) {
   return dataset.source?.kind === 'snapshot' ? `冻结包 ${String(dataset.source.split || 'val/test')}（需核对独立性证据）` : '已确认标注快照（未验证独立）';
 }
 
-function DetectionValidationPage() {
+function DetectionValidationPage({embeddedProject}:{embeddedProject?:Project}) {
   const [params]=useSearchParams();
-  const contextId=params.get('project_id')||undefined;
+  const projectId=embeddedProject?.id;
+  const contextId=projectId||params.get('project_id')||undefined;
   const [projects, setProjects] = useState<Project[]>([]);
   const [admin, setAdmin] = useState(false), [ready, setReady] = useState(false), [setupError, setSetupError] = useState(''), [setupRevision, setSetupRevision] = useState(0);
   const [setPage, setSetPage] = useState(1), [setPageSize, setSetPageSize] = useState(20), [setRevision, setSetRevision] = useState(0);
@@ -46,8 +48,8 @@ function DetectionValidationPage() {
     setReady(false); setAdmin(false); setSetupError('');
     (async () => {
       const user = await getCurrentUser();
-      const all: Project[] = [];
-      if (user.role === 'admin') {
+      const all: Project[] = embeddedProject?[embeddedProject]:[];
+      if (user.role === 'admin'&&!embeddedProject) {
         for (let page = 1; ; page++) {
           const result = await getProjects({ page, page_size: 100, task_type: 'detection' });
           if (!current) return;
@@ -61,10 +63,10 @@ function DetectionValidationPage() {
       setAdmin(user.role === 'admin'); setReady(true);
     })().catch(e => { if (current) setSetupError(validationError(e, '权限、项目或模型读取失败')); });
     return () => { current = false; };
-  }, [setupRevision]);
-  const loadSets = useCallback((signal: AbortSignal) => getValidationSets({ page: setPage, page_size: setPageSize }, signal), [setPage, setPageSize]);
+  }, [setupRevision,embeddedProject]);
+  const loadSets = useCallback((signal: AbortSignal) => getValidationSets({ project_id:projectId,page: setPage, page_size: setPageSize }, signal), [setPage, setPageSize,projectId]);
   const sets = useAutomationFeed(`${setPage}:${setPageSize}`, loadSets, noPolling, setRevision);
-  const loadRuns = useCallback((signal: AbortSignal) => getValidationRuns({ set_id: filterSet?.id, page: runPage, page_size: runPageSize }, signal), [filterSet?.id, runPage, runPageSize]);
+  const loadRuns = useCallback((signal: AbortSignal) => getValidationRuns({ project_id:projectId,set_id: filterSet?.id, page: runPage, page_size: runPageSize }, signal), [filterSet?.id, runPage, runPageSize,projectId]);
   const runs = useAutomationFeed(`${filterSet?.id || ''}:${runPage}:${runPageSize}`, loadRuns, pollRuns, runRevision);
   const change = async (run: ValidationRun, action: 'cancel' | 'retry' | 'delete') => {
     if (!admin || writing.current) return;
@@ -99,8 +101,8 @@ function DetectionValidationPage() {
     finally{writing.current=false;if(mounted.current)setBusyId('');}
   };
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
-    {projects.some(p=>p.id===contextId)&&<Alert type="info" title={`验证项目：${projects.find(p=>p.id===contextId)?.project_name}`} description="创建验证集时自动预选本项目；已有验证集与任务仍完整展示。" action={<Link to={`/projects/${contextId}/deliver`}>返回项目</Link>}/>}
-    <Alert type="info" showIcon title="固定标注真值，直接验证训练好的检测权重" description="人工审核或管理员信任导入的YOLO标注均可作为真值。无需部署推理服务；结果不修改标注，仍需核对验证数据独立于训练数据。" />
+    {!embeddedProject&&projects.some(p=>p.id===contextId)&&<Alert type="info" title={`验证项目：${projects.find(p=>p.id===contextId)?.project_name}`} description="创建验证集时自动预选本项目；已有验证集与任务仍完整展示。" action={<Link to={`/projects/${contextId}/deliver`}>返回项目</Link>}/>}
+    <Alert type="info" showIcon title="固定标注真值，评估检测模型" description="人工审核或管理员信任导入的YOLO标注均可作为真值。可选已部署模型服务或训练权重；结果不修改标注，仍需核对验证数据独立于训练数据。" />
     {ready && !admin && <Alert type="info" title="只读模式：创建、取消、重试和删除仅管理员可操作。" />}
     {setupError && <Alert type="error" title={setupError} action={<Button onClick={() => setSetupRevision(n => n + 1)}>重试初始化</Button>} />}
     <Card title="验证集列表" styles={{ body: { minWidth: 0 } }}>
@@ -118,7 +120,7 @@ function DetectionValidationPage() {
         { title: '创建时间', dataIndex: 'created_at', width: 200 },
         { title: '操作', width: 380, render: (_, dataset) => <Space wrap>
           <Button onClick={() => { setFilterSet(dataset); setRunPage(1); setSelectedRun(undefined); }}>查看任务</Button>
-          {admin && <Button onClick={() => setCreatingRun(dataset)} disabled={dataset.total === 0}>验证权重</Button>}
+          {admin && <Button onClick={() => setCreatingRun(dataset)} disabled={dataset.total === 0}>评估模型</Button>}
           {admin&&<Button disabled={!!busyId||!dataset.project_id} onClick={()=>{setActionError('');setSetAction({dataset,action:'refresh'});}}>更新标注</Button>}
           {admin&&<Button danger disabled={!!busyId} onClick={()=>{setActionError('');setSetAction({dataset,action:'delete'});}}>删除验证集</Button>}
         </Space> },
@@ -148,8 +150,8 @@ function DetectionValidationPage() {
       ]} pagination={{ current: runPage, pageSize: runPageSize, total: runs.data?.total || 0, showSizeChanger: true, pageSizeOptions: [20, 50, 100], onChange: (page, size) => { setRunPage(size === runPageSize ? page : 1); setRunPageSize(size); } }} />
     </Card>
     {selectedRun && <ValidationResults key={selectedRun} runId={selectedRun} revision={runRevision} onClose={() => setSelectedRun(undefined)} />}
-    {creatingSet && admin && <CreateValidationSet projects={projects} projectId={projects.some(p=>p.id===contextId)?contextId:undefined} onClose={() => setCreatingSet(false)} onCreated={() => { setCreatingSet(false); setSetPage(1); setSetRevision(n => n + 1); }} />}
-    {creatingRun && admin && <CreateValidationRun dataset={creatingRun} onClose={() => setCreatingRun(undefined)} onCreated={() => { setCreatingRun(undefined); setFilterSet(undefined); setRunPage(1); setRunRevision(n => n + 1); }} />}
+    {creatingSet && admin && <CreateValidationSet projects={projects} projectLocked={!!embeddedProject} projectId={projects.some(p=>p.id===contextId)?contextId:undefined} onClose={() => setCreatingSet(false)} onCreated={() => { setCreatingSet(false); setSetPage(1); setSetRevision(n => n + 1); }} />}
+    {creatingRun && admin && <CreateValidationRun dataset={creatingRun} projectId={projectId} onClose={() => setCreatingRun(undefined)} onCreated={() => { setCreatingRun(undefined); setFilterSet(undefined); setRunPage(1); setRunRevision(n => n + 1); }} />}
     {confirmCancel && <Modal open title="取消验证任务？" okText="确认取消任务" cancelText="继续执行" okButtonProps={{ danger: true }} confirmLoading={!!busyId} closable={!busyId} mask={{ closable: !busyId }} onCancel={() => { if (!writing.current) setConfirmCancel(undefined); }} onOk={() => change(confirmCancel, 'cancel')}>
       <Typography.Paragraph>取消“{confirmCancel.name || confirmCancel.id}”的待处理样本。已有结果保留，报告将标记覆盖不完整。</Typography.Paragraph>
       {actionError && <Alert type="error" title={actionError} />}

@@ -12,6 +12,17 @@ from config.settings import settings
 from schemas.prompts import CAPTION_PROMPT
 
 
+def reject_offline_model(model):
+    check=model.connection_check or {}
+    if check.get('status')=='offline' and check.get('checked_revision')==model.revision:
+        raise HTTPException(400,f'模型“{model.name}”已离线，请先完成连接测试后再创建标注任务')
+
+
+def supports_prompt(config):
+    return config.protocol=='openai_chat' or (config.protocol=='model_service' and
+        config.kind=='detection' and config.endpoint=='/detect/grounding')
+
+
 def headers(config):
     key = config.api_key_env
     value = (getattr(settings, key, '') or os.environ.get(key, '')) if key else ''
@@ -97,6 +108,8 @@ def image_content(content, prompt):
 
 
 async def infer(config, content, width, height, prompt='', client=None):
+    if config.protocol=='jev_decide':
+        raise HTTPException(400,'请在项目目标属性分析中配置属性和可选值后使用JEV模型')
     if config.kind == 'reranker':
         raise HTTPException(400, 'Reranker配置已保留，尚未接入推理')
     if client is None:
@@ -114,7 +127,7 @@ async def infer(config, content, width, height, prompt='', client=None):
                 form['nms'] = str(config.iou)
             if prompt:
                 form['prompt'] = prompt
-        data = await response_json(client, 'POST', url, headers=auth, data=form, files={'image': ('image.bin', content, 'application/octet-stream')})
+        data = await response_json(client, 'POST', url, headers=auth, timeout=config.timeout_seconds, data=form, files={'image': ('image.bin', content, 'application/octet-stream')})
         if config.kind == 'detection':
             return {'kind': config.kind, **detection_result(data, config, width, height)}
         caption = data.get('caption')
@@ -128,7 +141,7 @@ async def infer(config, content, width, height, prompt='', client=None):
             body['encoding_format'] = 'float'
         else:
             body.update(temperature=0, max_tokens=512, chat_template_kwargs={'enable_thinking': False})
-        data = await response_json(client, 'POST', url, headers=auth, json=body)
+        data = await response_json(client, 'POST', url, headers=auth, timeout=config.timeout_seconds, json=body)
         try:
             if config.protocol == 'openai_embedding':
                 vector = data['data'][0]['embedding']
@@ -145,6 +158,11 @@ async def infer(config, content, width, height, prompt='', client=None):
 
 async def test_connection(config):
     async with httpx.AsyncClient(timeout=min(config.timeout_seconds, 15), follow_redirects=False) as client:
+        if config.protocol=='jev_decide':
+            info=await response_json(client,'GET',config.base_url+config.endpoint+'/info',headers=headers(config))
+            if not isinstance(info.get('protocol'),str) or not info['protocol'].startswith('jev'):
+                raise HTTPException(502,'服务未返回有效的JEV协议信息')
+            return {'ok':True,'detail':'JEV协议信息可访问；请在目标属性分析中用样本验证推理效果'}
         if config.protocol == 'model_service':
             schema = await response_json(client, 'GET', config.base_url + '/openapi.json', headers=headers(config))
             if 'post' not in schema.get('paths', {}).get(config.endpoint, {}):
