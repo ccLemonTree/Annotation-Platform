@@ -13,7 +13,7 @@ BASE_URL = "http://localhost:8000"
 
 # 测试账户
 USERNAME = "admin"
-PASSWORD = os.environ["ANNOTATION_PASSWORD"]
+PASSWORD = os.environ.get("ANNOTATION_PASSWORD", "")
 
 
 async def test_full_crud():
@@ -133,4 +133,6 @@ async def test_full_crud():
 
 
 if __name__ == "__main__":
+    if os.environ.get("RUN_MANUAL_CHECKS") != "1" or not PASSWORD:
+        raise SystemExit("安全拦截：此手工联调脚本会创建/删除测试项目，请显式设置 RUN_MANUAL_CHECKS=1 与 ANNOTATION_PASSWORD 后执行。")
     asyncio.run(test_full_crud())

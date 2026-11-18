@@ -336,5 +336,7 @@ class APITester:
 
 
 if __name__ == "__main__":
+    if os.environ.get("RUN_MANUAL_CHECKS") != "1":
+        raise SystemExit("安全拦截：此手工联调脚本会读写目标服务数据，仅允许在隔离环境显式设置 RUN_MANUAL_CHECKS=1 后执行。")
     tester = APITester()
     tester.run_all_tests()

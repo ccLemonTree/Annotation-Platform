@@ -14,7 +14,7 @@ from sqlalchemy.pool import NullPool
 from tests.test_image_semantics import semantic, payload, provider
 from tests.test_image_semantics import test_late_results_never_write
 
-pytestmark=[pytest.mark.asyncio,pytest.mark.skipif(os.environ.get('SEMANTICS_POSTGRES_INTEGRATION')!='1',reason='requires explicit disposable PG integration')]
+pytestmark=[pytest.mark.asyncio,pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS')!='1' and os.environ.get('SEMANTICS_POSTGRES_INTEGRATION')!='1',reason='requires explicit disposable PG integration')]
 
 
 @pytest_asyncio.fixture

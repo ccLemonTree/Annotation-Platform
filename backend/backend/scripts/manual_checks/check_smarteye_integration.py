@@ -13,7 +13,7 @@ from uuid import UUID
 
 BASE_URL = "http://localhost:8000"
 USERNAME = "admin"
-PASSWORD = os.environ["ANNOTATION_PASSWORD"]
+PASSWORD = os.environ.get("ANNOTATION_PASSWORD", "")
 
 
 async def test_smarteye_integration():
@@ -198,4 +198,6 @@ async def test_smarteye_integration():
 
 
 if __name__ == "__main__":
+    if os.environ.get("RUN_MANUAL_CHECKS") != "1" or not PASSWORD:
+        raise SystemExit("安全拦截：此手工联调脚本会创建下载与导入任务，请显式设置 RUN_MANUAL_CHECKS=1 与 ANNOTATION_PASSWORD 后执行。")
     asyncio.run(test_smarteye_integration())

@@ -14,7 +14,7 @@ from models import Base,Tenant,LibraryImage,ImageIngestSettings,ImageCollection,
 from schemas.image_ingest import ImageIngestConfig
 from config.settings import settings
 
-@pytest.mark.skipif(os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS')!='1' and os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
 @pytest.mark.asyncio
 async def test_011_preserves_shared_scene_and_snapshots_collection_defaults(monkeypatch):
     name='codex_p3_'+uuid4().hex

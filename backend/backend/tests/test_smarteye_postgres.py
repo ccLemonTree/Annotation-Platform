@@ -22,7 +22,7 @@ from services.auth import create_access_token, get_password_hash
 from services.storage import reset_storage
 from main import app
 
-@pytest.mark.skipif(os.environ.get('P1_POSTGRES_INTEGRATION') != '1', reason='explicit isolated PostgreSQL run required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS') != '1' and os.environ.get('P1_POSTGRES_INTEGRATION') != '1', reason='explicit isolated PostgreSQL run required')
 def test_postgres_migration_direct_association_and_shared_delete(tmp_path, monkeypatch):
     name = 'codex_p1_' + uuid.uuid4().hex
     admin = psycopg2.connect(host=settings.DB_HOST, port=settings.DB_PORT, user=settings.DB_USER,

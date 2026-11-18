@@ -13,7 +13,7 @@ from uuid import UUID
 
 BASE_URL = "http://localhost:8000"
 USERNAME = "admin"
-PASSWORD = os.environ["ANNOTATION_PASSWORD"]
+PASSWORD = os.environ.get("ANNOTATION_PASSWORD", "")
 
 
 async def test_new_features():
@@ -220,4 +220,6 @@ async def test_new_features():
 
 
 if __name__ == "__main__":
+    if os.environ.get("RUN_MANUAL_CHECKS") != "1" or not PASSWORD:
+        raise SystemExit("安全拦截：此手工联调脚本会读写目标服务数据，请显式设置 RUN_MANUAL_CHECKS=1 与 ANNOTATION_PASSWORD 后执行。")
     asyncio.run(test_new_features())

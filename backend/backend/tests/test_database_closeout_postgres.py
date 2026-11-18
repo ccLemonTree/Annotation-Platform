@@ -62,7 +62,7 @@ def test_013_reserves_linear_chain_for_014():
 
 @pytest.fixture
 def isolated_pg(monkeypatch, request):
-    if os.environ.get('P0_POSTGRES_INTEGRATION') != '1':
+    if os.environ.get('RUN_POSTGRES_TESTS') != '1' and os.environ.get('P0_POSTGRES_INTEGRATION') != '1':
         pytest.skip('explicit isolated PostgreSQL run required')
     name = 'codex_p0_db_' + uuid4().hex
     original_name = settings.DB_NAME
