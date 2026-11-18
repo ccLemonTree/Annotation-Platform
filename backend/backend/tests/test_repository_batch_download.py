@@ -77,6 +77,8 @@ async def test_batch_download_is_tenant_scoped_and_available_to_readers(client,a
     own=send(client,auth_headers).json()
     test_db.add(Tenant(id=2,tenant_name='other'));test_user.tenant_id=2;await test_db.commit()
     other=send(client,auth_headers).json();test_user.tenant_id=1;test_user.role='annotator';await test_db.commit()
+    assert client.post(URL,headers=auth_headers,json={'ids':[own['id']]}).status_code==403
+    test_user.role='admin';await test_db.commit()
     assert client.post(URL,headers=auth_headers,json={'ids':[own['id'],other['id']]}).status_code==404
     with unpack(client.post(URL,headers=auth_headers,json={'filters':{}})) as archive:
         assert [m['id'] for m in json.loads(archive.read('manifest.json'))['models']]==[own['id']]

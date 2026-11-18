@@ -147,7 +147,7 @@ async def test_single_attribute_core_and_supplement_are_independent_and_do_not_w
         text=json.loads(request.content)['messages'][-1]['content'][0]['text']
         assert text.startswith(core) and supplement in text
         assert '属性定义' in text and '只返回JSON对象' in text and '车身颜色' in text
-        return httpx.Response(200,json={'choices':[{'message':{'content':'{}'}}]})
+        return httpx.Response(200,json={'choices':[{'message':{'content':'{"plate":{"value":null,"reason":"遮挡"},"color":{"value":"白","reason":"可见"}}'}}]})
     monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs:real_client(transport=httpx.MockTransport(provider),**kwargs))
     response=s.client.post(url(s),headers=s.member,json=request(s,attribute_prompt=core,prompt=supplement))
     assert response.status_code==200,response.text

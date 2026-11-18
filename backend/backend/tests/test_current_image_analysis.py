@@ -167,12 +167,14 @@ async def test_detection_description_rejects_invalid_values(analysis_env,descrip
 async def test_detection_description_is_versioned_with_boxes_and_metadata(analysis_env):
     s=analysis_env;s.project.task_type='detection';s.project.label_schema={'labels':['car']};await s.db.commit()
     box={'x':1,'y':2,'width':10,'height':20,'label':'car'}
-    data={'boxes':[box],'description':'核对后的图片描述','extra_metadata':'保留'}
+    mixed={'boxes':[box],'description':'核对后的图片描述','extra_metadata':'保留'}
+    assert s.client.post('/api/annotations',headers=s.member,json={'asset_id':str(s.asset.id),'base_version':0,'annotation_data':mixed}).status_code==400
+    data={'boxes':[box]}
     first=s.client.post('/api/annotations',headers=s.member,json={'asset_id':str(s.asset.id),'base_version':0,'annotation_data':data})
     assert first.status_code==201,first.text
     second=s.client.put('/api/annotations/'+first.json()['id'],headers=s.member,
-        json={'base_version':1,'annotation_data':{**data,'boxes':[{**box,'x':3}]}})
+        json={'base_version':1,'annotation_data':{'boxes':[{**box,'x':3}]}})
     assert second.status_code==200,second.text
-    assert second.json()['annotation_data']=={**data,'boxes':[{**box,'x':3}]}
+    assert second.json()['annotation_data']=={'boxes':[{**box,'x':3}]}
     assert second.json()['version']==2 and second.json()['review_status']=='pending'
     assert s.client.get('/api/annotations/'+first.json()['id'],headers=s.member).json()['annotation_data']==data

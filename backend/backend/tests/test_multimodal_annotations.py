@@ -12,9 +12,9 @@ async def test_classification_contract_versions_and_review(client, auth_headers,
     def save(data, version=0):
         return client.post('/api/annotations', headers=auth_headers, json={
             'asset_id': str(test_asset.id), 'annotation_data': data, 'base_version': version})
-    for data in [{'labels': ['口罩', '无口罩']}, {'labels': ['unknown']}, {'labels': []}, {'labels': ['口罩', '口罩']}]:
+    for data in [{'labels': ['口罩', '无口罩']}, {'labels': ['unknown']}, {'labels': []}, {'labels': ['口罩', '口罩']}, {'labels': ['口罩'], 'description': '佩戴黑色口罩'}]:
         assert save(data).status_code == 400
-    first = save({'labels': ['口罩'], 'description': '佩戴黑色口罩'})
+    first = save({'labels': ['口罩']})
     assert first.status_code == 201, first.text
     assert save({'labels': ['无口罩']}).status_code == 409
     assert client.post('/api/annotations/' + first.json()['id'] + '/review', headers=auth_headers,
@@ -35,8 +35,8 @@ async def test_description_and_vector_validate_shared_data(client, auth_headers,
     def save(data):
         return client.post(path, headers=auth_headers, json={'asset_id': str(test_asset.id), 'annotation_data': data})
     assert save({'description': ' ', 'labels': []}).status_code == 400
-    assert save({'description': '黑衣男子', 'labels': ['其他']}).status_code == 400
-    response = save({'description': '黑衣男子', 'labels': ['黑衣']})
+    assert save({'description': '黑衣男子', 'labels': ['黑衣']}).status_code == 400
+    response = save({'description': '黑衣男子'})
     assert response.status_code == 201, response.text
     assert response.json()['annotation_data']['description'] == '黑衣男子'
 

@@ -29,16 +29,17 @@ def test_mixed_upload_accepts_inclusive_long_edge_before_storage(client,auth_hea
     assert len(list((tmp_path/'storage'/'images').rglob('*.png')))==3
 
 def test_enabled_upload_queues_deduplicated_image(client,auth_headers,mock_image_data):
-    config=client.get('/api/images/ingest-settings',headers=auth_headers).json()
-    client.put('/api/images/ingest-settings',headers=auth_headers,json={**config,'classification_enabled':True})
+    group=client.post('/api/images/collections',headers=auth_headers,json={'name':'去重队列'}).json()
+    config=client.get('/api/images/ingest-settings',headers=auth_headers,params={'collection_id':group['id']}).json()
+    client.put('/api/images/ingest-settings',headers=auth_headers,params={'collection_id':group['id']},json={**config,'classification_enabled':True})
     def upload():
-        response=client.post('/api/images/batch-upload',headers=auth_headers,
+        response=client.post('/api/images/batch-upload',headers=auth_headers,data={'collection_name':'去重队列'},
             files={'files':('fixture.jpg',mock_image_data.getvalue(),'image/jpeg')})
         assert response.status_code==201,response.text
         return response.json()[0]
     first,second=upload(),upload()
     assert first['id']==second['id'] and second['scene_status']=='pending'
-    assert client.get('/api/images',headers=auth_headers,params={'scene_status':'pending'}).json()['total']==0
+    assert client.get('/api/images',headers=auth_headers,params={'scene_status':'pending'}).json()['total']==1
 
 def test_legacy_batch_applies_platform_rule_without_partial_references(client,auth_headers,test_project):
     config=client.get('/api/images/ingest-settings',headers=auth_headers).json()
@@ -55,4 +56,4 @@ async def test_ingest_settings_admin_only(client,auth_headers,test_db,test_user)
     test_user.role='viewer';await test_db.commit()
     assert client.put('/api/images/ingest-settings',headers=auth_headers,json=config).status_code==403
     assert client.post('/api/images/ingest-settings/test',headers=auth_headers,json=config).status_code==403
-    assert client.get('/api/images/ingest-settings',headers=auth_headers).status_code==200
+    assert client.get('/api/images/ingest-settings',headers=auth_headers).status_code==403

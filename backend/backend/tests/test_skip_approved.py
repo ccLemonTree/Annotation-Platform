@@ -35,12 +35,16 @@ async def skip_env(client,test_db,test_engine,test_project,test_asset,test_user,
         admin=auth_headers,member={'Authorization':'Bearer '+create_access_token({'user_id':member.id})})
 
 
+def expected_skipped(task_type: str):
+    return {'labels':[],'skipped':True} if task_type=='classification' else {'description':'','skipped':True}
+
+
 def save_and_approve_skip(s):
     saved=s.client.post('/api/annotations',headers=s.member,json={'asset_id':str(s.asset.id),'base_version':0,'annotation_data':SKIPPED})
     assert saved.status_code==201,saved.text
     response=s.client.post('/api/annotations/'+saved.json()['id']+'/review',headers=s.member,json={'approved':True})
     assert response.status_code==200,response.text
-    assert response.json()['annotation_data']==SKIPPED and response.json()['review_status']=='approved'
+    assert response.json()['annotation_data']==expected_skipped(s.project.task_type) and response.json()['review_status']=='approved'
     assert response.json()['reviewer_id']==2
     return response.json()
 
@@ -66,7 +70,7 @@ async def test_assigned_member_can_approve_whole_image_skip_with_audit_and_count
     assert s.asset.annotation_status=='reviewed'
     assert s.project.annotated_count==1 and s.project.reviewed_count==1
     latest=await s.db.get(Annotation,UUID(saved['id']))
-    assert latest.annotation_data==SKIPPED and latest.version==1 and latest.is_latest
+    assert latest.annotation_data==expected_skipped(kind) and latest.version==1 and latest.is_latest
     approved=(await s.db.scalars(select(AnnotationEvent).where(AnnotationEvent.asset_id==s.asset.id,AnnotationEvent.action=='approve'))).all()
     assert len(approved)==1 and approved[0].user_id==2
     assert approved[0].detail['annotation_id']==saved['id'] and approved[0].detail['source']=='manual'
@@ -116,18 +120,20 @@ async def test_approved_skip_stays_private_but_historical_references_and_valid_r
     s.db.add_all([ImageCollectionMember(collection_id=mixed.id,image_id=id) for id in (good_image.id,skipped_image.id)])
     s.db.add(Annotation(asset_id=duplicate.id,version=1,is_latest=True,review_status='approved',annotation_data=VALID))
     await s.db.commit();save_and_approve_skip(s)
-    listing=s.client.get('/api/images',headers=s.admin).json()['items']
+    listing=s.client.get('/api/images',headers=s.admin,params={'review_status':'approved'}).json()['items']
     assert {row['id'] for row in listing}=={str(good_image.id)}
-    selected=s.client.get('/api/images/selection',headers=s.admin).json()['image_ids']
+    selected=s.client.get('/api/images/selection',headers=s.admin,params={'review_status':'approved'}).json()['image_ids']
     assert set(selected)=={str(good_image.id)}
     groups=s.client.get('/api/images/collections',headers=s.admin).json()
-    assert next(row for row in groups if row['id']==str(group.id))['image_count']==0
-    assert next(row for row in groups if row['id']==str(mixed.id))['image_count']==1
-    request={'project_id':str(target.id),'image_ids':[str(skipped_image.id)]}
-    assert s.client.post('/api/images/associate',headers=s.admin,json=request).status_code==409
-    existing=s.client.post('/api/images/associate',headers=s.admin,json={**request,'project_id':str(old.id)})
+    assert next(row for row in groups if row['id']==str(group.id))['image_count']==1
+    assert next(row for row in groups if row['id']==str(mixed.id))['image_count']==2
+    skipped_reuse=s.client.post('/api/images/associate',headers=s.admin,json={
+        'project_id':str(target.id),'image_ids':[str(skipped_image.id)],
+        'source_project_id':str(s.project.id),'include_source_annotations':True})
+    assert skipped_reuse.status_code==200 and skipped_reuse.json()['reused_annotations']==0 and skipped_reuse.json()['without_annotations']==1
+    existing=s.client.post('/api/images/associate',headers=s.admin,json={'project_id':str(old.id),'image_ids':[str(skipped_image.id)]})
     assert existing.status_code==200 and existing.json()['added_count']==0
-    copied=s.client.post('/api/images/associate',headers=s.admin,json={**request,'image_ids':[str(good_image.id)],
+    copied=s.client.post('/api/images/associate',headers=s.admin,json={'project_id':str(target.id),'image_ids':[str(good_image.id)],
         'source_project_id':str(s.project.id),'include_source_annotations':True})
     assert copied.status_code==200,copied.text
     assert copied.json()['reused_annotations']==1

@@ -4,13 +4,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from services.image_scenes import classify_one
 
 def queued(client,headers,image):
-    config=client.get('/api/images/ingest-settings',headers=headers).json()
-    assert client.put('/api/images/ingest-settings',headers=headers,json={**config,'classification_enabled':True,
+    group=client.post('/api/images/collections',headers=headers,json={'name':'场景分类测试'}).json()
+    params={'collection_id':group['id']}
+    config=client.get('/api/images/ingest-settings',headers=headers,params=params).json()
+    assert client.put('/api/images/ingest-settings',headers=headers,params=params,json={**config,'classification_enabled':True,
         'base_url':'http://model.test/v1','scenes':['工厂','高位摄像头']}).status_code==200
-    result=client.post('/api/images/batch-upload',headers=headers,files={'files':('fixture.jpg',image.getvalue(),'image/jpeg')})
+    result=client.post('/api/images/batch-upload',headers=headers,data={'collection_name':'场景分类测试'},files={'files':('fixture.jpg',image.getvalue(),'image/jpeg')})
     assert result.status_code==201,result.text
     image=result.json()[0]
-    image['collection_id']=client.get('/api/images/collections',headers=headers).json()[0]['id']
+    image['collection_id']=group['id']
     return image
 
 @pytest.mark.asyncio

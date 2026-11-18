@@ -311,7 +311,7 @@ async def test_permissions_and_tenant_reads(vclient, auth_headers, ready, test_d
     assert vclient.get('/api/validation/sets').status_code == 401
     test_user.role = 'user'
     await test_db.commit()
-    assert vclient.get('/api/validation/runs', headers=auth_headers).status_code == 200
+    assert vclient.get('/api/validation/runs', headers=auth_headers).status_code == 403
     assert vclient.post('/api/validation/runs/' + run['id'] + '/cancel', headers=auth_headers).status_code == 403
     test_db.add(Tenant(id=2, tenant_name='other'))
     await test_db.flush()

@@ -67,8 +67,8 @@ async def test_config_guards_tenant_status_and_corruption(client,auth_headers,te
     from models.model_repository import ModelRepositoryItem
     row=trt(client,auth_headers).json();url='/api/model-repository/'+row['id']+'/config'
     assert client.get(url).status_code==401
-    test_user.role='annotator';await test_db.commit();assert client.get(url,headers=auth_headers).status_code==200
-    test_db.add(Tenant(id=2,tenant_name='other'));test_user.tenant_id=2;await test_db.commit()
+    test_user.role='annotator';await test_db.commit();assert client.get(url,headers=auth_headers).status_code==403
+    test_user.role='admin';test_db.add(Tenant(id=2,tenant_name='other'));test_user.tenant_id=2;await test_db.commit()
     assert client.get(url,headers=auth_headers).status_code==404
     assert client.get('/api/model-repository/groups',headers=auth_headers).json()['total']==0
     test_user.tenant_id=1;record=await test_db.get(ModelRepositoryItem,UUID(row['id']));record.status='importing';await test_db.commit()

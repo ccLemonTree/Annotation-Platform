@@ -68,7 +68,8 @@ async def test_library_source_is_saved_without_project_and_copied_on_request(cli
     assert client.get(url,headers=auth_headers).json()['result']['annotated']==1
     assert client.get('/api/annotations',headers=auth_headers).json()['total']==0
     image=uploaded_image(client,auth_headers)
-    assert client.get('/api/images',headers=auth_headers).json()['total']==0
+    listing=client.get('/api/images',headers=auth_headers).json()
+    assert listing['total']==1 and listing['items'][0]['has_imported_annotation'] is True
     plain=client.post('/api/images/associate',headers=auth_headers,json=dict(project_id=str(test_project.id),image_ids=[image['id']]))
     assert plain.status_code==200 and client.get('/api/annotations',headers=auth_headers).json()['total']==0
     response=client.post('/api/images/associate',headers=auth_headers,json=dict(project_id=str(test_project.id),image_ids=[image['id']],include_imported_annotations=True))

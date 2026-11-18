@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, or_, select, cast, String, func, true
+from sqlalchemy import and_, case, literal, or_, select, cast, String, func, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
@@ -81,12 +81,14 @@ def automatic_review(annotation):
 def count_rework(updates, rejects):
     earliest={}
     for event in rejects:
-        version=event.version
+        version=event.version if hasattr(event,'version') else (getattr(event,'detail',None) or {}).get('version')
         if version is not None:
             key=(event.asset_id,version)
             earliest[key]=min(earliest.get(key,event.created_at),event.created_at)
-    return sum((event.asset_id,event.previous_version) in earliest and
-        earliest[(event.asset_id,event.previous_version)]<=event.created_at for event in updates)
+    def _prev(ev):
+        return ev.previous_version if hasattr(ev,'previous_version') else (getattr(ev,'detail',None) or {}).get('previous_version')
+    return sum((event.asset_id,_prev(event)) in earliest and
+        earliest[(event.asset_id,_prev(event))]<=event.created_at for event in updates)
 
 
 def _norm_id(value) -> str:
@@ -107,87 +109,101 @@ async def annotation_analytics(db, user, project_id, window):
     ann_conditions = [*scope, *( [Annotation.project_id == project_id] if project_id else [] )]
     latest_conditions = [*ann_conditions, (Annotation.is_latest == true()), *dated(Annotation.created_at)]
 
-    # 1. SQL GROUP BY for latest annotation status, source, and negative samples (no full annotation_data loaded)
+    # 1 & 2. Single SQL CTE + UNION ALL for status/source/negative counts AND box categories
     status_expr = func.coalesce(Annotation.review_status, 'pending')
     source_expr = case(
         (Annotation.annotation_source.in_(('manual', 'model', 'reuse')), Annotation.annotation_source),
         else_='unknown',
     )
     if is_pg:
-        is_neg_expr = and_(
-            func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array',
-            func.jsonb_array_length(Annotation.annotation_data['boxes']) == 0,
+        is_neg_expr = case(
+            (and_(
+                func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array',
+                func.jsonb_array_length(Annotation.annotation_data['boxes']) == 0,
+            ), 1),
+            else_=0,
         )
+        boxes_col = case(
+            (func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array', Annotation.annotation_data['boxes']),
+            else_=cast('[]', JSONB),
+        ).label('boxes_arr')
     else:
-        is_neg_expr = and_(
-            func.json_type(Annotation.annotation_data, '$.boxes') == 'array',
-            func.json_array_length(Annotation.annotation_data, '$.boxes') == 0,
+        is_neg_expr = case(
+            (and_(
+                func.json_type(Annotation.annotation_data, '$.boxes') == 'array',
+                func.json_array_length(Annotation.annotation_data, '$.boxes') == 0,
+            ), 1),
+            else_=0,
         )
+        boxes_col = case(
+            (func.json_type(Annotation.annotation_data, '$.boxes') == 'array', Annotation.annotation_data),
+            else_='{"boxes":[]}',
+        ).label('boxes_arr')
 
-    agg_rows = (await db.execute(
+    latest_anns_select = (
         select(
-            status_expr,
-            source_expr,
-            func.count(),
-            func.coalesce(func.sum(case((is_neg_expr, 1), else_=0)), 0),
+            Annotation.asset_id.label('asset_id'),
+            status_expr.label('st'),
+            source_expr.label('src'),
+            is_neg_expr.label('is_neg'),
+            boxes_col,
         )
         .select_from(Annotation)
         .join(Project, Annotation.project_id == Project.id)
         .where(*latest_conditions)
-        .group_by(status_expr, source_expr)
-    )).all()
+    )
+    latest_anns = latest_anns_select.cte('latest_anns') if is_pg else latest_anns_select.subquery('latest_anns')
+
+    agg_part = (
+        select(
+            literal('agg').label('row_kind'),
+            latest_anns.c.st.label('k1'),
+            latest_anns.c.src.label('k2'),
+            func.count().label('v1'),
+            func.coalesce(func.sum(latest_anns.c.is_neg), 0).label('v2'),
+        )
+        .group_by(latest_anns.c.st, latest_anns.c.src)
+    )
+
+    if is_pg:
+        box_elems = func.jsonb_array_elements(latest_anns.c.boxes_arr).table_valued('value')
+        box_json = cast(box_elems.c.value, JSONB)
+        label_col = box_json['label'].as_string()
+        valid_label = func.jsonb_typeof(box_json['label']) == 'string'
+    else:
+        box_elems = func.json_each(latest_anns.c.boxes_arr, '$.boxes').table_valued('value')
+        label_col = func.json_extract(box_elems.c.value, '$.label')
+        valid_label = func.json_type(box_elems.c.value, '$.label') == 'text'
+
+    cat_part = (
+        select(
+            literal('cat').label('row_kind'),
+            label_col.label('k1'),
+            cast(None, String).label('k2'),
+            func.count().label('v1'),
+            func.count(func.distinct(latest_anns.c.asset_id)).label('v2'),
+        )
+        .select_from(latest_anns.join(box_elems, true()))
+        .where(valid_label)
+        .group_by(label_col)
+    )
+
+    combined_rows = (await db.execute(agg_part.union_all(cat_part))).all()
 
     status = Counter()
     sources = Counter()
     total_annotations = 0
     negative = 0
-    for st, src, cnt, neg_cnt in agg_rows:
-        status[st] += cnt
-        sources[src] += cnt
-        total_annotations += cnt
-        negative += int(neg_cnt or 0)
-
-    # 2. SQL GROUP BY for box categories & distinct asset counts
-    category_list = []
-    if total_annotations > 0:
-        if is_pg:
-            boxes_arr = case(
-                (func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array', Annotation.annotation_data['boxes']),
-                else_=cast('[]', JSONB),
-            )
-            box_elems = func.jsonb_array_elements(boxes_arr).table_valued('value')
-            box_json = cast(box_elems.c.value, JSONB)
-            label_col = box_json['label'].as_string()
-            cat_rows = (await db.execute(
-                select(label_col, func.count(), func.count(func.distinct(Annotation.asset_id)))
-                .select_from(Annotation)
-                .join(Project, Annotation.project_id == Project.id)
-                .join(box_elems, true())
-                .where(*latest_conditions, func.jsonb_typeof(box_json['label']) == 'string')
-                .group_by(label_col)
-                .order_by(label_col)
-            )).all()
-        else:
-            boxes_src = case(
-                (func.json_type(Annotation.annotation_data, '$.boxes') == 'array', Annotation.annotation_data),
-                else_='{"boxes":[]}',
-            )
-            box_elems = func.json_each(boxes_src, '$.boxes').table_valued('value')
-            label_col = func.json_extract(box_elems.c.value, '$.label')
-            cat_rows = (await db.execute(
-                select(label_col, func.count(), func.count(func.distinct(Annotation.asset_id)))
-                .select_from(Annotation)
-                .join(Project, Annotation.project_id == Project.id)
-                .join(box_elems, true())
-                .where(*latest_conditions, func.json_type(box_elems.c.value, '$.label') == 'text')
-                .group_by(label_col)
-                .order_by(label_col)
-            )).all()
-        category_list = [
-            dict(label=lbl, boxes=int(box_cnt), assets=int(asset_cnt))
-            for lbl, box_cnt, asset_cnt in cat_rows
-            if isinstance(lbl, str)
-        ]
+    raw_cats = []
+    for row_kind, k1, k2, v1, v2 in combined_rows:
+        if row_kind == 'agg':
+            status[k1] += int(v1 or 0)
+            sources[k2] += int(v1 or 0)
+            total_annotations += int(v1 or 0)
+            negative += int(v2 or 0)
+        elif isinstance(k1, str):
+            raw_cats.append(dict(label=k1, boxes=int(v1 or 0), assets=int(v2 or 0)))
+    category_list = sorted(raw_cats, key=lambda item: item['label'])
 
     # 3. SQL Hash/Merge LEFT JOIN for review_origins (O(N+M), no correlated N^2 scan, no func.replace on PG)
     review_origins = Counter()

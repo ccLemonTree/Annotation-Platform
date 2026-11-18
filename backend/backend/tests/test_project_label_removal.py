@@ -1,4 +1,5 @@
 from copy import deepcopy
+from uuid import UUID
 import pytest
 from models import Annotation,Asset,Project,LibraryImage,Tenant,User,ExportSnapshot
 from services.auth import create_access_token
@@ -33,7 +34,13 @@ async def test_remove_only_exact_label_project_wide_with_history_review_and_shar
     test_db.add(other_asset);await test_db.commit()
     rows=[]
     for asset,boxes in [(test_asset,[BOX,{**BOX,'label':'bike'},{**BOX,'label':'Person'}]),(second,[BOX,BOX]),(third,[{**BOX,'label':'bike'}]),(other_asset,[BOX])]:
-        row=client.post('/api/annotations',headers=auth_headers,json=dict(asset_id=str(asset.id),annotation_data=dict(boxes=boxes,import_source={'fixture':True}))).json()
+        created=client.post('/api/annotations',headers=auth_headers,json=dict(asset_id=str(asset.id),annotation_data=dict(boxes=boxes)))
+        assert created.status_code==201,created.text
+        row=created.json()
+        ann_obj=await test_db.get(Annotation,UUID(row['id']))
+        ann_obj.annotation_data={**ann_obj.annotation_data,'import_source':{'fixture':True}}
+        await test_db.commit()
+        row['annotation_data']=deepcopy(ann_obj.annotation_data)
         assert client.post('/api/annotations/'+row['id']+'/review',headers=auth_headers,json=dict(approved=True)).status_code==200
         rows.append(row)
     before=deepcopy(rows)

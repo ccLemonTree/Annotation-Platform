@@ -41,7 +41,10 @@ def test_capture_login_error_exposes_only_fixed_reason(capture_client,monkeypatc
 
 def test_capture_failure_message_is_compact_and_repeated_reasons_are_counted(capture_client,monkeypatch):
     from integrations.smarteye import device_capture as capture,runtime
+    from integrations.smarteye.management_schema import devices as devices_table
     devices=[{'plat_id':'p','device_id':str(i)} for i in range(30)]
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices_table.insert(), [dict(d, tenant_id=1, payload={}) for d in devices])
     item=schedule(capture_client,devices=devices).json['data']
     def fail(*args):raise capture.CaptureError('平台登录失败：验证码校验失败')
     monkeypatch.setattr(capture,'_capture_device',fail)

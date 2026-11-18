@@ -111,7 +111,7 @@ async def test_detection_child_inherits_reference_and_original_scope_change_is_s
     def provider(request):
         if request.url.path=='/detect':return httpx.Response(200,json={'detections':[{'class':'car','bbox':[0,0,32,48],'score':.9}]})
         assert len(json.loads(request.content)['messages'])==3
-        return httpx.Response(200,json={'choices':[{'message':{'content':'{}'}}]})
+        return httpx.Response(200,json={'choices':[{'message':{'content':'{"plate":{"value":null,"reason":"遮挡"},"color":{"value":"白","reason":"可见"}}'}}]})
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         await service.process_one(s.sessions,client);await service.process_one(s.sessions,client)
     async with s.sessions() as db:

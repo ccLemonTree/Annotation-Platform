@@ -80,7 +80,7 @@ async def test_workflow_quality_routes_passes_and_deletes_failed_crops(work_env,
         annotation=await db.scalar(select(Annotation).where(Annotation.asset_id==derived))
         assert bool(annotation) is (passed is not False)
         item=await db.scalar(select(ProjectWorkItem).where(ProjectWorkItem.job_id==quality.id))
-        assert item.status==('failed' if passed is None else 'completed')
+        assert item.status==('retry_wait' if passed is None else 'completed')
         if passed is not None:assert item.result['deleted'] is (not passed)
         downstream=await db.scalar(select(ProjectWorkItem.asset_id).where(ProjectWorkItem.job_id==next_step.id))
         assert downstream==(derived if passed else None)

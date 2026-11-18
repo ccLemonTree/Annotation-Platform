@@ -385,12 +385,23 @@ class _SandboxSlot:
         self.proc = None
         self.loop = None
         if proc is not None:
+            tr = getattr(proc, '_transport', None)
+            in_tr = getattr(proc.stdin, '_transport', None) if proc.stdin else None
+            out_tr = getattr(proc.stdout, '_transport', None) if proc.stdout else None
             try:
                 if proc.stdin:
                     proc.stdin.close()
                 proc.kill()
                 if proc_loop is not None and not proc_loop.is_closed() and proc_loop is asyncio.get_running_loop():
                     await proc.wait()
+                    for pipe_tr in (in_tr, out_tr, tr):
+                        if pipe_tr is not None:
+                            pipe_tr.close()
+                    await asyncio.sleep(0)
+                else:
+                    for pipe_tr in (in_tr, out_tr, tr):
+                        if pipe_tr is not None:
+                            pipe_tr.close()
             except Exception:
                 pass
 

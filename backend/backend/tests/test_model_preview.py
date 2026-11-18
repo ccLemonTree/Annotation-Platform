@@ -262,11 +262,9 @@ async def test_normal_user_service_preview_but_not_checkpoint(pclient,detector,a
     async def infer(*args):return {'boxes':[],'warnings':[]}
     monkeypatch.setattr(validation,'infer',infer)
     test_user.role='annotator';await test_db.commit()
-    response=upload(pclient,auth_headers,mock_image_data.getvalue(),{'model_id':str(detector.id)})
-    assert response.status_code==201,response.text
-    await validation.process_one(async_sessionmaker(test_engine,expire_on_commit=False))
-    assert pclient.get('/api/model-previews/'+response.json()['id'],headers=auth_headers).json()['status']=='completed'
+    assert upload(pclient,auth_headers,mock_image_data.getvalue(),{'model_id':str(detector.id)}).status_code==403
     assert upload(pclient,auth_headers,mock_image_data.getvalue(),{'checkpoint':{'kind':'yolo26','weight_path':'/models/best.pt'}}).status_code==403
+    assert pclient.get('/api/model-previews',headers=auth_headers).status_code==403
     assert pclient.get('/api/model-previews').status_code==401
 
 

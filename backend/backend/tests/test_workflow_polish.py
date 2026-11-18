@@ -33,8 +33,10 @@ async def test_old_configuration_offline_result_does_not_block_new_model(work_en
 async def test_image_platform_and_device_filters_match_same_source_and_selection(client,auth_headers,reusable,test_db):
     source,_,images,assets,_=reusable
     images[0].device_info={'sources':[{'platform_name':'平台一','device_name':'门口'},{'platform_name':'平台二','device_name':'仓库'}]}
+    images[1].device_info={'platform_name':'平台一','device_name':'车间'}
     images[2].device_info={'platform_name':'平台二','device_name':'门口'}
     assets[0].device_info=images[0].device_info
+    assets[1].device_info=images[1].device_info
     assets[2].device_info=images[2].device_info
     await test_db.commit()
     params={'platform_name':'平台二','device_name':'门口','page_size':1}
@@ -56,7 +58,7 @@ async def test_image_platform_and_device_filters_match_same_source_and_selection
 
 
 def test_local_upload_filter_respects_device_search(client,auth_headers,reusable):
-    assert client.get('/api/images',headers=auth_headers,params={'platform_name':'@upload'}).json()['total']==2
+    assert client.get('/api/images',headers=auth_headers,params={'platform_name':'@upload'}).json()['total']==3
     assert client.get('/api/images',headers=auth_headers,params={'platform_name':'@upload','device_name':'不存在'}).json()['total']==0
     assert client.get('/api/images/source-platforms',headers=auth_headers).json()==['@upload']
 
