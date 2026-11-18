@@ -1,4 +1,5 @@
-import apiClient from './client';
+import { isAxiosError } from 'axios';
+import apiClient, { API_BASE_URL } from './client';
 import type { GpuServer } from './gpuResources';
 
 export interface TrainingMetric {
@@ -111,19 +112,55 @@ export const createTrainingRun = async (input: TrainingInput): Promise<TrainingR
 export const updateTrainingRun = async (id: string, input: TrainingInput): Promise<TrainingRun> =>
   (await apiClient.put(`/api/training/runs/${id}`, input)).data;
 export const deleteTrainingRun = async (id: string): Promise<void> => { await apiClient.delete(`/api/training/runs/${id}`); };
-export async function downloadTrainingArtifact(id:string,path:string):Promise<void>{
-  let data:Blob;
-  try {data=(await apiClient.get(`/api/training/runs/${id}/artifacts/download`,{params:{path},responseType:'blob',timeout:14460000})).data;}
-  catch(cause){
-    const error=cause as {response?:{data?:Blob}};
-    if(error.response?.data instanceof Blob){
-      let detail:string|undefined;try{detail=JSON.parse(await error.response.data.text()).detail;}catch{ /* Keep the original transport error. */ }
-      if(detail)throw Error(detail);
+export async function downloadTrainingArtifact(id: string, path: string): Promise<void> {
+  const filename = path.split('/').pop() || 'artifact';
+  const ticketPath = `/api/training/runs/${encodeURIComponent(id)}/artifacts/browser-download`;
+  const query = `?path=${encodeURIComponent(path)}`;
+  try {
+    const response = await apiClient.post<{ download_url?: string } | undefined>(
+      `${ticketPath}${query}`,
+      undefined,
+      { skipErrorToast: true, withCredentials: true, timeout: 360000 },
+    );
+    const targetUrl = response.data && typeof response.data === 'object' && response.data.download_url
+      ? response.data.download_url
+      : `${ticketPath}${query}`;
+    const link = document.createElement('a');
+    link.href = new URL(`${API_BASE_URL.replace(/\/$/, '')}${targetUrl}`, window.location.origin).href;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    return;
+  } catch (cause) {
+    if (!isAxiosError(cause) || (cause.response?.status !== 404 && cause.response?.status !== 405)) {
+      const detail = isAxiosError(cause) ? cause.response?.data?.detail : undefined;
+      if (typeof detail === 'string') throw new Error(detail);
+      throw cause;
+    }
+  }
+  let data: Blob;
+  try {
+    data = (await apiClient.get(`/api/training/runs/${id}/artifacts/download`, { params: { path }, responseType: 'blob', timeout: 14460000, skipErrorToast: true })).data;
+  } catch (cause) {
+    const error = cause as { response?: { data?: Blob } };
+    if (error.response?.data instanceof Blob) {
+      let detail: string | undefined;
+      try { detail = JSON.parse(await error.response.data.text()).detail; } catch { /* Keep the original transport error. */ }
+      if (detail) throw Error(detail);
     }
     throw cause;
   }
-  const url=URL.createObjectURL(data),link=document.createElement('a');link.href=url;link.download=path.split('/').pop()||'artifact';
-  document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  const url = URL.createObjectURL(data);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 export const trainingAction = async (id: string, action: string): Promise<TrainingRun | TrainingCheck> =>
   (await apiClient.post(`/api/training/runs/${id}/${action}`, {}, { timeout: 360000 })).data;

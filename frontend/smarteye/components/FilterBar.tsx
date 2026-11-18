@@ -1,5 +1,6 @@
 import { apiFetch } from '../network';
 import React, { useEffect, useState, useRef } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import type { PlatformOption } from '../types';
 import { API_BASE_URL } from '../constants';
 
@@ -80,12 +81,12 @@ const FilterBar: React.FC<FilterBarProps> = ({ onSearch }) => {
       if (result.code === 0) {
         setSelectedPlatforms([]); setTargetType(''); setAvailableTargets([]);
         await fetchPlatforms();
-        alert('平台与预警类型同步成功！');
+        appMessage.success('平台与预警类型同步成功！');
       } else {
-        alert('同步失败: ' + (result.message || '未知错误'));
+        appMessage.error('同步失败: ' + (result.message || '未知错误'));
       }
-    } catch (error) {
-      alert('同步请求出错，请检查网络或后端服务');
+    } catch {
+      appMessage.error('同步请求出错，请检查网络或后端服务');
     } finally {
       setIsSyncing(false);
     }
@@ -109,7 +110,7 @@ const FilterBar: React.FC<FilterBarProps> = ({ onSearch }) => {
         return next;
       }
       if (prev.length >= MAX_PLATFORMS) {
-        alert(`最多只能选择 ${MAX_PLATFORMS} 个平台`);
+        appMessage.warning(`最多只能选择 ${MAX_PLATFORMS} 个平台`);
         return prev;
       }
       const next = [...prev, p];
@@ -129,7 +130,7 @@ const FilterBar: React.FC<FilterBarProps> = ({ onSearch }) => {
   };
 
   const handleSearch = () => {
-    if (selectedPlatforms.length === 0) { alert('请选择至少一个平台'); return; }
+    if (selectedPlatforms.length === 0) { appMessage.warning('请选择至少一个平台'); return; }
     const platNames = selectedPlatforms.map(p => p.label);
     onSearch({
       platName: platNames.length === 1 ? platNames[0] : platNames,
@@ -308,7 +309,7 @@ const FilterBar: React.FC<FilterBarProps> = ({ onSearch }) => {
             </button>
             <button
               onClick={handleSearch}
-              className="flex-1 text-white bg-primary hover:bg-blue-600 font-medium rounded-lg text-sm px-4 py-2.5 text-center transition-all shadow-lg shadow-blue-500/30"
+              className="flex-1 text-white bg-primary font-medium rounded-lg text-sm px-4 py-2.5 text-center transition-all"
             >
               查询
             </button>

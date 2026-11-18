@@ -14,6 +14,15 @@
   --ui-success: #7ddaba;
   --ui-warning: #efc784;
   --ui-error: #ff9393;
+  --ui-canvas-bg: #070b12;
+  --ui-code-bg: #090e18;
+  --ui-terminal-bg: #111827;
+  --ui-terminal-border: #273449;
+  --ui-terminal-text: #e5e7eb;
+  --ui-edge-stroke: #3c5174;
+  --ui-node-script-accent: #b69cff;
+  --ui-node-script-text: #c8b5ff;
+  --ui-node-input-accent: #64748b;
   --ui-motion-fast: 160ms;
   --ui-motion-enter: 240ms;
   --ui-motion-ease: cubic-bezier(.2, .7, .2, 1);

@@ -7,9 +7,9 @@ import { getProject } from '../../api/projects';
 import { resolveAutomationItem } from '../../api/automation';
 import type { AutomationItem } from '../../api/automation';
 import type { Annotation } from '../../api/annotations';
-import { labelColor } from '../detectionEditor';
 import type { Box } from '../detectionEditor';
-import AssetImage from '../AssetImage';
+import { useAssetImageUrl } from '../AssetImage';
+import DetectionBoxOverlay from '../DetectionBoxOverlay';
 import AutomationEvidence from './AutomationEvidence';
 
 export default function AutomationReviewPreview({ item, projectId, from='review', onClose, onResolved }: {
@@ -23,7 +23,9 @@ export default function AutomationReviewPreview({ item, projectId, from='review'
   const [error, setError] = useState(''), [comment, setComment] = useState('');
   const [conflicted, setConflicted] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const { source: imageSrc, failed: imageFailed } = useAssetImageUrl({ assetId: item.asset_id });
   const saving = useRef(false), active = useRef(true);
+  useEffect(() => { setSize({ width: 0, height: 0 }); }, [item.asset_id]);
   useEffect(() => {
     active.current = true;
     let current = true;
@@ -86,21 +88,21 @@ export default function AutomationReviewPreview({ item, projectId, from='review'
       {loading && <Spin description="读取任务所引用的标注版本…"><div style={{ minHeight: 40 }} /></Spin>}
       <Typography.Text>标注来源：{annotation?.annotation_source === 'manual' ? '人工（AI审核不修改人工框）' : annotation?.annotation_source === 'reuse' ? '项目复用' : annotation?.annotation_source || '尚无标注'}；版本：{annotation?.version ?? '—'}</Typography.Text>
       <div style={{ position: 'relative', width: '100%', maxWidth: size.width || 640, lineHeight: 0 }}>
-        <AssetImage assetId={item.asset_id} width="100%" alt="审核原图" preview={false}
-          onLoad={event => { const image = event.target as HTMLImageElement; setSize({ width: image.naturalWidth, height: image.naturalHeight }); }} />
-        {!!size.width && !!boxes.length && <svg aria-label="审核框预览" role="img" viewBox={`0 0 ${size.width} ${size.height}`}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-          {boxes.map((box, index) => {
-            const color = labelsLoading || labelsError ? '#aeb7c6' : labelColor(box.label, labels);
-            const fontSize = Math.max(16, size.width / 48);
-            return <g key={index}>
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#0b101b" strokeWidth={6} vectorEffect="non-scaling-stroke" />
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="white" strokeWidth={4} vectorEffect="non-scaling-stroke" />
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-              <text x={box.x} y={Math.max(fontSize, box.y - 4)} fill="white" stroke="#0b101b" strokeWidth={Math.max(3, fontSize * .2)} paintOrder="stroke" strokeLinejoin="round" fontSize={fontSize}>{index + 1} · {box.label}</text>
-            </g>;
-          })}
-        </svg>}
+        {imageFailed ? <span>图片加载失败</span> : imageSrc && (
+          <DetectionBoxOverlay
+            src={imageSrc}
+            width={size.width}
+            height={size.height}
+            boxes={boxes}
+            labels={labels}
+            neutral={labelsLoading || !!labelsError}
+            showIndex
+            showScore={false}
+            alt="审核原图"
+            svgLabel="审核框预览"
+            onImageLoad={setSize}
+          />
+        )}
       </div>
       {!loading && !boxes.length && <Alert type="warning" showIcon title="零框不能自动认定为负样本，请管理员核对原图后决定。" />}
       {assetProjectId && <Link to={`/annotate/${encodeURIComponent(item.asset_id)}?${search}`}>打开标注工作台</Link>}

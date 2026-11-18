@@ -1,5 +1,6 @@
-import apiClient, { API_BASE_URL } from './client';
+import { isAxiosError } from 'axios';
 import type { AxiosRequestConfig } from 'axios';
+import apiClient, { API_BASE_URL } from './client';
 
 export type RepositoryFormat = 'pt' | 'onnx' | 'tensorrt' | 'python' | 'huggingface';
 export interface RepositoryModel {
@@ -16,7 +17,7 @@ export interface RepositoryMetadata {
 export interface RepositoryDownloadFilters { q?: string; group_name?: string; format?: RepositoryFormat; gpu_model?: string; }
 export type RepositoryBatchDownload = { ids: string[]; filters?: never } | { filters: RepositoryDownloadFilters; ids?: never };
 export type RepositoryUpdate = Pick<RepositoryModel, 'name' | 'version'> & { description: string; group_name?: string; gpu_model?: string; tensorrt_version?: string };
-export const repositoryConfigPath = (model: RepositoryModel) => model.format === 'python' ? [...model.entry_file.split('/').slice(0,-2),'config.pbtxt'].join('/') : 'config.pbtxt';
+export const repositoryConfigPath = (model: RepositoryModel) => model.format === 'python' ? [...model.entry_file.split('/').slice(0, -2), 'config.pbtxt'].join('/') : 'config.pbtxt';
 export interface RepositorySource { id: string; name: string; kind: string; created_at: string }
 export interface RepositoryArtifact {
   path: string; bytes: number; format: RepositoryFormat; gpu_model?: string; tensorrt_version?: string; batch_profile?: string;
@@ -43,7 +44,7 @@ export const getRepositoryArtifacts = async (id: string, signal?: AbortSignal): 
 export const importRepositoryModel = async (input: RepositoryMetadata & { run_id: string; artifact_path: string }): Promise<RepositoryModel> =>
   (await apiClient.post(`${root}/from-training`, input, { timeout: 360000 })).data;
 export const archiveTrainingModel = async (id: string, path: string): Promise<RepositoryModel> =>
-  (await apiClient.post(`${root}/sources/${id}/archive`, {run_id:id,artifact_path:path,format:'huggingface',name:'训练模型',version:'auto'},{timeout:360000})).data;
+  (await apiClient.post(`${root}/sources/${id}/archive`, { run_id: id, artifact_path: path, format: 'huggingface', name: '训练模型', version: 'auto' }, { timeout: 360000 })).data;
 export const retryRepositoryModel = async (id: string): Promise<RepositoryModel> =>
   (await apiClient.post(`${root}/${id}/retry`)).data;
 export const updateRepositoryModel = async (id: string, input: RepositoryUpdate): Promise<RepositoryModel> =>
@@ -58,15 +59,65 @@ export const uploadRepositoryModel = async (input: RepositoryMetadata & { entry_
   })).data;
 };
 export const repositoryDownloadUrl = (id: string) => new URL(`${API_BASE_URL.replace(/\/$/, '')}${root}/${encodeURIComponent(id)}/download`, window.location.origin).href;
+
+function triggerNativeBrowserDownload(href: string, filename: string) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function authorizeAndStreamDownload(
+  ticketPath: string,
+  filename: string,
+  body?: unknown,
+  fallback?: () => Promise<void>,
+): Promise<void> {
+  try {
+    const response = await apiClient.post<{ download_url?: string } | undefined>(
+      ticketPath,
+      body,
+      { skipErrorToast: true, withCredentials: true },
+    );
+    const targetPath = response.data && typeof response.data === 'object' && response.data.download_url
+      ? response.data.download_url
+      : ticketPath;
+    const href = new URL(`${API_BASE_URL.replace(/\/$/, '')}${targetPath}`, window.location.origin).href;
+    triggerNativeBrowserDownload(href, filename);
+  } catch (cause) {
+    if (fallback && isAxiosError(cause) && (cause.response?.status === 404 || cause.response?.status === 405)) {
+      return fallback();
+    }
+    const detail = isAxiosError(cause) ? cause.response?.data?.detail : undefined;
+    if (typeof detail === 'string') throw new Error(detail);
+    throw cause;
+  }
+}
+
 export async function downloadRepositoryModel(model: RepositoryModel): Promise<void> {
-  return saveRepositoryDownload(config => apiClient.get(`${root}/${model.id}/download`, config),
-    model.files.length > 1 ? `${model.name}-${model.version}.zip` : model.entry_file.split('/').pop() || 'model');
+  const filename = model.files.length > 1 ? `${model.name}-${model.version}.zip` : model.entry_file.split('/').pop() || 'model';
+  return authorizeAndStreamDownload(
+    `${root}/${encodeURIComponent(model.id)}/browser-download`,
+    filename,
+    undefined,
+    () => saveRepositoryDownload(config => apiClient.get(`${root}/${model.id}/download`, config), filename),
+  );
 }
+
 export async function downloadRepositoryBatch(input: RepositoryBatchDownload): Promise<void> {
-  return saveRepositoryDownload(config => apiClient.post(`${root}/download-batch`, input, config), 'models-batch.zip');
+  return authorizeAndStreamDownload(
+    `${root}/download-batch/browser-download`,
+    'models-batch.zip',
+    input,
+    () => saveRepositoryDownload(config => apiClient.post(`${root}/download-batch`, input, config), 'models-batch.zip'),
+  );
 }
+
 async function saveRepositoryDownload(
-  request: (config: AxiosRequestConfig) => Promise<{data: Blob}>,
+  request: (config: AxiosRequestConfig) => Promise<{ data: Blob }>,
   filename: string,
 ): Promise<void> {
   const controller = new AbortController();
@@ -78,10 +129,11 @@ async function saveRepositoryDownload(
   resetTimer();
   let data: Blob;
   try {
-    data = (await request({ responseType: 'blob', timeout: 0, skipErrorToast: true,
-      signal: controller.signal, onDownloadProgress: resetTimer })).data;
-  }
-  catch (cause) {
+    data = (await request({
+      responseType: 'blob', timeout: 0, skipErrorToast: true,
+      signal: controller.signal, onDownloadProgress: resetTimer,
+    })).data;
+  } catch (cause) {
     if (controller.signal.aborted) throw Error('下载连续 5 分钟没有进度，请重试。');
     const error = cause as { response?: { data?: Blob } };
     if (error.response?.data instanceof Blob) {
@@ -90,11 +142,10 @@ async function saveRepositoryDownload(
       if (detail) throw Error(detail);
     }
     throw cause;
+  } finally {
+    clearTimeout(timer);
   }
-  finally { clearTimeout(timer); }
-  const url = URL.createObjectURL(data), link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link); link.click(); link.remove();
+  const url = URL.createObjectURL(data);
+  triggerNativeBrowserDownload(url, filename);
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }

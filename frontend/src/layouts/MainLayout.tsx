@@ -46,7 +46,7 @@ export default function MainLayout() {
   const section = sections.find(item => item.key === key) || sections[0];
   const workspace = location.pathname.startsWith('/annotate/');
   const vectorWorkspace = location.pathname.startsWith('/annotate/project/');
-  const embedded = key === '/smarteye';
+  const embedded = key === '/smarteye' || location.pathname.endsWith('/capture');
   const search = new URLSearchParams(location.search);
   const projectId = search.get('project_id');
   const annotationStage = key==='/annotations' && projectId
@@ -127,7 +127,7 @@ export default function MainLayout() {
         </Dropdown>
         </div>
       </Header>
-      <Content className={`platform-content ${embedded ? 'platform-content-embedded' : ''} ${workspace ? 'platform-content-workspace' : ''} ${key === '/' ? 'platform-content-dashboard' : ''}`}>
+      <Content className={['platform-content', embedded && 'platform-content-embedded', workspace && 'platform-content-workspace', key === '/' && 'platform-content-dashboard'].filter(Boolean).join(' ')}>
         <div className="page-heading">
           <div>
             <h1>{title}</h1>

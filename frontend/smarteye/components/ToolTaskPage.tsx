@@ -1,5 +1,6 @@
 import { apiFetch, download } from '../network';
 import React, { useState, useEffect } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import { API_BASE_URL } from '../constants';
 import type { PlatformOption } from '../types';
 
@@ -49,11 +50,11 @@ const ToolTaskPage: React.FC = () => {
 
   const handleCreate = async () => {
     if (!platformName.trim()) {
-      alert('请选择平台');
+      appMessage.warning('请选择平台');
       return;
     }
     if (!startTime || !endTime) {
-      alert('请选择时间范围');
+      appMessage.warning('请选择时间范围');
       return;
     }
 
@@ -79,16 +80,16 @@ const ToolTaskPage: React.FC = () => {
 
       const data = await res.json();
       if (data.code === 0) {
-        alert('任务已创建');
+        appMessage.success('任务已创建');
         loadTasks();
 
         // 开始轮询任务状态
         pollTask(data.data.task_id);
       } else {
-        alert('创建失败: ' + data.msg);
+        appMessage.error('创建失败: ' + data.msg);
       }
     } catch (e: any) {
-      alert('创建失败: ' + e.message);
+      appMessage.error('创建失败: ' + e.message);
     } finally {
       setCreating(false);
     }
@@ -177,7 +178,7 @@ const ToolTaskPage: React.FC = () => {
               <button
                 onClick={handleCreate}
                 disabled={creating}
-                className="flex-1 text-white bg-primary hover:bg-blue-600 font-medium rounded-lg text-sm px-4 py-2.5 transition-all shadow-lg shadow-blue-500/30 disabled:opacity-50"
+                className="flex-1 text-white bg-primary font-medium rounded-lg text-sm px-4 py-2.5 transition-all disabled:opacity-50"
               >
                 {creating ? '创建中...' : '创建任务'}
               </button>

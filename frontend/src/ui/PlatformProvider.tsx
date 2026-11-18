@@ -1,7 +1,8 @@
-import { ConfigProvider, theme as antdTheme } from 'antd';
+import { App as AntdApp, ConfigProvider, theme as antdTheme } from 'antd';
 import type { ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
+import { registerAppFeedback } from './appFeedback';
 import './tokens.css';
 
 const styles = getComputedStyle(document.documentElement);
@@ -30,12 +31,25 @@ const theme: ThemeConfig = {
   components: {
     Layout: { headerBg: styles.getPropertyValue('--ui-sidebar').trim(), siderBg: styles.getPropertyValue('--ui-sidebar').trim() },
     Menu: { itemBg: styles.getPropertyValue('--ui-sidebar').trim(), itemSelectedBg: styles.getPropertyValue('--ui-primary-soft').trim(), itemSelectedColor: styles.getPropertyValue('--ui-primary').trim(), itemHeight: 44 },
-    Card: { headerFontSize: 16, headerHeight: 56, bodyPadding: 24, borderRadiusLG: 12 },
+    Card: { headerFontSize: 16, headerHeight: 56, bodyPadding: 24, borderRadiusLG: 8 },
     Table: { headerBg: styles.getPropertyValue('--ui-surface-raised').trim(), rowHoverBg: styles.getPropertyValue('--ui-surface-raised').trim(), cellPaddingBlock: 14, cellPaddingInline: 16 },
     Button: { colorPrimary: styles.getPropertyValue('--ui-action').trim(), colorPrimaryHover: styles.getPropertyValue('--ui-action-hover').trim(), primaryColor: '#ffffff', primaryShadow: 'none', defaultShadow: 'none' },
   },
 };
 
+function FeedbackBridge() {
+  const { message, modal } = AntdApp.useApp();
+  useEffect(() => registerAppFeedback({ message, modal }), [message, modal]);
+  return null;
+}
+
 export default function PlatformProvider({ children }: { children: ReactNode }) {
-  return <ConfigProvider locale={zhCN} theme={theme} select={{showSearch:{optionFilterProp:['label','children','value']}}}>{children}</ConfigProvider>;
+  return (
+    <ConfigProvider locale={zhCN} theme={theme} select={{ showSearch: { optionFilterProp: ['label', 'children', 'value'] } }}>
+      <AntdApp>
+        <FeedbackBridge />
+        {children}
+      </AntdApp>
+    </ConfigProvider>
+  );
 }

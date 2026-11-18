@@ -13,7 +13,7 @@
 .platform-header-start { display: flex; gap: 12px; align-items: center; }
 .platform-header-label { font-size: 14px; font-weight: 600; }
 .platform-header-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.platform-feature-search { width: 300px; }
+.platform-feature-search { width: 300px; min-width: 0; max-width: 100%; }
 .platform-related { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: -8px 0 20px; font-size: 13px; }
 .project-workflow { flex-shrink: 0; margin-bottom: 20px; padding: 14px 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); }
 .project-workflow-heading { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
@@ -31,7 +31,15 @@
 .platform-user { display: flex; align-items: center; gap: 8px; }
 .platform-user .ant-avatar { background: var(--ui-primary-soft); color: var(--ui-primary); }
 .platform-main { min-width: 0; }
-.platform-content { padding: 28px; min-width: 0; }
+.platform-content { padding: 28px; min-width: 0; width: 100%; }
+.platform-content:not(.platform-content-workspace):not(.platform-content-embedded) { width: 100%; max-width: none; align-self: stretch; }
+.platform-content-embedded { flex: none; height: calc(100dvh - 64px); padding: 14px 24px; display: flex; flex-direction: column; overflow: hidden; }
+.platform-content-embedded > .page-heading { flex-shrink: 0; margin-bottom: 10px; }
+.platform-content-embedded > .page-heading h1 { font-size: 22px; }
+.platform-content-embedded > .page-heading p { margin-top: 4px; font-size: 13px; }
+.platform-content-embedded > .platform-related { flex-shrink: 0; margin: -2px 0 10px; }
+.platform-content-embedded > .project-workflow { margin-bottom: 10px; padding: 10px 14px; }
+.platform-content-embedded .smarteye-frame { flex: 1; min-height: 0; height: auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .page-heading h1 { margin: 0; font-size: 26px; line-height: 1.4; font-weight: 650; }
 .page-heading p { margin: 8px 0 0; color: var(--ui-muted); line-height: 1.6; }
@@ -60,21 +68,24 @@
 .workspace-help { color: var(--ui-muted); margin: 0 0 12px; font-size: 12px; line-height: 1.7; }
 .workspace-canvas { border-radius: var(--ui-radius); overflow: hidden; border: 1px solid var(--ui-border); }
 .workspace-canvas + .ant-checkbox-wrapper { margin-top: 12px; }
-.smarteye-frame { width: 100%; height: max(640px, calc(100dvh - 230px)); display: block; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-background); }
+.smarteye-frame { width: 100%; height: clamp(520px, calc(100dvh - 240px), 900px); display: block; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-background); }
+@media (max-width: 991px) {
+  .workspace-grid { grid-template-columns: minmax(0, 1fr); }
+  .workspace-inspector { padding: 16px 0 0; border-left: none; border-top: 1px solid var(--ui-border); }
+}
 @media (max-width: 768px) {
   .platform-header.ant-layout-header { padding: 0 16px; }
-  .platform-feature-search { width: 180px; }
+  .platform-feature-search { flex: 1; width: auto; min-width: 0; max-width: 180px; }
   .platform-header-label { display: none; }
   .platform-header-actions { gap: 4px; }
   .platform-content { padding: 20px 12px; }
+  .platform-content-embedded { padding: 12px; }
   .platform-user span:not(.ant-avatar):not(.anticon) { display: none; }
   .page-heading h1 { font-size: 22px; }
   .page-heading { margin-bottom: 20px; }
   .ant-card .ant-card-body { padding: 16px; }
   .page-toolbar-fields { width: 100%; }
   .page-toolbar-fields .ant-select { flex: 1; width: auto; min-width: 0; }
-  .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-  .workspace-inspector { padding: 16px 0 0; border-left: none; border-top: 1px solid var(--ui-border); }
   .login-screen { grid-template-columns: 1fr; gap: 24px; padding: 32px 20px; }
   .login-intro h1 { font-size: 28px; margin: 12px 0; }
   .login-steps { margin-top: 16px; gap: 16px; }
@@ -96,7 +107,7 @@
   .detection-workspace > .ant-card-body { flex: 1; min-height: 0; padding: 16px; display: flex; flex-direction: column; }
   .workspace-alerts { flex-shrink: 0; max-height: 25%; overflow-y: auto; }
   .workspace-toolbar { flex-shrink: 0; }
-  .detection-workspace .workspace-grid { flex: 1; min-height: 0; grid-template-columns: minmax(0, 1fr) 440px; grid-template-rows: minmax(0, 1fr); gap: 16px; }
+  .detection-workspace .workspace-grid { flex: 1; min-height: 0; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); grid-template-rows: minmax(0, 1fr); gap: 16px; }
   .workspace-image-column, .detection-canvas { min-height: 0; display: flex; flex-direction: column; }
   .workspace-image-column > .workspace-help, .detection-canvas > .ant-space { flex-shrink: 0; }
   .detection-canvas { flex: 1; }
