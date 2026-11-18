@@ -1,4 +1,7 @@
-from uuid import UUID
+from datetime import timedelta
+from time import monotonic
+from types import SimpleNamespace
+from uuid import UUID,uuid4
 from typing import Literal
 from fastapi import APIRouter,Depends,Query,Request,Response,HTTPException
 from pydantic import ValidationError
@@ -16,8 +19,17 @@ from models.training_run import TrainingRun
 from schemas.common import PaginationParams
 from schemas.model_repository import RepositoryMetadata,RepositoryImport,RepositoryUpdate,RepositoryBatchDownload,EXTENSIONS
 from services import model_repository as service,training_runs
+from services.auth import create_access_token,decode_access_token
 
-router=APIRouter(dependencies=[Depends(get_current_user)])
+router=APIRouter()
+_batch_tickets:dict[str,tuple[float,list[UUID]]]={}
+
+
+def _prune_batch_tickets(now:float)->None:
+    expired=[k for k,(exp,_) in _batch_tickets.items() if exp<=now]
+    for k in expired:_batch_tickets.pop(k,None)
+    while len(_batch_tickets)>=500:
+        _batch_tickets.pop(next(iter(_batch_tickets)),None)
 
 
 @router.get('')
@@ -49,6 +61,39 @@ async def sources(pagination:PaginationParams=Depends(),db:AsyncSession=Depends(
 @router.post('/download-batch',response_class=Response,responses={200:{'content':{'application/zip':{'schema':{'type':'string','format':'binary'}}}}})
 async def download_batch(request:RepositoryBatchDownload,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
     return await service.download_batch(db,user.tenant_id,request)
+
+
+@router.post('/download-batch/browser-download',status_code=204)
+async def authorize_batch_download(payload:RepositoryBatchDownload,request:Request,
+        db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+    user_id,tenant_id=user.id,user.tenant_id
+    rows=await service.resolve_batch_rows(db,tenant_id,payload)
+    ids=[row.id for row in rows]
+    await db.rollback()
+    lifetime=timedelta(hours=2)
+    now=monotonic();_prune_batch_tickets(now)
+    batch_key=uuid4().hex
+    _batch_tickets[batch_key]=(now+lifetime.total_seconds(),ids)
+    ticket=create_access_token({'repository_batch_download':batch_key,'download_user_id':user_id,'tenant_id':tenant_id},lifetime)
+    response=Response(status_code=204,headers={'Cache-Control':'no-store'})
+    response.set_cookie('repository_batch_download',ticket,max_age=int(lifetime.total_seconds()),
+        path=request.url.path,secure=request.url.scheme=='https',httponly=True,samesite='strict')
+    return response
+
+
+@router.get('/download-batch/browser-download',response_class=Response)
+async def browser_batch_download(request:Request,db:AsyncSession=Depends(get_db_session)):
+    cookie=request.cookies.get('repository_batch_download')
+    ticket=decode_access_token(cookie) if cookie else None
+    batch_key=ticket.get('repository_batch_download') if ticket else None
+    now=monotonic();_prune_batch_tickets(now)
+    entry=_batch_tickets.get(batch_key) if batch_key else None
+    if not ticket or not entry or not ticket.get('download_user_id'):
+        raise HTTPException(401,'下载授权已失效，请从模型仓库重新下载')
+    user=await db.get(User,ticket['download_user_id'])
+    if user is None or not user.is_active or user.role!='admin' or user.tenant_id!=ticket.get('tenant_id'):
+        raise HTTPException(403,'当前账号无权下载模型仓库文件')
+    return await service.download_batch(db,user.tenant_id,RepositoryBatchDownload(ids=entry[1]))
 
 
 @router.get('/sources/{id}/artifacts')
@@ -133,7 +178,42 @@ async def detail(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depen
 
 @router.get('/{id}/download')
 async def download(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
-    return await service.download(await service.scoped(db,id,user.tenant_id))
+    row=await service.scoped(db,id,user.tenant_id)
+    snap=SimpleNamespace(id=row.id,tenant_id=row.tenant_id,status=row.status,files=list(row.files),
+        entry_file=row.entry_file,file_size=row.file_size)
+    await db.rollback()
+    return await service.download(snap)
+
+
+@router.post('/{id}/browser-download',status_code=204)
+async def authorize_model_download(id:UUID,request:Request,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+    user_id,tenant_id=user.id,user.tenant_id
+    row=await service.scoped(db,id,tenant_id)
+    if row.status!='ready':raise HTTPException(409,'模型尚未入库完成')
+    model_id=str(row.id)
+    await db.rollback()
+    lifetime=timedelta(hours=2)
+    ticket=create_access_token({'repository_download':model_id,'download_user_id':user_id,'tenant_id':tenant_id},lifetime)
+    response=Response(status_code=204,headers={'Cache-Control':'no-store'})
+    response.set_cookie('repository_download',ticket,max_age=int(lifetime.total_seconds()),
+        path=request.url.path,secure=request.url.scheme=='https',httponly=True,samesite='strict')
+    return response
+
+
+@router.get('/{id}/browser-download')
+async def browser_model_download(id:UUID,request:Request,db:AsyncSession=Depends(get_db_session)):
+    cookie=request.cookies.get('repository_download')
+    ticket=decode_access_token(cookie) if cookie else None
+    if not ticket or ticket.get('repository_download')!=str(id) or not ticket.get('download_user_id'):
+        raise HTTPException(401,'下载授权已失效，请从模型仓库重新下载')
+    user=await db.get(User,ticket['download_user_id'])
+    if user is None or not user.is_active or user.role!='admin' or user.tenant_id!=ticket.get('tenant_id'):
+        raise HTTPException(403,'当前账号无权下载此模型')
+    row=await service.scoped(db,id,user.tenant_id)
+    snap=SimpleNamespace(id=row.id,tenant_id=row.tenant_id,status=row.status,files=list(row.files),
+        entry_file=row.entry_file,file_size=row.file_size)
+    await db.rollback()
+    return await service.download(snap)
 
 
 @router.get('/{id}/config')

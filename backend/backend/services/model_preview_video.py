@@ -1,7 +1,9 @@
 """Video frame sampling and overlay export for detection previews."""
+import asyncio
 import json
 import shutil
 import subprocess
+import weakref
 from fractions import Fraction
 from pathlib import Path
 
@@ -10,6 +12,20 @@ from PIL import Image, ImageDraw, ImageFont
 
 MAX_VIDEO_SIZE = 512 * 1024**2
 MAX_VIDEO_SECONDS = 600
+_render_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def cache_path(tenant_id, run_id) -> str:
+    return f'previews/{tenant_id}/{run_id}/rendered.mp4'
+
+
+def render_lock(run_id) -> asyncio.Lock:
+    key = str(run_id)
+    lock = _render_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _render_locks[key] = lock
+    return lock
 
 
 def frame_rate(interval):
@@ -47,7 +63,10 @@ def render(source, items, interval, directory):
     overlays.mkdir()
     width, height = items[0].width, items[0].height
     cjk_font = Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
-    font = ImageFont.truetype(str(cjk_font) if cjk_font.exists() else 'DejaVuSans.ttf', max(14, width // 70))
+    try:
+        font = ImageFont.truetype(str(cjk_font) if cjk_font.exists() else 'DejaVuSans.ttf', max(14, width // 70))
+    except OSError:
+        font = ImageFont.load_default()
     for index, item in enumerate(items):
         picture = Image.new('RGBA', (width, height))
         draw = ImageDraw.Draw(picture)

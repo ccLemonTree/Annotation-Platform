@@ -3,9 +3,10 @@ from uuid import UUID
 import asyncio,shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Literal
 from fastapi import APIRouter,Depends,HTTPException,Response,Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse,StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
@@ -22,7 +23,7 @@ from schemas.common import PaginationParams
 from services import validation,model_preview
 from api.asset_routes import scoped_project
 from services import model_preview_video
-from services.storage import get_storage
+from services.storage import LocalStorage,get_storage
 from config.settings import settings
 
 router=APIRouter()
@@ -92,6 +93,7 @@ async def change(id:UUID,action:str,db:AsyncSession=Depends(get_db_session),user
 @router.delete('/{id}',status_code=204)
 async def remove(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
     await model_preview.remove(db,await model_preview.scoped(db,id,user,lock=True))
+    await get_storage().delete_file(model_preview_video.cache_path(user.tenant_id,id))
 
 
 @router.get('/{id}/items/{item_id}/image')
@@ -100,7 +102,8 @@ async def image(id:UUID,item_id:UUID,db:AsyncSession=Depends(get_db_session),use
     item=await db.scalar(select(ValidationItem).where(ValidationItem.id==item_id,ValidationItem.run_id==id))
     if item is None:raise HTTPException(404,'预览图片不存在')
     dataset=await db.get(ValidationSet,run.set_id)
-    sample=next(sample for sample in dataset.samples if sample['asset_id']==str(item.asset_id))
+    sample=dict(next(sample for sample in dataset.samples if sample['asset_id']==str(item.asset_id)))
+    await db.rollback()
     content,media_type=await validation.read_sample(sample)
     return Response(content,media_type=media_type,headers={'Cache-Control':'private, no-store'})
 
@@ -113,19 +116,42 @@ async def video(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depend
     dataset=await db.get(ValidationSet,run.set_id)
     items=(await db.scalars(select(ValidationItem).where(ValidationItem.run_id==id)
         .order_by(ValidationItem.original_name,ValidationItem.id))).all()
-    temporary=TemporaryDirectory()
-    try:
-        source=await get_storage().get_file(dataset.source['video_path'])
+    tenant_id=run.tenant_id
+    source_video_key=dataset.source['video_path']
+    interval=run.model_snapshot['video']['interval']
+    download_filename=Path(run.name).stem+'-检测结果.mp4'
+    item_snapshots=[SimpleNamespace(width=item.width,height=item.height,predictions=list(item.predictions or [])) for item in items]
+    await db.rollback()
+
+    storage=get_storage()
+    cached_key=model_preview_video.cache_path(tenant_id,id)
+    if not await storage.file_exists(cached_key):
+        lock=model_preview_video.render_lock(id)
+        async with lock:
+            if not await storage.file_exists(cached_key):
+                temporary=TemporaryDirectory()
+                try:
+                    source=await storage.get_file(source_video_key)
+                    try:
+                        with (Path(temporary.name)/'source').open('wb') as target:
+                            await asyncio.to_thread(shutil.copyfileobj,source,target)
+                    finally:source.close()
+                    pending=asyncio.create_task(asyncio.to_thread(model_preview_video.render,Path(temporary.name)/'source',
+                        item_snapshots,interval,temporary.name))
+                    try:output=await asyncio.shield(pending)
+                    except asyncio.CancelledError:await pending;raise
+                    with Path(output).open('rb') as rendered_stream:
+                        await storage.save_file(rendered_stream,cached_key)
+                finally:
+                    temporary.cleanup()
+
+    if isinstance(storage,LocalStorage):
+        return FileResponse(storage.resolve_path(cached_key),media_type='video/mp4',filename=download_filename,
+            headers={'Cache-Control':'private, no-store'})
+    stream=await storage.get_file(cached_key)
+    def iter_video():
         try:
-            with (Path(temporary.name)/'source').open('wb') as target:
-                await asyncio.to_thread(shutil.copyfileobj,source,target)
-        finally:source.close()
-        pending=asyncio.create_task(asyncio.to_thread(model_preview_video.render,Path(temporary.name)/'source',items,
-            run.model_snapshot['video']['interval'],temporary.name))
-        try:output=await asyncio.shield(pending)
-        except asyncio.CancelledError:await pending;raise
-        return FileResponse(output,media_type='video/mp4',filename=Path(run.name).stem+'-检测结果.mp4',
-            headers={'Cache-Control':'private, no-store'},background=BackgroundTask(temporary.cleanup))
-    except BaseException:
-        temporary.cleanup()
-        raise
+            while chunk:=stream.read(1024*1024):yield chunk
+        finally:stream.close()
+    return StreamingResponse(iter_video(),media_type='video/mp4',
+        headers={'Cache-Control':'private, no-store','Content-Disposition':f'attachment; filename="{download_filename}"'})

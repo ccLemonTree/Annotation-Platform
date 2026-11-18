@@ -94,6 +94,11 @@ async def remote(db,run,action,**values):
     return await remote_direct(db,run,action,**values)
 
 
+async def _release_clean_db(db):
+    if db is not None and not db.new and not db.dirty and not db.deleted and db.in_transaction():
+        await db.commit()
+
+
 async def remote_direct(db,run,action,**values):
     if run.config.get('execution_backend')=='k8s':
         from services.k8s_training_recipes import build_assets
@@ -104,14 +109,17 @@ async def remote_direct(db,run,action,**values):
         if action=='start':
             payload['assets']=build_assets(run.config)
             if run.config.get('snapshot_id'):payload['snapshot_hash']=run.source['sha256']
+        await _release_clean_db(db)
         return await asyncio.to_thread(bridge,K8S_SERVER['name'],dict(executor='k8s_training',payload=payload))
     conn=await connection(db,run)
+    server_name='platform_training' if conn else run.server['name']
     payload=dict(action=action,run_id=str(run.id),config=run.config,**values)
     if run.config.get('kind') in ('model_export','model_merge'):
         if action in ('precheck','start'):payload['output_code']=(ROOT/'services/model_output_runner.py').read_text(encoding='utf-8')
     elif action in ('dataset','precheck','start') and run.config.get('kind') not in ('swift_sft','wemm','custom'):
         payload['dataset_code']=(ROOT/'services/training_dataset.py').read_text(encoding='utf-8')
-    return await asyncio.to_thread(bridge,'platform_training' if conn else run.server['name'],dict(connection=conn,payload=payload))
+    await _release_clean_db(db)
+    return await asyncio.to_thread(bridge,server_name,dict(connection=conn,payload=payload))
 
 
 async def defaults(db,user,server_id,kind):
@@ -253,10 +261,14 @@ async def list_artifacts(db,run):
         return {**cached,'cached':True}
 
 
-async def artifact_metadata(db,run,path):
-    from pathlib import PurePosixPath
+def validate_artifact_path(path: str) -> str:
     if not path or len(path)>1000 or '\\' in path or PurePosixPath(path).is_absolute() or any(p in ('','.', '..') for p in path.split('/')):
         raise HTTPException(422,'产物相对路径无效')
+    return path
+
+
+async def artifact_metadata(db,run,path):
+    validate_artifact_path(path)
     metadata=await remote(db,run,'artifact',path=path)
     expected=str(PurePosixPath(run.output_dir)/run.config['output_subdir']/path)
     logical=metadata.get('logical_path') if run.config.get('execution_backend')=='k8s' else metadata.get('path')
@@ -267,7 +279,9 @@ async def artifact_metadata(db,run,path):
 
 async def fetch_artifact(db,run,metadata,local):
     conn=await connection(db,run)
-    task=asyncio.create_task(asyncio.to_thread(bridge,'platform_training' if conn else run.server['name'],
+    server_name='platform_training' if conn else run.server['name']
+    await _release_clean_db(db)
+    task=asyncio.create_task(asyncio.to_thread(bridge,server_name,
         dict(connection=conn,download=dict(remotePath=metadata['path'],localPath=str(local),bytes=metadata['bytes']))))
     try:await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -289,7 +303,6 @@ async def fetch_artifact(db,run,metadata,local):
 
 
 async def download_artifact(db,run,path):
-    from pathlib import PurePosixPath
     from starlette.responses import FileResponse
     metadata=await artifact_metadata(db,run,path)
     folder=ROOT/'.backups/artifact-downloads';folder.mkdir(parents=True,exist_ok=True)
@@ -298,6 +311,8 @@ async def download_artifact(db,run,path):
         await fetch_artifact(db,run,metadata,local)
     except BaseException:
         temp.cleanup();raise
+    if db is not None and db.in_transaction():
+        await db.rollback()
     class DownloadResponse(FileResponse):
         async def __call__(self,*args,**kwargs):
             try:await super().__call__(*args,**kwargs)
@@ -306,11 +321,13 @@ async def download_artifact(db,run,path):
 
 
 async def check(db,run):
-    run=await scoped(db,run.id,run.tenant_id,lock=True)
+    run_id,tenant_id=run.id,run.tenant_id
+    run=await scoped(db,run_id,tenant_id)
     checkpoint=run.source.get('checkpoint_artifact')
     pending={'pending_checkpoint':True} if checkpoint and not run.config.get('onnx_stage') else {}
     if run.source.get('merge_inputs'):pending['pending_merge']=True
     if run.source.get('repository_model_id'):pending['pending_base']=True
+    await _release_clean_db(db)
     result=await remote(db,run,'precheck',**pending)
     if checkpoint:
         from services.model_output_pipeline import checkpoint_source
@@ -321,6 +338,8 @@ async def check(db,run):
             source=dict(name='训练产物',ok=False,detail=str(error.detail))
         result['checks'].append(source)
         result['ok']=result['ok'] and source['ok']
+    await _release_clean_db(db)
+    run=await scoped(db,run_id,tenant_id,lock=True)
     held=(await db.scalars(select(TrainingGpuHold.gpu_uuid).where(TrainingGpuHold.gpu_uuid.in_(reserved_gpus(run)),TrainingGpuHold.run_id!=run.id))).all()
     if held:
         result['checks'].append(dict(name='平台资源占用',ok=False,detail='所选GPU已分配给其他训练任务'))

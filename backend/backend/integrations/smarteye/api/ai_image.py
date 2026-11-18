@@ -7,16 +7,19 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+from io import BytesIO
+import ipaddress
 import json
 import mimetypes
 import os
 import shutil
+import socket
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlparse
 
 import requests
 
@@ -52,6 +55,80 @@ AI_IMAGE_MAX_OUTPUT_COUNT = 4
 AI_IMAGE_POLL_INTERVAL_SECONDS = 3
 AI_IMAGE_POLL_TIMEOUT_SECONDS = 600
 AI_IMAGE_MAX_REPEAT_COUNT = 500
+MAX_EXTERNAL_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _is_forbidden_ip(addr: ipaddress._BaseAddress) -> bool:
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None and _is_forbidden_ip(mapped):
+        return True
+    return (
+        addr.is_loopback
+        or addr.is_private
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+        or not addr.is_global
+    )
+
+
+def _validate_public_url(url: str) -> None:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("仅支持 HTTP/HTTPS 图片链接")
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("禁止访问回环或本地主机地址")
+    try:
+        literal_ip = ipaddress.ip_address(host)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None:
+        if _is_forbidden_ip(literal_ip):
+            raise ValueError("禁止访问内网、回环或链路本地地址")
+        return
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"无法解析目标域名: {host}") from exc
+    if not infos:
+        raise ValueError(f"无法解析目标域名: {host}")
+    for info in infos:
+        ip_str = info[4][0]
+        if "%" in ip_str:
+            ip_str = ip_str.split("%", 1)[0]
+        if _is_forbidden_ip(ipaddress.ip_address(ip_str)):
+            raise ValueError("禁止访问内网、回环或链路本地地址")
+
+
+def _fetch_external_image(url: str, max_bytes: int = MAX_EXTERNAL_IMAGE_BYTES) -> bytes:
+    current = (url or "").strip()
+    for _ in range(4):
+        _validate_public_url(current)
+        with requests.get(current, timeout=30, stream=True, allow_redirects=False) as response:
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("Location")
+                if not location:
+                    raise ValueError("远程图片重定向缺少目标地址")
+                current = urljoin(current, location)
+                continue
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+                raise ValueError("远程图片超过大小上限")
+            buf = BytesIO()
+            total = 0
+            for chunk in response.iter_content(65536):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("远程图片超过大小上限")
+                buf.write(chunk)
+            return buf.getvalue()
+    raise ValueError("远程图片重定向次数过多")
 
 ai_image_runtime_tasks: Dict[str, Dict[str, Any]] = {}
 _cleanup_thread_started = False
@@ -274,9 +351,7 @@ def copy_existing_assets(task_id: str, assets: List[dict], public_base_url: str 
                     raise ValueError('非法素材路径')
                 content = original.read_bytes()
             else:
-                response = requests.get(source_url, timeout=30)
-                response.raise_for_status()
-                content = response.content
+                content = _fetch_external_image(source_url)
             if not save_image_content(save_path, content):
                 continue
             relative_name = f"inputs/{unique_name}"

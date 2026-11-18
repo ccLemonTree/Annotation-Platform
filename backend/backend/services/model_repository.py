@@ -157,6 +157,8 @@ async def upload(db,user,metadata,uploads):
     python_root=PurePosixPath(metadata.entry_file).parent.parent if metadata.format=='python' else None
     config_path=str(python_root/'config.pbtxt') if python_root is not None else 'config.pbtxt'
     await available(db,user,metadata)
+    if not db.new and not db.dirty and not db.deleted and db.in_transaction():
+        await db.commit()
     row=ModelRepositoryItem(id=uuid4(),tenant_id=user.tenant_id,user_id=user.id,**metadata.model_dump(),
         source={'kind':'upload'},status='ready',files=[],file_size=0)
     destination=folder(row);partial=destination/'partial';partial.mkdir(parents=True)
@@ -331,6 +333,7 @@ async def copy_import(db,row):
             target=partial/item['path'];target.parent.mkdir(parents=True,exist_ok=True)
             await training_runs.fetch_artifact(db,run,receipt,target)
         await authorized(db,row)
+        row=await scoped(db,row.id,row.tenant_id,lock=True)
         partial.replace(destination/'files');row.status='ready';row.error=None
         commit=asyncio.create_task(db.commit())
         try:await asyncio.shield(commit)
@@ -392,7 +395,7 @@ def download_response(temp,archive,filename):
     return DownloadResponse(archive,filename=filename,media_type='application/zip')
 
 
-async def download_batch(db,tenant,request):
+async def resolve_batch_rows(db,tenant,request):
     if request.ids is not None:
         rows=(await db.scalars(select(ModelRepositoryItem).where(ModelRepositoryItem.tenant_id==tenant,ModelRepositoryItem.id.in_(request.ids)))).all()
         if len(rows)!=len(request.ids):raise HTTPException(404,'部分模型版本不存在或不属于当前租户')
@@ -405,20 +408,28 @@ async def download_batch(db,tenant,request):
     if not rows:raise HTTPException(404,'没有符合条件的可下载模型')
     if any(row.status!='ready' for row in rows):raise HTTPException(409,'所选模型尚未入库完成，请重新选择可下载版本')
     if any(not row.files or sum(item['bytes'] for item in row.files)!=row.file_size for row in rows):raise HTTPException(409,'模型文件清单无效')
+    return rows
+
+
+async def download_batch(db,tenant,request):
+    rows=await resolve_batch_rows(db,tenant,request)
     models=[dict(id=str(row.id),name=row.name,group_name=row.group_name,version=row.version,format=row.format,
         gpu_model=row.gpu_model,tensorrt_version=row.tensorrt_version,batch_profile=row.batch_profile,
-        directory='models/'+str(row.id),entry_file=row.entry_file,file_size=row.file_size,files=row.files) for row in rows]
+        directory='models/'+str(row.id),entry_file=row.entry_file,file_size=row.file_size,files=list(row.files)) for row in rows]
+    sources=[(folder(row),list(row.files),row.file_size) for row in rows]
+    total_size=sum(size for _,_,size in sources)
+    root=sources[0][0]
+    await db.rollback()
     manifest=json.dumps(dict(models=models),ensure_ascii=False,indent=2).encode('utf-8')
-    root=folder(rows[0])
     if not root.is_dir():raise HTTPException(409,'仓库模型目录缺失')
-    check_space(root,sum(row.file_size for row in rows)+len(manifest)+1024**2)
+    check_space(root,total_size+len(manifest)+1024**2)
     temp=tempfile.TemporaryDirectory(prefix='download-batch-',dir=root);archive=Path(temp.name)/'models.zip'
     def pack():
         try:
             with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_STORED,allowZip64=True) as out:
-                for row,model in zip(rows,models):
-                    base=folder(row)/'files'
-                    for item in row.files:
+                for (row_folder,row_files,_),model in zip(sources,models):
+                    base=row_folder/'files'
+                    for item in row_files:
                         name=relative(item['path']);path=base/name
                         if any(p.is_symlink() for p in [path,*path.parents]) or not path.is_file() or path.stat().st_size!=item['bytes']:raise HTTPException(409,'仓库文件校验失败')
                         digest=hashlib.sha256();size=0
