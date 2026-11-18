@@ -11,7 +11,7 @@ import pytest_asyncio
 from PIL import Image, ImageDraw
 from sqlalchemy import func, select
 
-from models import Annotation, Asset, ModelService
+from models import Annotation, Asset, ModelService, ObjectAttributeTemplate
 from models.project_work import ProjectWorkItem, ProjectWorkJob
 from tests.test_project_work import work_env
 
@@ -20,6 +20,7 @@ from tests.test_project_work import work_env
 async def ensure_model_service_table(test_engine):
     async with test_engine.begin() as connection:
         await connection.run_sync(lambda conn: ModelService.__table__.create(conn, checkfirst=True))
+        await connection.run_sync(lambda conn: ObjectAttributeTemplate.__table__.create(conn, checkfirst=True))
 
 
 def _make_sharp_png(width=200, height=160) -> bytes:
@@ -406,3 +407,47 @@ async def test_infer_text_disables_thinking_and_falls_back_on_strict_openai(monk
     assert calls[0]['timeout'] == 150
     assert calls[0]['json']['chat_template_kwargs'] == {'enable_thinking': False}
     assert 'chat_template_kwargs' not in calls[1]['json']
+
+
+def test_crop_to_branch_auto_aligns_crop_labels_and_matches_subimage():
+    from uuid import uuid4
+    from services import workflow_builtins as builtins
+    from services.workflow_ai import _sanitize_generated_workflow
+
+    # 1) Runtime fallback: cropped sub-image (crop_label='person', boxes=[]) matches box_labels=['person']
+    br_res = builtins.execute_branch(
+        width=80,
+        height=160,
+        crop_label='person',
+        boxes=[],
+        attributes={},
+        config={
+            'first_match': True,
+            'branches': [{'key': 'b_person', 'name': '人员分支', 'match_mode': 'any', 'crop_labels': [], 'box_labels': ['person']}],
+        },
+    )
+    assert br_res['matched_branches'] == ['b_person']
+
+    # 2) Sanitizer auto-migration: upstream is 'crop' -> branch box_labels moves to crop_labels
+    det_id = str(uuid4())
+    sanitized = _sanitize_generated_workflow(
+        {
+            'name': '切图分流自校正',
+            'steps': [
+                {'node_key': 's1', 'operation': 'crop', 'model_id': det_id, 'labels': ['person']},
+                {
+                    'node_key': 's2',
+                    'operation': 'branch',
+                    'branch_config': {
+                        'first_match': True,
+                        'branches': [{'key': 'b_person', 'name': '人员分支', 'box_labels': ['person']}],
+                    },
+                },
+            ],
+            'edges': [{'source': 's1', 'target': 's2', 'source_handle': 'default'}],
+        },
+        valid_model_ids={det_id},
+    )
+    branch_step = next(s for s in sanitized['steps'] if s['node_key'] == 's2')
+    assert branch_step['branch_config']['branches'][0]['crop_labels'] == ['person']
+    assert branch_step['branch_config']['branches'][0]['box_labels'] == []

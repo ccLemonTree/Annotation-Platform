@@ -6,7 +6,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from models import ModelService, Tenant
+from models import ModelService, ObjectAttributeTemplate, Tenant
 from schemas.model_service import ModelServiceConfig
 from schemas.project_work import (
     MODEL_WORKFLOW_OPERATIONS,
@@ -83,7 +83,9 @@ WORKFLOW_SYSTEM_PROMPT = '''你是图像数据管理平台的工作流架构师�
 1. "img_filter"（图像基础规则过滤）：配置字段 img_filter_config: {min_width?, max_width?, min_height?, max_height?, min_short_edge?, min_long_edge?, min_aspect_ratio?, max_aspect_ratio?, min_sharpness?(清晰度推荐 60~120), min_brightness?(防黑屏推荐 15), max_brightness?(防过曝推荐 245), dedup_phash_distance?(近重复去重推荐 4~6)}（至少填一项）
 2. "box_clean"（检测框规则清洗）：配置字段 box_clean_config: {min_box_width:0, min_box_height:0, min_area_ratio:0, max_area_ratio:1, edge_margin_px:0, keep_labels:[], drop_labels:[], rename_map:{}, nms_iou_threshold:null(如 0.5), pass_when_empty:false, save_boxes:true}
 3. "img_transform"（图像变换与脱敏）：配置字段 img_transform_config: {roi_mode:"none"|"ratio"|"pixels", roi_ratio:[left,top,right,bottom](0~1), roi_margins_px:[左,上,右,下], blur_labels:[], blur_all_boxes:false, blur_radius:18}
-4. "branch"（条件分流）：配置字段 branch_config: {first_match:true, branches:[{key:"b1"(字母数字下划线,不能为default/else), name:"分支名", match_mode:"all"|"any", crop_labels:[], box_labels:[], min_boxes:null, max_boxes:null, attribute_key:"", attribute_values:[], min_width:null, min_height:null}]}。连线 edges 中来自该节点的 source_handle 填对应分支的 key 或兜底 "else"。
+4. "branch"（条件分流）：配置字段 branch_config: {first_match:true, branches:[{key:"b1"(字母数字下划线,不能为default/else), name:"分支名", match_mode:"all"|"any", crop_labels:[], box_labels:[], min_boxes:null, max_boxes:null, attribute_key:"", attribute_values:[], min_width:null, min_height:null}]}。
+   - 【重要区分】：若上游是 "crop"（检测切图），切出的单目标子图本身没有检测框（boxes 为空），其目标类别保存在子图自身的 crop_label 中，按类别分流必须填写 `crop_labels`（如 `crop_labels: ["person"]`）；只有上游是 "detect"/"preannotate" 原图检测时才填写 `box_labels`。
+   - 连线 edges 中来自该节点的 source_handle 填对应分支的 key 或兜底 "else"。
 
 二、受限沙箱 Python 脚本节点（当内置节点无法表达自定义几何/像素/业务规则时自动生成脚本，model_id 为 null）：
 5. "script"：配置字段 script_config: {code: "def process(ctx):\n    ...", timeout_seconds: 5.0, save_boxes: true, save_attributes: true, save_description: true}
@@ -99,7 +101,8 @@ WORKFLOW_SYSTEM_PROMPT = '''你是图像数据管理平台的工作流架构师�
 10. "filter"（大模型视觉筛选，需 protocol="openai_chat" 视觉模型）：必填 prompt(1~2000字筛选条件)
 11. "quality"（大模型质量检查并剔除不合格图，需 protocol="openai_chat" 视觉模型）：必填 prompt(1~2000字合格要求)
 12. "caption"（大模型图像描述，需 kind="caption" 模型）：prompt:""
-13. "attributes"（目标属性分析，需 protocol="openai_chat" 或 "jev_decide" 模型）：attribute_prompt:"", prompt:""
+13. "attributes"（目标属性分析，需 protocol="openai_chat" 或 "jev_decide" 模型）：可选 attribute_prompt:"", prompt:"", attribute_templates:[...]
+   - 【重要】：若对特定类别切图（如 person、car 等）进行属性分析，且当前项目的默认 object_attributes 不匹配该类别时，必须为该节点配置 `attribute_templates`（优先原样复用下方【租户已保存的目标属性模板列表】中 target_label 匹配的项；若租户尚无该类别模板，则内联构造：`[{"id": "tpl_person", "name": "人员属性", "config": {"target_label": ["person"], "fields": [{"key": "gender", "name": "性别", "options": ["男", "女"], "instruction": "判断人员可见性别"}, {"key": "upper_color", "name": "上衣颜色", "options": [], "instruction": "判断上衣主色"}]}}]`，注意 field.key 必须满足正则 `^[a-z][a-z0-9_]{0,49}$`）。
 
 【输出 JSON 格式要求】
 {
@@ -214,6 +217,28 @@ def _sanitize_generated_workflow(raw: dict, valid_model_ids: set[str]) -> dict:
                 'source_handle': str(e.get('source_handle') or 'default').strip() or 'default',
             })
 
+    # Auto-align branch label field with upstream node semantics:
+    # when all upstream producers of a branch node emit cropped sub-images (crop / img_transform),
+    # migrate mistakenly placed box_labels into crop_labels so UI drawer and runtime match.
+    op_by_key = {s['node_key']: s.get('operation') for s in cleaned_steps}
+    effective_edges = cleaned_edges if cleaned_edges is not None else [
+        {'source': cleaned_steps[i]['node_key'], 'target': cleaned_steps[i + 1]['node_key'], 'source_handle': 'default'}
+        for i in range(len(cleaned_steps) - 1)
+    ]
+    incoming_sources: dict[str, list[str]] = {}
+    for e in effective_edges:
+        if e['source'] != '__input__':
+            incoming_sources.setdefault(e['target'], []).append(e['source'])
+    for s in cleaned_steps:
+        if s.get('operation') != 'branch' or not isinstance(s.get('branch_config'), dict):
+            continue
+        srcs = incoming_sources.get(s['node_key']) or []
+        if srcs and all(op_by_key.get(src) in ('crop', 'img_transform') for src in srcs):
+            for br in s['branch_config'].get('branches') or []:
+                if isinstance(br, dict) and br.get('box_labels') and not br.get('crop_labels'):
+                    br['crop_labels'] = list(br['box_labels'])
+                    br['box_labels'] = []
+
     validated = WorkflowTemplateCreate.model_validate({
         'name': name,
         'steps': cleaned_steps,
@@ -240,6 +265,10 @@ async def generate_workflow(db, project, request: WorkflowAiGenerateRequest) -> 
     all_models = list((await db.scalars(select(ModelService).where(ModelService.tenant_id == project.tenant_id))).all())
     catalog = _available_models_catalog(all_models)
     valid_model_ids = {m['model_id'] for m in catalog}
+    attr_templates = [
+        {'id': str(t.id), 'name': t.name, 'config': t.config}
+        for t in (await db.scalars(select(ObjectAttributeTemplate).where(ObjectAttributeTemplate.tenant_id == project.tenant_id))).all()
+    ]
 
     project_context = {
         'project_name': project.project_name,
@@ -252,6 +281,7 @@ async def generate_workflow(db, project, request: WorkflowAiGenerateRequest) -> 
 
     user_payload = (
         f"【当前项目上下文】\n{json.dumps(project_context, ensure_ascii=False)}\n\n"
+        f"【租户已保存的目标属性模板列表】\n{json.dumps(attr_templates, ensure_ascii=False)}\n\n"
         f"【当前在线可用模型列表】\n{json.dumps(catalog, ensure_ascii=False)}\n\n"
     )
     if request.current_workflow:
@@ -269,7 +299,7 @@ async def generate_workflow(db, project, request: WorkflowAiGenerateRequest) -> 
                 llm_config,
                 prompt=prompt_text,
                 system_prompt=WORKFLOW_SYSTEM_PROMPT,
-                max_tokens=2400,
+                max_tokens=3200,
                 client=client,
                 timeout=llm_timeout,
             )

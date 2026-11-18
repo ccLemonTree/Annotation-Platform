@@ -174,6 +174,8 @@ def execute_branch(
     matched_names: list[str] = []
     norm_crop = _norm_label(crop_label)
     box_norms = {_norm_label(b.get('label')) for b in boxes if b.get('label')}
+    # A cropped sub-image represents the cropped object itself when no inner boxes exist yet.
+    effective_box_norms = box_norms or ({norm_crop} if norm_crop else set())
 
     for case in cases:
         checks: list[bool] = []
@@ -182,7 +184,7 @@ def execute_branch(
             checks.append(bool(norm_crop and norm_crop in targets))
         if case.get('box_labels'):
             targets = {_norm_label(x) for x in case['box_labels'] if x}
-            checks.append(bool(box_norms & targets))
+            checks.append(bool(effective_box_norms & targets))
         if case.get('min_boxes') is not None:
             checks.append(len(boxes) >= int(case['min_boxes']))
         if case.get('max_boxes') is not None:
