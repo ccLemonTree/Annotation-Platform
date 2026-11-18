@@ -159,15 +159,20 @@ async def summary(db,job,details=False,page=1):
     if 'workflow_id' in job.options:
         result.update(workflow_started=job.options['workflow_started'],workflow_streaming=job.options.get('workflow_streaming',False),
             workflow_cancelled=job.options.get('workflow_cancelled',False),
-            workflow_can_follow=job.options.get('workflow_can_follow',job.options.get('workflow_streaming',False)))
+            workflow_can_follow=job.options.get('workflow_can_follow',job.options.get('workflow_streaming',False)),
+            node_key=job.options.get('node_key'),title=job.options.get('title'),
+            workflow_routes=job.options.get('workflow_routes'))
         if accepts_uploaded_crop_entry(job):
             result.update(workflow_can_route_uploaded_crops=True,uploaded_crop_job_id=job.options.get('uploaded_crop_job_id'))
         if counts.get('failed') and result['workflow_streaming'] and not result['workflow_cancelled'] and not job.options.get('queue_deleted'):
             result['retrying_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem)
                 .where(ProjectWorkItem.job_id.in_(jobs),retrying_items()))
-    if job.operation in ('detect','filter'):
+    if job.operation in ('detect','filter','img_filter','box_clean'):
         result['passed_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem).where(
             ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed',ProjectWorkItem.result['passed'].as_boolean().is_(True)))
+    elif job.operation=='script':
+        result['passed_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem).where(
+            ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed',ProjectWorkItem.result['passed'].as_boolean().is_not(False)))
     if 'batch_root' in job.options:result['batch_count']=await db.scalar(select(func.count()).select_from(jobs.subquery()))
     definition=job.options.get('attribute_schema')
     if definition:
@@ -332,13 +337,84 @@ async def finish_detection_annotation(db,work,project,asset,result):
     return result
 
 
+async def _persist_derived_crops(db, project, asset, work, item, raw_crops):
+    ids = []
+    derived_assets = []
+    root = (asset.device_info or {}).get('parent_image_id') or str(asset.image_id or asset.id)
+    for crop in raw_crops:
+        raw = crop.pop('content')
+        digest = hashlib.sha256(raw).hexdigest()
+        parent_crop = (asset.device_info or {}).get('crop') or {}
+        parent_region = parent_crop.get('root_region') or parent_crop.get('region') or [0, 0, asset.width, asset.height]
+        region = crop.get('region') or [0, 0, crop['width'], crop['height']]
+        box = crop.get('box') or {'label': crop.get('label') or 'crop', 'x': region[0], 'y': region[1], 'width': crop['width'], 'height': crop['height']}
+        crop_info = dict(
+            parent_asset_id=str(asset.id), parent_image_id=str(asset.image_id) if asset.image_id else None,
+            parent_blob_path=asset.blob_path, parent_content_hash=asset.content_hash,
+            region=region, box=box, expansion=work['options'].get('expansion', 0.0),
+            model_id=work['model'].get('id'), revision=work['model'].get('revision', 0), job_id=str(item.job_id),
+            depth=parent_crop.get('depth', 1 if asset.source_type == 'model_crop' else 0) + 1,
+            root_region=[parent_region[0] + region[0], parent_region[1] + region[1],
+                         parent_region[0] + region[2], parent_region[1] + region[3]],
+        )
+        info = {**(asset.device_info or {}), 'parent_image_id': root, 'crop': crop_info,
+                'crop_chain': [*deepcopy((asset.device_info or {}).get('crop_chain') or ([parent_crop] if parent_crop else [])), crop_info]}
+        await db.scalar(select(Project).where(Project.id == project.id).with_for_update())
+        derived = await db.scalar(select(Asset).where(Asset.project_id == project.id, Asset.content_hash == digest))
+        if derived and (derived.source_type != 'model_crop' or
+                        ((derived.device_info or {}).get('crop') or {}).get('box', {}).get('label') != box['label']):
+            with Image.open(BytesIO(raw)) as image:
+                metadata = PngImagePlugin.PngInfo()
+                metadata.add_text('project_crop', image.info.get('project_crop') or json.dumps([str(project.id), str(asset.id), region]))
+                metadata.add_text('project_crop_label', box['label'])
+                output = BytesIO()
+                image.save(output, 'PNG', pnginfo=metadata)
+            raw = output.getvalue()
+            digest = hashlib.sha256(raw).hexdigest()
+            derived = await db.scalar(select(Asset).where(Asset.project_id == project.id, Asset.content_hash == digest))
+        path = f'project-crops/{project.id}/{digest[:2]}/{digest}.png'
+        await get_storage().save_file(BytesIO(raw), path)
+        if derived is None:
+            derived = Asset(project_id=project.id, image_id=None, blob_path=path, content_hash=digest,
+                            original_name=f'{asset.id}_{digest[:12]}.png', file_size=len(raw), width=crop['width'], height=crop['height'],
+                            format='PNG', source_type='model_crop', device_info=info, annotation_status='pending')
+            db.add(derived)
+            await db.flush()
+            await db.execute(update(Project).where(Project.id == project.id).values(total_assets=Project.total_assets + 1))
+        ids.append(str(derived.id))
+        derived_assets.append(derived)
+    return list(dict.fromkeys(ids)), derived_assets
+
+
+async def _save_auto_boxes_if_editable(db, project, asset, boxes, work):
+    project = await db.scalar(select(Project).where(Project.id == project.id).with_for_update().execution_options(populate_existing=True))
+    try:
+        require_annotation_asset(project, asset)
+    except HTTPException:
+        return {'boxes_not_in_annotation_scope': True}
+    current = await db.scalar(select(Annotation).where(Annotation.asset_id == asset.id, Annotation.is_latest.is_(True)))
+    state = {**review_state(current), 'status': current.status_for('detection')} if current else {}
+    if (current.version if current else 0) != work['base_version'] or state != work['review_state']:
+        return {'source_annotation_preserved': True}
+    det_source = ((current.review_by_kind or {}).get('detection_source') or current.annotation_source) if current else None
+    if current and (det_source == 'manual' or current.status_for('detection') != 'pending' or current.reviewer_id is not None):
+        return {'source_annotation_preserved': True}
+    await register_detection_labels(db, project, boxes)
+    annotation = await save_annotation(db, asset, {'boxes': boxes, 'negative': not boxes}, current.version if current else 0,
+                                       work['user_id'], source='auto', kind='detection')
+    return {'annotation_id': str(annotation.id)}
+
+
 async def finish(sessions,work,result,error):
     async with sessions() as db:
         try:
             if work['options'].get('workflow_id'):
-                job_ids=[work['job_id']]
+                job_ids={work['job_id']}
                 if next_id:=work['options'].get('workflow_next'):
-                    job_ids.append(UUID(next_id))
+                    job_ids.add(UUID(next_id))
+                for route in (work['options'].get('workflow_routes') or []):
+                    if route.get('target_job_id'):
+                        job_ids.add(UUID(route['target_job_id']))
                 # Cancel locks the job before touching items. Take compatible worker locks in that order too.
                 await db.execute(select(ProjectWorkJob.id).where(ProjectWorkJob.id.in_(job_ids))
                     .order_by(ProjectWorkJob.id).with_for_update(read=True,key_share=True))
@@ -402,52 +478,15 @@ async def finish(sessions,work,result,error):
                     workflow_attribute_schema=attribute_schema if work['options'].get('workflow_attribute_override') else None,kind='image')
                 result['annotation_id']=str(annotation.id)
             elif work['operation'] in ('crop','detect_attributes'):
-                ids=[];derived_assets=[];filtered_count=result.get('filtered_count',0)
+                filtered_count=result.get('filtered_count',0)
                 source_annotation={}
                 if project.task_type=='detection' and work['options'].get('save_input_boxes') and result.get('source_boxes'):
                     source_annotation=await save_crop_source_boxes(db,asset,result['source_boxes'],work['user_id'])
                 elif project.task_type=='detection' and work['options'].get('workflow_id') and result['crops']:
                     project=await db.scalar(select(Project).where(Project.id==project.id).with_for_update().execution_options(populate_existing=True))
                     await register_detection_labels(db,project,[crop['box'] for crop in result['crops']])
-                root=(asset.device_info or {}).get('parent_image_id') or str(asset.image_id or asset.id)
-                for crop in result['crops']:
-                    raw=crop.pop('content');digest=hashlib.sha256(raw).hexdigest()
-                    parent_crop=(asset.device_info or {}).get('crop') or {}
-                    parent_region=parent_crop.get('root_region') or parent_crop.get('region') or [0,0,asset.width,asset.height]
-                    crop_info=dict(
-                        parent_asset_id=str(asset.id),parent_image_id=str(asset.image_id) if asset.image_id else None,
-                        parent_blob_path=asset.blob_path,parent_content_hash=asset.content_hash,
-                        region=crop['region'],box=crop['box'],expansion=work['options']['expansion'],
-                        model_id=work['model']['id'],revision=work['model']['revision'],job_id=str(item.job_id),
-                        depth=parent_crop.get('depth',1 if asset.source_type=='model_crop' else 0)+1,
-                        root_region=[parent_region[0]+crop['region'][0],parent_region[1]+crop['region'][1],
-                            parent_region[0]+crop['region'][2],parent_region[1]+crop['region'][3]])
-                    info={**(asset.device_info or {}),'parent_image_id':root,'crop':crop_info,
-                        'crop_chain':[*deepcopy((asset.device_info or {}).get('crop_chain') or ([parent_crop] if parent_crop else [])),crop_info]}
-                    await db.scalar(select(Project).where(Project.id==project.id).with_for_update())
-                    derived=await db.scalar(select(Asset).where(Asset.project_id==project.id,Asset.content_hash==digest))
-                    if derived and (derived.source_type!='model_crop' or
-                            ((derived.device_info or {}).get('crop') or {}).get('box',{}).get('label')!=crop['box']['label']):
-                        with Image.open(BytesIO(raw)) as image:
-                            metadata=PngImagePlugin.PngInfo()
-                            metadata.add_text('project_crop',image.info['project_crop'])
-                            metadata.add_text('project_crop_label',crop['box']['label'])
-                            output=BytesIO()
-                            image.save(output,'PNG',pnginfo=metadata)
-                        raw=output.getvalue()
-                        digest=hashlib.sha256(raw).hexdigest()
-                        derived=await db.scalar(select(Asset).where(Asset.project_id==project.id,Asset.content_hash==digest))
-                    path=f'project-crops/{project.id}/{digest[:2]}/{digest}.png'
-                    await get_storage().save_file(BytesIO(raw),path)
-                    if derived is None:
-                        derived=Asset(project_id=project.id,image_id=None,blob_path=path,content_hash=digest,
-                            original_name=f'{asset.id}_{digest[:12]}.png',file_size=len(raw),width=crop['width'],height=crop['height'],
-                            format='PNG',source_type='model_crop',device_info=info,annotation_status='pending')
-                        db.add(derived);await db.flush()
-                        await db.execute(update(Project).where(Project.id==project.id).values(total_assets=Project.total_assets+1))
-                    ids.append(str(derived.id))
-                    derived_assets.append(derived)
-                result=dict(asset_ids=list(dict.fromkeys(ids)),detected_count=len(ids),**source_annotation,
+                ids, derived_assets = await _persist_derived_crops(db, project, asset, work, item, result['crops'])
+                result=dict(asset_ids=ids,detected_count=len(ids),**source_annotation,
                     filtered_count=filtered_count,
                     warning=('检测到的目标均被尺寸阈值过滤，未生成裁剪图' if filtered_count else '未检测到目标；仅标注裁剪图时，此原图不进入标注队列') if not ids else '')
                 if work['operation']=='detect_attributes' and derived_assets:
@@ -466,8 +505,47 @@ async def finish(sessions,work,result,error):
                         result['attribute_job_id']=str(child.id)
                     result['skipped_annotated_count']=len(existing)
                 record_event(db,asset,work['user_id'],'crop',result)
+            elif work['operation']=='img_transform':
+                ids, _ = await _persist_derived_crops(db, project, asset, work, item, result.pop('crops', []))
+                result = dict(asset_ids=ids, detected_count=len(ids), reason=result.get('reason', ''))
+                record_event(db, asset, work['user_id'], 'img_transform', result)
+            elif work['operation']=='box_clean':
+                cleaned_boxes = result.pop('boxes', [])
+                if project.task_type=='detection' and (work['options'].get('box_clean_config') or {}).get('save_boxes', True):
+                    result.update(await _save_auto_boxes_if_editable(db, project, asset, cleaned_boxes, work))
+            elif work['operation']=='script':
+                script_cfg = work['options'].get('script_config') or {}
+                if result.get('derived'):
+                    raw_derived = []
+                    for entry in result.pop('derived'):
+                        w, h = entry['width'], entry['height']
+                        label = entry.get('label') or 'script'
+                        box = entry.get('box') if isinstance(entry.get('box'), dict) else {'label': label, 'x': 0, 'y': 0, 'width': w, 'height': h}
+                        raw_derived.append({'content': entry['content'], 'width': w, 'height': h, 'region': [0, 0, w, h], 'box': box, 'label': label})
+                    ids, _ = await _persist_derived_crops(db, project, asset, work, item, raw_derived)
+                    result['asset_ids'] = ids
+                    result['detected_count'] = len(ids)
+                else:
+                    if 'boxes' in result:
+                        script_boxes = result.pop('boxes')
+                        result['detected_count'] = len(script_boxes)
+                        if project.task_type=='detection' and script_cfg.get('save_boxes', True):
+                            result.update(await _save_auto_boxes_if_editable(db, project, asset, script_boxes, work))
+                    has_desc = 'description' in result and script_cfg.get('save_description', True)
+                    has_attr = 'attributes' in result and script_cfg.get('save_attributes', True)
+                    if (has_desc or has_attr) and project.task_type in ('caption', 'vector') and (not crops_only(project) or asset.source_type=='model_crop'):
+                        previous = await db.scalar(select(Annotation).where(Annotation.asset_id==asset.id, Annotation.is_latest.is_(True)))
+                        if review_state(previous) == work['review_state'] and (not previous or previous.annotation_source != 'manual'):
+                            data = {key: deepcopy(value) for key, value in previous.annotation_data.items() if key in IMAGE_FIELDS} if previous else {}
+                            data.pop('skipped', None)
+                            if has_desc:
+                                data['description'] = result['description']
+                            if has_attr:
+                                data['attributes'] = result['attributes']
+                            annotation = await save_annotation(db, asset, data, previous.version if previous else 0, work['user_id'], source='auto', kind='image')
+                            result['annotation_id'] = str(annotation.id)
             item.result=result;item.status='completed';item.error=None
-            if work['options'].get('workflow_next'):
+            if work['options'].get('workflow_routes') is not None or work['options'].get('workflow_next'):
                 from services.project_workflow import forward
                 await forward(db,work,result)
             await db.commit()
@@ -510,7 +588,8 @@ async def process_one(sessions,client):
             tenant_id=project.tenant_id,operation=job.operation,model=deepcopy(job.model),options=deepcopy(job.options),
             content_hash=item.content_hash,base_version=item.base_version,user_id=job.user_id)
         work['review_state']=(item.result or {}).get('review_state',{})
-        if job.options.get('save_attributes') or job.options.get('save_description') or job.operation in ('preannotate','ai_review'):
+        if (job.options.get('save_attributes') or job.options.get('save_description')
+                or job.operation in ('preannotate','ai_review','branch','box_clean','img_transform','script')):
             previous=await db.scalar(select(Annotation).where(Annotation.asset_id==item.asset_id,Annotation.is_latest.is_(True)))
             retry_annotation_id=(item.result or {}).get('attribute_retry_annotation_id')
             if retry_annotation_id and (not previous or str(previous.id)!=retry_annotation_id
@@ -520,10 +599,11 @@ async def process_one(sessions,client):
                 await db.commit()
                 return True
             work.update(base_version=previous.version if previous else 0,review_state=review_state(previous))
-            if job.operation in ('preannotate','ai_review'):
+            if job.operation in ('preannotate','ai_review','branch','box_clean','img_transform','script'):
                 work['annotation_data']=deepcopy(previous.annotation_data) if previous else {}
                 work['annotation_source']=((previous.review_by_kind or {}).get('detection_source') or previous.annotation_source) if previous else None
-                if previous:work['review_state']['status']=previous.status_for('detection')
+                if previous and job.operation in ('preannotate','ai_review','box_clean','script'):
+                    work['review_state']['status']=previous.status_for('detection')
         if job.operation=='quality':
             if job.options.get('workflow_id'):
                 previous=await db.scalar(select(Annotation).where(Annotation.asset_id==item.asset_id,Annotation.is_latest.is_(True)))
@@ -563,17 +643,57 @@ async def process_one(sessions,client):
                 targets=AttributeSchema.model_validate(options['attribute_schema']).target_labels
                 if label.casefold().removeprefix('sam3_') not in {target.casefold().removeprefix('sam3_') for target in targets}:
                     result={'attribute_skipped':True,'reason':f'裁剪类别「{label}」未选为属性分析目标'}
-            if result is None:content=await read_content(asset);width,height=asset.width,asset.height
+            if result is None:
+                if work['operation'] in ('branch', 'box_clean'):
+                    content = b''
+                    width, height = asset.width, asset.height
+                else:
+                    content = await read_content(asset)
+                    width, height = asset.width, asset.height
+                asset_meta = dict(original_name=asset.original_name, source_type=asset.source_type, crop_label=crop_label(asset))
+                existing_phashes = []
+                if work['operation'] == 'img_filter' and (options.get('img_filter_config') or {}).get('dedup_phash_distance') is not None:
+                    phash_col = ProjectWorkItem.result['phash'].as_string()
+                    existing_phashes = list((await db.scalars(select(phash_col).where(
+                        ProjectWorkItem.job_id == work['job_id'], ProjectWorkItem.status == 'completed',
+                        ProjectWorkItem.result['passed'].as_boolean().is_(True), phash_col.is_not(None),
+                    ).limit(5000))).all())
             await validate_snapshots(db,work['tenant_id'],[work['model'],work['options'].get('attribute_model')],lock=False)
             if work['options'].get('attribute_schema') and not work['options'].get('workflow_attribute_override') and work['options']['attribute_schema']!=((await db.get(Project,work['project_id'])).label_schema or {}).get('object_attributes'):
                 raise HTTPException(409,'属性配置已变更，请新建批次')
             reference_asset=await validate_example(db,await db.get(Project,work['project_id']),work['options'].get('attribute_example'))
             if reference_asset is not None and work['operation']=='attributes':
                 reference=dict(content=await read_example_content(reference_asset),answer=work['options']['attribute_example']['attributes'])
-        config=ModelServiceConfig(**work['model']['config'])
         if result is not None:
             await finish(sessions,work,result,None)
             return True
+        if work['operation'] in ('branch', 'img_filter', 'box_clean', 'img_transform', 'script'):
+            from services import workflow_builtins as builtins
+            from services.script_sandbox import run_script
+            ann_data = work.get('annotation_data') or {}
+            boxes = ann_data.get('boxes') or []
+            attrs = ann_data.get('attributes') or {}
+            desc = ann_data.get('description') or ''
+            if work['operation'] == 'branch':
+                result = builtins.execute_branch(width=width, height=height, crop_label=asset_meta['crop_label'],
+                                                 boxes=boxes, attributes=attrs, config=options['branch_config'])
+            elif work['operation'] == 'img_filter':
+                result = await asyncio.to_thread(builtins.execute_img_filter, content, options['img_filter_config'], existing_phashes)
+            elif work['operation'] == 'box_clean':
+                result = builtins.execute_box_clean(boxes, width, height, options['box_clean_config'])
+            elif work['operation'] == 'img_transform':
+                result = await asyncio.to_thread(builtins.execute_img_transform, content, project_id=str(work['project_id']),
+                                                 asset_id=str(work['asset_id']), boxes=boxes, crop_label=asset_meta['crop_label'],
+                                                 config=options['img_transform_config'])
+            else:
+                scfg = options['script_config']
+                result = await run_script(scfg['code'], content, width=width, height=height,
+                                          original_name=asset_meta['original_name'], source_type=asset_meta['source_type'],
+                                          crop_label=asset_meta['crop_label'], boxes=boxes, attributes=attrs,
+                                          description=desc, timeout_seconds=scfg.get('timeout_seconds', 5.0))
+            await finish(sessions, work, result, None)
+            return True
+        config=ModelServiceConfig(**work['model']['config'])
         if work['operation']=='caption':
             result={'description':await caption(config,content,options['prompt'],client)}
         elif work['operation'] in ('quality','filter'):

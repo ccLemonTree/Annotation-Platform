@@ -7,6 +7,7 @@ import PromptEditor from './PromptEditor';
 
 export const operations: Record<WorkflowOperation,string> = {
   crop:'检测切图', detect:'目标检测筛选', preannotate:'目标检测预标注', ai_review:'AI 审核', filter:'大模型筛选', quality:'大模型图片质量分析', caption:'大模型描述', attributes:'目标属性分析',
+  branch:'条件分流', img_filter:'图像基础规则过滤', box_clean:'检测框规则清洗', img_transform:'图像变换与脱敏', script:'Python 脚本处理',
 };
 export type DraftStep=Omit<WorkflowStep,'labels'|'auto_approve_confidence'>&{labels?:string;auto_approve_confidence?:number|null};
 export const serializeSteps=(steps:DraftStep[])=>steps.map(step=>({...step,confidence:step.confidence??undefined,expansion:step.expansion??undefined,

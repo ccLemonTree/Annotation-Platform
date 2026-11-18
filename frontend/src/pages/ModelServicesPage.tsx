@@ -3,15 +3,15 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
-import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getCaptchaModel, getModelServices, getPromptDefaults, predictModelService, saveCaptchaModel, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
+import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getCaptchaModel, getModelServices, getPromptDefaults, getWorkflowModel, predictModelService, saveCaptchaModel, saveWorkflowModel, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
 import type { ModelKind, ModelProtocol, ModelService, ModelServiceConfig, PredictionResult, PromptDefaults } from '../api/modelServices';
 import { PredictionResultView } from '../components/ModelPrediction';
 import JsonInput from '../components/JsonInput';
 import TrialImagePicker from '../components/TrialImagePicker';
 import { DefaultPromptPreview } from '../components/PromptEditor';
 
-const kinds: Record<ModelKind, string> = { detection: '目标检测', caption: '图像描述', embedding: 'Embedding', reranker: '重排序' };
-const protocols: Record<ModelProtocol, ModelKind[]> = { model_service: ['detection', 'caption'], openai_chat: ['caption'], openai_embedding: ['embedding'], openai_rerank: ['reranker'], jev_decide: ['caption'] };
+const kinds: Record<ModelKind, string> = { detection: '目标检测', caption: '图像描述', llm: '文本 / 编排', embedding: 'Embedding', reranker: '重排序' };
+const protocols: Record<ModelProtocol, ModelKind[]> = { model_service: ['detection', 'caption'], openai_chat: ['caption', 'llm'], openai_embedding: ['embedding'], openai_rerank: ['reranker'], jev_decide: ['caption'] };
 const defaults: ModelServiceConfig = { key: '', name: '', base_url: '', endpoint: '/detect', protocol: 'model_service', kind: 'detection', model_name: '',
   enabled: true, timeout_seconds: 60, confidence: DEFAULT_DETECTION_CONFIDENCE, iou: .45, labels: [], label_mapping: {}, api_key_env: '' };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,6 +25,9 @@ export default function ModelServicesPage() {
   const [captchaSaved, setCaptchaSaved] = useState<string | null>();
   const [captchaDraft, setCaptchaDraft] = useState<string | null>(null);
   const [captchaBusy, setCaptchaBusy] = useState(false);
+  const [workflowSaved, setWorkflowSaved] = useState<string | null>();
+  const [workflowDraft, setWorkflowDraft] = useState<string | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
   const [loading, setLoading] = useState(false), [working, setWorking] = useState(false), [error, setError] = useState('');
   const [editing, setEditing] = useState<ModelService | null>(), [editorOpen, setEditorOpen] = useState(false), [editorError, setEditorError] = useState('');
   const [defaultsOpen, setDefaultsOpen] = useState(false);
@@ -55,6 +58,9 @@ export default function ModelServicesPage() {
     getCaptchaModel().then(value => {
       if (active) { setCaptchaSaved(value); setCaptchaDraft(value); }
     }).catch(() => { if (active) setError('读取验证码识别模型失败'); });
+    getWorkflowModel().then(value => {
+      if (active) { setWorkflowSaved(value); setWorkflowDraft(value); }
+    }).catch(() => { if (active) setError('读取工作流编排模型失败'); });
     return () => { active = false; };
   }, [admin]);
   const saveCaptcha = async () => {
@@ -64,6 +70,15 @@ export default function ModelServicesPage() {
       notice.success('验证码识别模型已更新');
     } finally {
       setCaptchaBusy(false);
+    }
+  };
+  const saveWorkflow = async () => {
+    setWorkflowBusy(true);
+    try {
+      setWorkflowSaved(await saveWorkflowModel(workflowDraft));
+      notice.success('默认工作流编排模型已更新');
+    } finally {
+      setWorkflowBusy(false);
     }
   };
   const edit = (model?: ModelService) => {
@@ -81,7 +96,7 @@ export default function ModelServicesPage() {
       protocol: values.protocol, kind: values.kind, model_name: values.model_name?.trim() || '', enabled: values.enabled,
       timeout_seconds: values.timeout_seconds, confidence: values.confidence, iou: values.iou,
       labels: values.labels || [], label_mapping: JSON.parse(values.label_mapping_text), api_key_env: values.api_key_env?.trim() || '',
-      ...(values.protocol === 'openai_chat' ? { chat_prompts: values.chat_prompts } : editing?.chat_prompts ? { chat_prompts: editing.chat_prompts } : {}),
+      ...(values.protocol === 'openai_chat' && values.kind === 'caption' ? { chat_prompts: values.chat_prompts } : editing?.chat_prompts ? { chat_prompts: editing.chat_prompts } : {}),
     };
     setWorking(true); setEditorError('');
     try { if (editing) await updateModelService(editing.id, config); else await createModelService(config);
@@ -137,7 +152,8 @@ export default function ModelServicesPage() {
   const clearTrialResult = () => { trialRequest.current++; trialController.current?.abort(); setTrialResult(undefined); setTrialError(''); setTrialBusy(false); };
   const openTrial = (model: ModelService) => {
     if (model.kind === 'reranker') return;
-    clearTrialResult(); trialForm.resetFields(); trialForm.setFieldsValue({ source: 'image_id', reference_id: '', prompt: '' });
+    clearTrialResult(); trialForm.resetFields();
+    trialForm.setFieldsValue({ source: 'image_id', reference_id: '', prompt: model.kind === 'llm' ? '请用一句话介绍你的工作流编排与 Python 脚本生成能力。' : '' });
     setTrial(model);
   };
   const runTrial = async () => {
@@ -147,11 +163,12 @@ export default function ModelServicesPage() {
     const current = ++trialRequest.current;
     trialController.current?.abort(); trialController.current = new AbortController();
     setTrialBusy(true); setTrialError(''); setTrialResult(undefined);
-    const input = values.source === 'asset_id' ? { asset_id: values.reference_id.trim() } : { image_id: values.reference_id.trim() };
+    const isLlm = trial.kind === 'llm';
+    const input = isLlm ? { prompt: values.prompt!.trim() } : values.source === 'asset_id' ? { asset_id: values.reference_id.trim() } : { image_id: values.reference_id.trim() };
     try {
-      const result = await predictModelService(trial.id, { ...input, ...(supportsModelPrompt(trial) && values.prompt?.trim() ? { prompt: values.prompt.trim() } : {}) }, trialController.current.signal);
-      if (current === trialRequest.current) setTrialResult({ result, source: values.source, id: values.reference_id.trim() });
-    } catch { if (current === trialRequest.current) setTrialError('试运行失败，请检查图片 ID、权限和模型配置；不会写入标注'); }
+      const result = await predictModelService(trial.id, isLlm ? input : { ...input, ...(supportsModelPrompt(trial) && values.prompt?.trim() ? { prompt: values.prompt.trim() } : {}) }, trialController.current.signal);
+      if (current === trialRequest.current) setTrialResult({ result, source: values.source, id: isLlm ? '' : values.reference_id.trim() });
+    } catch { if (current === trialRequest.current) setTrialError(isLlm ? '试运行失败，请检查模型配置或服务连通性' : '试运行失败，请检查图片 ID、权限和模型配置；不会写入标注'); }
     finally { if (current === trialRequest.current) setTrialBusy(false); }
   };
   const closeTrial = () => { clearTrialResult(); setTrial(undefined); };
@@ -179,7 +196,21 @@ export default function ModelServicesPage() {
           </Space>
         </Form.Item>
         {captchaSaved && !loading && !models.some(row=>row.id===captchaSaved&&row.enabled&&row.kind==='caption'&&row.protocol==='openai_chat') &&
-          <Alert type="warning" showIcon title="当前验证码识别模型不可用，请重新选择"/>}
+          <Alert type="warning" showIcon title="当前验证码识别模型不可用，请重新选择" style={{marginBottom:12}}/>}
+        <Form.Item label="默认工作流 AI 编排模型" extra="用于项目批量处理的自然语言工作流编排与 Python 脚本生成，可选择已启用的文本/编排或图像对话 OpenAI 模型。">
+          <Space wrap>
+            <Select aria-label="默认工作流 AI 编排模型" allowClear showSearch optionFilterProp="label"
+              style={{width:240,maxWidth:'100%'}} placeholder="选择后保存"
+              value={workflowDraft ?? undefined} onChange={value=>setWorkflowDraft(value ?? null)}
+              disabled={workflowSaved === undefined || workflowBusy}
+              options={models.filter(row=>row.enabled&&['llm','caption'].includes(row.kind)&&row.protocol==='openai_chat')
+                .map(row=>({value:row.id,label:`${row.name}（${kinds[row.kind]}）`}))}/>
+            <Button loading={workflowBusy} disabled={workflowSaved===undefined||workflowSaved===workflowDraft}
+              onClick={()=>void saveWorkflow().catch(()=>{})}>保存编排模型</Button>
+          </Space>
+        </Form.Item>
+        {workflowSaved && !loading && !models.some(row=>row.id===workflowSaved&&row.enabled&&['llm','caption'].includes(row.kind)&&row.protocol==='openai_chat') &&
+          <Alert type="warning" showIcon title="当前默认工作流编排模型不可用，请重新选择"/>}
       </Form>}
       {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
       <Table<ModelService> rowKey="id" loading={loading} dataSource={models} pagination={{ pageSize: 10, showSizeChanger: true }} scroll={{ x: 1085 }} columns={[
@@ -222,11 +253,12 @@ export default function ModelServicesPage() {
           onChange={(value: ModelKind) => {
             if (!protocols[protocol].includes(value)) form.setFieldValue('protocol', Object.keys(protocols).find(key => protocols[key as ModelProtocol].includes(value)));
             if (!editing && value === 'reranker') form.setFieldValue('enabled', false);
+            if (!editing && value === 'llm' && form.getFieldValue('endpoint') === '/detect') form.setFieldValue('endpoint', '/chat/completions');
           }} /></Form.Item>
         <Form.Item label="协议" name="protocol" rules={[{ required: true }]}><Select aria-label="模型协议" onChange={value=>{if(value==='jev_decide')form.setFieldValue('endpoint','/decide');}} options={Object.entries(protocols).filter(([, values]) => values.includes(kind)).map(([value]) => ({ value, label: value==='jev_decide'?'jev_decide · JEV属性选择':value }))} /></Form.Item>
         {protocol === 'jev_decide' && <Alert type="info" showIcon title="JEV 目标属性选择" description="URL 填服务地址（含 /v1），ENDPOINT 填 /decide，模型 ID 可留空。请在项目目标属性分析中为每项属性填写可选值；不支持自由文本和正确范例，结果需人工审核。" style={{marginBottom:16}}/>}
         <Form.Item label="模型 ID" name="model_name" rules={[{ required: protocol.startsWith('openai_'), whitespace: true }]} extra="OpenAI 协议填写服务返回的准确模型 ID；JEV choice 不发送模型 ID。"><Input aria-label="模型 ID" maxLength={200} /></Form.Item>
-        {protocol === 'openai_chat' && <>
+        {protocol === 'openai_chat' && kind === 'caption' && <>
           <Typography.Title level={5}>Qwen / 视觉对话提示词</Typography.Title>
           <Typography.Paragraph type="secondary">此模型的完整核心指令。保存后对后续请求生效；已有批次使用配置快照，配置版本变化时需新建批次。恢复默认只修改当前输入，保存后生效。</Typography.Paragraph>
           {!promptDefaults && <Alert type="info" showIcon title="默认提示词暂不可用，可继续手动编辑。" action={<Button onClick={() => { getPromptDefaults().then(setPromptDefaults).catch(() => setPromptDefaults(undefined)); }}>重新读取默认提示词</Button>} />}
@@ -276,21 +308,27 @@ export default function ModelServicesPage() {
     </Modal>
     <Modal title={`模型试运行 · ${trial?.name || ''}`} open={!!trial} forceRender width={760} onCancel={closeTrial} styles={{ body: { maxHeight: '65vh', overflowY: 'auto' } }}
       footer={<Space><Button aria-label="关闭" onClick={closeTrial}>关闭</Button><Button aria-label="开始试运行" type="primary" loading={trialBusy} onClick={runTrial} disabled={!trial?.enabled || trialBusy}>开始试运行</Button></Space>}>
-      <Typography.Paragraph type="secondary">使用图片库或项目图片试运行，仅预览，不写入标注。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary">{trial?.kind === 'llm' ? '输入文本指令验证对话与代码生成连通性，不涉及图片与标注。' : '使用图片库或项目图片试运行，仅预览，不写入标注。'}</Typography.Paragraph>
       <Form form={trialForm} layout="vertical" onValuesChange={clearTrialResult}>
-        <Form.Item label="图片来源" name="source"><Select aria-label="图片来源" options={[{ value: 'image_id', label: '图片库图片 ID' }, { value: 'asset_id', label: '项目图片 asset ID' }]}
-          onChange={() => trialForm.setFieldValue('reference_id', '')} /></Form.Item>
-        {trial && source === 'image_id' && <Form.Item label="从图片库选择" extra="按入库时间筛选；切换筛选或翻页会清除已选图片。">
-          <TrialImagePicker value={referenceId} onChange={value => { clearTrialResult(); trialForm.setFieldValue('reference_id', value || ''); }} />
-        </Form.Item>}
-        <Form.Item label="图片 ID" name="reference_id" rules={[{ required: true, pattern: uuid, message: '请输入有效的 UUID 图片 ID' }]}><Input aria-label="图片 ID" /></Form.Item>
-        {supportsModelPrompt(trial)&&<DefaultPromptPreview value={trial?.kind==='detection'?trial.labels?.join('；'):trial?.chat_prompts?.caption}
+        {trial?.kind !== 'llm' && <>
+          <Form.Item label="图片来源" name="source"><Select aria-label="图片来源" options={[{ value: 'image_id', label: '图片库图片 ID' }, { value: 'asset_id', label: '项目图片 asset ID' }]}
+            onChange={() => trialForm.setFieldValue('reference_id', '')} /></Form.Item>
+          {trial && source === 'image_id' && <Form.Item label="从图片库选择" extra="按入库时间筛选；切换筛选或翻页会清除已选图片。">
+            <TrialImagePicker value={referenceId} onChange={value => { clearTrialResult(); trialForm.setFieldValue('reference_id', value || ''); }} />
+          </Form.Item>}
+          <Form.Item label="图片 ID" name="reference_id" rules={[{ required: true, pattern: uuid, message: '请输入有效的 UUID 图片 ID' }]}><Input aria-label="图片 ID" /></Form.Item>
+        </>}
+        {trial?.kind !== 'llm' && supportsModelPrompt(trial)&&<DefaultPromptPreview value={trial?.kind==='detection'?trial.labels?.join('；'):trial?.chat_prompts?.caption}
           label={trial?.kind==='detection'?'模型默认检测类别':'模型默认描述提示词'}/>}
-        <Form.Item label="检测类别 / 描述文本（可选）" name="prompt" extra="VLX-Seek、GroundingPI 可填写检测类别，用分号分隔，留空使用模型配置类别；Qwen 留空使用默认描述提示词。"><Input.TextArea aria-label="试运行提示词" disabled={!supportsModelPrompt(trial)} maxLength={2000} autoSize={{ minRows: 1, maxRows: 4 }} /></Form.Item>
+        <Form.Item label={trial?.kind === 'llm' ? '试运行提示词' : '检测类别 / 描述文本（可选）'} name="prompt"
+          rules={trial?.kind === 'llm' ? [{ required: true, whitespace: true, message: '请输入文本提示词' }] : undefined}
+          extra={trial?.kind === 'llm' ? '发送纯文本对话请求检查模型响应。' : 'VLX-Seek、GroundingPI 可填写检测类别，用分号分隔，留空使用模型配置类别；Qwen 留空使用默认描述提示词。'}>
+          <Input.TextArea aria-label="试运行提示词" disabled={!supportsModelPrompt(trial)} maxLength={2000} autoSize={{ minRows: 1, maxRows: 4 }} />
+        </Form.Item>
       </Form>
       {trialError && <Alert type="error" showIcon title={trialError} />}
-      {trialResult && <PredictionResultView key={`${trialResult.source}-${trialResult.id}`} result={trialResult.result}
-        {...(trialResult.source === 'asset_id' ? { assetId: trialResult.id } : { imageId: trialResult.id })} />}
+      {trialResult && <PredictionResultView key={`${trialResult.source}-${trialResult.id||'llm'}`} result={trialResult.result}
+        {...(trialResult.id ? (trialResult.source === 'asset_id' ? { assetId: trialResult.id } : { imageId: trialResult.id }) : {})} />}
     </Modal>
   </>;
 }

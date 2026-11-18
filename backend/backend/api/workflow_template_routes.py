@@ -1,13 +1,15 @@
+from types import SimpleNamespace
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from api.deps import get_tenant_id
+from api.deps import get_current_superuser, get_tenant_id
 from database import get_db_session
+from models import User
 from models.project_work import ProjectWorkflowTemplate
-from schemas.project_work import WorkflowTemplateCreate
+from schemas.project_work import WorkflowAiGenerateRequest, WorkflowAiScriptRequest, WorkflowTemplateCreate
 
 router = APIRouter()
 
@@ -46,6 +48,20 @@ async def listing(tenant_id=Depends(get_tenant_id),db=Depends(get_db_session)):
 @router.post('',status_code=201)
 async def create(request:WorkflowTemplateCreate,tenant_id=Depends(get_tenant_id),db=Depends(get_db_session)):
     return await save(db,ProjectWorkflowTemplate(tenant_id=tenant_id),request)
+
+
+@router.post('/ai-generate')
+async def ai_generate(request:WorkflowAiGenerateRequest,user:User=Depends(get_current_superuser),db=Depends(get_db_session)):
+    from services.workflow_ai import generate_workflow
+    pseudo_project=SimpleNamespace(tenant_id=user.tenant_id,project_name='通用工作流模板',task_type='detection',label_schema={})
+    return await generate_workflow(db,pseudo_project,request)
+
+
+@router.post('/ai-script')
+async def ai_script(request:WorkflowAiScriptRequest,user:User=Depends(get_current_superuser),db=Depends(get_db_session)):
+    from services.workflow_ai import generate_script
+    pseudo_project=SimpleNamespace(tenant_id=user.tenant_id,project_name='通用工作流模板',task_type='detection',label_schema={})
+    return await generate_script(db,pseudo_project,request)
 
 
 @router.put('/{template_id}')

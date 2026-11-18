@@ -137,7 +137,13 @@ async def enqueue_uploads(db, job, new_assets, *, crop_entry_locked=True):
             and (asset.device_info or {}).get('uploaded_crop')}
         ids=[asset.id for asset in new_assets if asset.id not in crops and
             (kind in ('all','uploads') or (asset.source_type=='model_crop')==(kind=='crops'))]
-        queued=await enqueue(db,job,[Asset.id.in_(ids)],deduplicate=True) if ids else 0
+        entry_ids=[UUID(eid) for eid in (job.options.get('workflow_entry_job_ids') or [str(job.id)])]
+        queued=0
+        if ids:
+            for eid in entry_ids:
+                target_job=job if eid==job.id else await db.get(ProjectWorkJob,eid)
+                if target_job and not target_job.options.get('workflow_cancelled'):
+                    queued+=await enqueue(db,target_job,[Asset.id.in_(ids)],deduplicate=True)
         if not crops:return queued,None
         if not crop_entry_locked:return queued,'工作流在本次入库期间开启接收，本次裁剪图未自动入队'
         entry=await db.get(ProjectWorkJob,UUID(entry_id))

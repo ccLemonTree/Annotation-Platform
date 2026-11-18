@@ -11,7 +11,7 @@ from api.asset_routes import scoped_asset
 from database import get_db_session
 from models import ModelService, LibraryImage, Tenant, User
 from schemas.model_service import ModelServiceConfig, ModelServiceResponse, PredictionRequest
-from services.model_inference import headers, infer, supports_captcha, test_connection
+from services.model_inference import headers, infer, infer_text, supports_captcha, supports_workflow_llm, test_connection
 from services.storage import get_storage
 from config.settings import settings
 from schemas.prompts import ChatPrompts, SCENE_PROMPT, ATTRIBUTES_PROMPT, DETECTION_PREANNOTATION_PROMPT
@@ -39,6 +39,26 @@ async def set_captcha_model(request: CaptchaModelSelection, db: AsyncSession = D
         headers(row)
     await db.execute(update(Tenant).where(Tenant.id == user.tenant_id)
                      .values(captcha_model_service_id=request.model_id))
+    await db.commit()
+    return request
+
+
+@router.get('/workflow-model', response_model=CaptchaModelSelection)
+async def workflow_model(db: AsyncSession = Depends(get_db_session), user: User = Depends(get_current_user)):
+    value = await db.scalar(select(Tenant.workflow_model_service_id).where(Tenant.id == user.tenant_id))
+    return CaptchaModelSelection(model_id=value)
+
+
+@router.put('/workflow-model', response_model=CaptchaModelSelection)
+async def set_workflow_model(request: CaptchaModelSelection, db: AsyncSession = Depends(get_db_session),
+                             user: User = Depends(get_current_superuser)):
+    if request.model_id:
+        row = await scoped(db, request.model_id, user.tenant_id)
+        if not supports_workflow_llm(row):
+            raise HTTPException(400, '请选择已启用的 OpenAI 文本或对话模型')
+        headers(row)
+    await db.execute(update(Tenant).where(Tenant.id == user.tenant_id)
+                     .values(workflow_model_service_id=request.model_id))
     await db.commit()
     return request
 
@@ -167,6 +187,15 @@ async def predict(service_id: UUID, request: PredictionRequest, db: AsyncSession
         raise HTTPException(400, '此模型已停用')
     config = ModelServiceConfig.model_validate(row)
     revision = row.revision
+    if config.kind == 'llm' and not request.asset_id and not request.image_id:
+        await db.rollback()
+        result = await infer_text(config, request.prompt)
+        current = await scoped(db, service_id, tenant_id)
+        if not current.enabled or current.revision != revision:
+            raise HTTPException(409, '推理期间模型配置已变化，请使用新配置重试')
+        return {**result, 'model_service_id': str(service_id), 'config_revision': revision}
+    if not request.asset_id and not request.image_id:
+        raise HTTPException(422, '请选择一张项目图片或图片库图片')
     if request.asset_id:
         image = await scoped_asset(db, request.asset_id, user.tenant_id)
     else:

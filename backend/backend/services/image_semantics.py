@@ -42,7 +42,7 @@ async def model_snapshot(db, tenant_id, model_id, kind):
 
 async def validate_snapshots(db, tenant_id, snapshots, lock=True):
     # Concurrent inference results can share the lock while blocking configuration edits.
-    for snapshot in sorted((value for value in snapshots if value), key=lambda value: value['id']):
+    for snapshot in sorted((value for value in snapshots if value and value.get('id')), key=lambda value: value['id']):
         statement=select(ModelService).where(ModelService.id == UUID(snapshot['id']), ModelService.tenant_id == tenant_id)
         if lock:statement=statement.with_for_update(read=True)
         row = await db.scalar(statement.execution_options(populate_existing=True))

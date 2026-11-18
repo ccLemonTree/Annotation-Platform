@@ -9,7 +9,11 @@ from database import get_db_session
 from api.deps import get_current_user
 from api.asset_routes import scoped_project
 from models.project_work import ProjectWorkJob, ProjectWorkItem, MatchQuery
-from schemas.project_work import WorkCreate, WorkFollowUploads, WorkflowCreate, WorkflowStep, MatchSearch, MatchJudgment, MatchReview, MatchReviewBatch
+from schemas.project_work import (
+    WorkCreate, WorkFollowUploads, WorkflowCreate, WorkflowStep,
+    WorkflowDryRunRequest, WorkflowAiGenerateRequest, WorkflowAiScriptRequest,
+    MatchSearch, MatchJudgment, MatchReview, MatchReviewBatch,
+)
 from schemas.object_attributes import AttributeFilters
 from schemas.vector_smart_search import SmartSearch
 from services import project_work as service
@@ -105,6 +109,33 @@ async def create_workflow(request:WorkflowCreate,ctx=Depends(context)):
     return dict(id=str(steps[0].id))
 
 
+@router.post('/{project_id}/work/workflows/dry-run')
+async def dry_run_workflow(request:WorkflowDryRunRequest,ctx=Depends(context)):
+    from services.workflow_dry_run import run_dry_run
+    db,user,project=ctx
+    if user.role!='admin':
+        raise HTTPException(403,'仅管理员可执行工作流样本试运行')
+    return await run_dry_run(db,project,request)
+
+
+@router.post('/{project_id}/work/workflows/ai-generate')
+async def ai_generate_workflow(request:WorkflowAiGenerateRequest,ctx=Depends(context)):
+    from services.workflow_ai import generate_workflow
+    db,user,project=ctx
+    if user.role!='admin':
+        raise HTTPException(403,'仅管理员可使用 AI 自动编排工作流')
+    return await generate_workflow(db,project,request)
+
+
+@router.post('/{project_id}/work/workflows/ai-script')
+async def ai_generate_workflow_script(request:WorkflowAiScriptRequest,ctx=Depends(context)):
+    from services.workflow_ai import generate_script
+    db,user,project=ctx
+    if user.role!='admin':
+        raise HTTPException(403,'仅管理员可使用 AI 生成工作流脚本')
+    return await generate_script(db,project,request)
+
+
 @router.get('/{project_id}/work/workflows')
 async def list_workflows(page:int=Query(1,ge=1),ctx=Depends(context)):
     db,_,project=ctx
@@ -128,7 +159,8 @@ async def workflow_config(workflow_id:UUID,ctx=Depends(context)):
     root=jobs[0]
     result=dict(name=root.options['workflow_name'],created_at=root.created_at.replace(tzinfo=timezone.utc)
         if root.created_at.tzinfo is None else root.created_at,image_kind=root.options.get('workflow_image_kind'),
-        follow_uploads=root.options.get('workflow_can_follow'),uploaded_crop_job_id=root.options.get('uploaded_crop_job_id'),steps=[])
+        follow_uploads=root.options.get('workflow_can_follow'),uploaded_crop_job_id=root.options.get('uploaded_crop_job_id'),
+        edges=root.options.get('workflow_edges'),steps=[])
     if 'workflow_source_job_id' in root.options:
         result['source_job_id']=root.options['workflow_source_job_id']
     fields=(WorkflowStep.model_fields.keys()-{'model_id','operation'})|{'attribute_schema'}

@@ -27,6 +27,10 @@ def supports_captcha(config):
     return config.enabled and config.kind == 'caption' and config.protocol == 'openai_chat'
 
 
+def supports_workflow_llm(config):
+    return config.enabled and config.protocol == 'openai_chat' and config.kind in ('llm', 'caption')
+
+
 def headers(config):
     key = config.api_key_env
     value = (getattr(settings, key, '') or os.environ.get(key, '')) if key else ''
@@ -158,6 +162,26 @@ async def infer(config, content, width, height, prompt='', client=None):
     if not isinstance(caption, str) or not caption.strip() or len(caption) > 20000:
         raise HTTPException(502, '模型返回的描述文本无效')
     return dict(kind=config.kind, boxes=[], caption=caption, warnings=[])
+
+
+async def infer_text(config, prompt='', system_prompt='', max_tokens=1024, client=None):
+    if config.protocol != 'openai_chat':
+        raise HTTPException(400, '请选择 OpenAI 对话格式模型')
+    if client is None:
+        async with httpx.AsyncClient(timeout=config.timeout_seconds, follow_redirects=False) as session:
+            return await infer_text(config, prompt, system_prompt, max_tokens, session)
+    messages = ([{'role': 'system', 'content': system_prompt}] if system_prompt else []) + [
+        {'role': 'user', 'content': prompt or '请用一句话简要说明你的工作流编排与脚本生成能力。'}]
+    body = {'model': config.model_name, 'messages': messages, 'temperature': 0, 'max_tokens': max_tokens}
+    data = await response_json(client, 'POST', config.base_url + config.endpoint, headers=headers(config),
+                               timeout=config.timeout_seconds, json=body)
+    try:
+        content = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        raise HTTPException(502, '模型返回的文本内容格式无效')
+    if not isinstance(content, str) or not content.strip() or len(content) > 60000:
+        raise HTTPException(502, '模型返回的文本内容无效')
+    return dict(kind=config.kind, boxes=[], caption=content, warnings=[])
 
 
 async def test_connection(config):

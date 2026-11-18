@@ -3,7 +3,7 @@ import type { Box } from '../components/detectionEditor';
 
 export const DEFAULT_DETECTION_CONFIDENCE = 0.85;
 
-export type ModelKind = 'detection' | 'caption' | 'embedding' | 'reranker';
+export type ModelKind = 'detection' | 'caption' | 'llm' | 'embedding' | 'reranker';
 export type ModelProtocol = 'model_service' | 'openai_chat' | 'openai_embedding' | 'openai_rerank' | 'jev_decide';
 export interface ChatPrompts { caption: string; review: string; match_review?:string; training_analysis?:string }
 export interface PromptDefaults extends ChatPrompts { scene: string; attributes?:string; quality?:string; detection_preannotation?:string }
@@ -47,7 +47,10 @@ export interface PredictionResult {
   config_revision: number;
   warnings: string[];
 }
-export type PredictionInput = ({ asset_id: string; image_id?: never } | { image_id: string; asset_id?: never }) & { prompt?: string };
+export type PredictionInput =
+  | ({ asset_id: string; image_id?: never } & { prompt?: string })
+  | ({ image_id: string; asset_id?: never } & { prompt?: string })
+  | { prompt: string; asset_id?: never; image_id?: never };
 
 export async function getModelServices(params?: { kind?: ModelKind; enabled?: boolean }): Promise<ModelService[]> {
   return (await apiClient.get('/api/model-services', { params })).data;
@@ -59,6 +62,14 @@ export async function getCaptchaModel(): Promise<string | null> {
 
 export async function saveCaptchaModel(model_id: string | null): Promise<string | null> {
   return (await apiClient.put('/api/model-services/captcha-model', {model_id})).data.model_id;
+}
+
+export async function getWorkflowModel(): Promise<string | null> {
+  return (await apiClient.get('/api/model-services/workflow-model')).data.model_id;
+}
+
+export async function saveWorkflowModel(model_id: string | null): Promise<string | null> {
+  return (await apiClient.put('/api/model-services/workflow-model', { model_id })).data.model_id;
 }
 export async function getPromptDefaults(): Promise<PromptDefaults> {
   return (await apiClient.get('/api/model-services/prompt-defaults')).data;
@@ -79,6 +90,7 @@ export async function testModelService(id: string): Promise<{ ok: boolean; detai
   return (await apiClient.post(`/api/model-services/${id}/test`, undefined, { timeout: 185000, skipErrorToast: true })).data;
 }
 export async function predictModelService(id: string, input: PredictionInput, signal?: AbortSignal): Promise<PredictionResult> {
-  if (Boolean(input.asset_id) === Boolean(input.image_id)) throw new Error('请选择且只选择一个图片 ID');
+  if (input.asset_id && input.image_id) throw new Error('请选择且只选择一个图片 ID');
+  if (!input.asset_id && !input.image_id && !input.prompt?.trim()) throw new Error('请选择图片或输入试运行提示词');
   return (await apiClient.post(`/api/model-services/${id}/predict`, input, { timeout: 185000, signal })).data;
 }

@@ -12,7 +12,7 @@ class ModelServiceConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra='forbid', str_strip_whitespace=True)
     key: str = Field(min_length=1, max_length=80, pattern=r'^[a-zA-Z0-9_-]+$')
     name: str = Field(min_length=1, max_length=200)
-    kind: Literal['detection', 'caption', 'embedding', 'reranker']
+    kind: Literal['detection', 'caption', 'llm', 'embedding', 'reranker']
     protocol: Literal['model_service', 'openai_chat', 'openai_embedding', 'openai_rerank', 'jev_decide']
     base_url: str = Field(max_length=500)
     endpoint: str = Field(max_length=200)
@@ -64,7 +64,7 @@ class ModelServiceConfig(BaseModel):
 
     @model_validator(mode='after')
     def compatible(self):
-        allowed = {'model_service': ('detection', 'caption'), 'openai_chat': ('caption',),
+        allowed = {'model_service': ('detection', 'caption'), 'openai_chat': ('caption', 'llm'),
                    'openai_embedding': ('embedding',), 'openai_rerank': ('reranker',), 'jev_decide': ('caption',)}
         if self.kind not in allowed[self.protocol]:
             raise ValueError('模型用途与接口协议不匹配')
@@ -87,7 +87,9 @@ class PredictionRequest(BaseModel):
     prompt: str = Field(default='', max_length=2000)
 
     @model_validator(mode='after')
-    def one_image(self):
-        if (self.asset_id is None) == (self.image_id is None):
-            raise ValueError('请选择一张项目图片或图片库图片')
+    def one_image_or_text(self):
+        if self.asset_id and self.image_id:
+            raise ValueError('请选择且只选择一个图片 ID')
+        if not self.asset_id and not self.image_id and not self.prompt.strip():
+            raise ValueError('请选择一张项目图片、图片库图片或输入文本提示词')
         return self

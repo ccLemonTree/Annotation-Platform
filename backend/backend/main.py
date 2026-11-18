@@ -152,6 +152,8 @@ async def shutdown_event():
     logger.info("Shutting down application...")
     from services.gpu_terminal import close_all as close_terminals
     await close_terminals()
+    from services.script_sandbox import shutdown_sandbox
+    await shutdown_sandbox()
     if not app.dependency_overrides:
         from integrations.smarteye.hooks import shutdown
         from services.image_scenes import stop_worker

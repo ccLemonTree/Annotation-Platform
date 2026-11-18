@@ -23,6 +23,7 @@ class Tenant(Base):
     is_active: Mapped[bool] = mapped_column(default=True, comment="是否激活")
     training_defaults: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'"))
     captcha_model_service_id: Mapped[UUID | None]
+    workflow_model_service_id: Mapped[UUID | None]
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")

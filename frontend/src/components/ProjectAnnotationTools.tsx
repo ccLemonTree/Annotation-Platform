@@ -7,7 +7,7 @@ import { deleteWorkJob,followWorkUploads,getWork,getWorkJobs,workAction,type Wor
 import AssetImage from './AssetImage';
 
 const operations={crop:'检测切图',caption:'生成描述',index:'建立向量索引',detect_attributes:'检测切图并预标注属性',attributes:'大模型预标注属性',quality:'图片质量检查'};
-const workLabels={...operations,match_review:'匹配大模型审核',detect:'目标检测筛选',preannotate:'目标检测预标注',ai_review:'AI 审核',filter:'大模型筛选'};
+const workLabels={...operations,match_review:'匹配大模型审核',detect:'目标检测筛选',preannotate:'目标检测预标注',ai_review:'AI 审核',filter:'大模型筛选',branch:'条件分流',img_filter:'图像基础规则过滤',box_clean:'检测框规则清洗',img_transform:'图像变换与脱敏',script:'Python 脚本处理'};
 const canCancel=(job:WorkJob)=>!!(job.counts.pending||job.counts.running||job.pipeline?.attributes.counts.pending||job.pipeline?.attributes.counts.running);
 const statuses:Record<string,string>={pending:'等待',running:'处理中',completed:'完成',failed:'失败',cancelled:'已取消'};
 function WorkProgress({title,total,counts,unit,detailed}:{title?:string;total:number;counts:Record<string,number>;unit:string;detailed:boolean}){
