@@ -2,14 +2,16 @@
 用户管理API路由
 用户的增删改查
 """
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, func
 from typing import List
 
 from database import get_db_session as get_db
 from models.user import User
-from schemas.user import UserResponse, UserUpdate
+from schemas.user import PLACEHOLDER_EMAIL_SUFFIX, UserResponse, UserUpdate
 from schemas.common import PaginatedResponse, PaginationParams
 from api.deps import get_current_user, get_current_superuser, get_tenant_id
 from services.auth import get_password_hash
@@ -121,14 +123,23 @@ async def update_user(
 
     # 更新用户信息
     update_data = user_data.model_dump(exclude_unset=True)
+    if "email" in update_data and update_data["email"] is None:
+        update_data["email"] = f"{user.username}.{uuid4().hex[:10]}{PLACEHOLDER_EMAIL_SUFFIX}"
     if update_data:
         stmt = (
             update(User)
             .where(User.id == user_id)
             .values(**update_data)
         )
-        await db.execute(stmt)
-        await db.commit()
+        try:
+            await db.execute(stmt)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="邮箱或用户名已存在",
+            ) from None
         await db.refresh(user)
 
     return user

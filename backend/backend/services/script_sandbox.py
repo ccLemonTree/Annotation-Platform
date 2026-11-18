@@ -18,6 +18,9 @@ FORBIDDEN_NAMES = {
     'eval', 'exec', 'compile', 'open', 'input', 'breakpoint', 'help', 'dir', 'vars',
     'locals', 'globals', 'getattr', 'setattr', 'delattr', 'memoryview', 'type', '__import__',
 }
+FORBIDDEN_ATTRS = {
+    'open', 'save', 'os', 'sys', 'io', 'subprocess', 'builtins', 'show', 'load_module',
+}
 
 DEFAULT_SCRIPT_TEMPLATE = '''def process(ctx):
     """处理单张图片与标注上下文。
@@ -88,17 +91,17 @@ def validate_script(code: str) -> None:
                 if mod == 'PIL' and f'PIL.{alias.name}' not in ALLOWED_PIL_SUBMODULES:
                     raise ValueError(f'沙箱不允许导入 PIL.{alias.name}')
         elif isinstance(node, ast.Attribute):
-            if node.attr.startswith('_'):
-                raise ValueError(f'沙箱禁止访问私有或系统属性 {node.attr}')
+            if node.attr.startswith('_') or node.attr in FORBIDDEN_ATTRS:
+                raise ValueError(f'沙箱禁止访问受限或私有属性 {node.attr}')
         elif isinstance(node, ast.Name):
             if node.id.startswith('__') or node.id in FORBIDDEN_NAMES:
                 raise ValueError(f'沙箱禁止使用受限标识符 {node.id}')
 
 
 _WORKER_RUNNER = r'''
-import builtins, collections, io, itertools, json, math, re, socket, statistics, struct, sys
-import imagehash
-from PIL import Image, ImageDraw, ImageFilter, ImageOps, ImageStat
+import builtins, collections, io, itertools, json, math, re, socket, statistics, struct, sys, types
+import imagehash as _raw_imagehash
+from PIL import Image as _RawImage, ImageDraw as _RawImageDraw, ImageFilter as _RawImageFilter, ImageOps as _RawImageOps, ImageStat as _RawImageStat
 
 try:
     import resource
@@ -113,6 +116,39 @@ def _blocked(*_a, **_kw):
 socket.socket = _blocked
 socket.create_connection = _blocked
 
+def _pick(mod, names):
+    return types.SimpleNamespace(**{k: getattr(mod, k) for k in names if hasattr(mod, k)})
+
+_SAFE_IMAGE = _pick(_RawImage, (
+    "new", "fromarray", "frombytes", "merge", "blend", "composite", "alpha_composite",
+    "eval", "linear_gradient", "radial_gradient", "effect_mandelbrot", "effect_noise",
+    "Image", "Resampling", "Transpose", "Transform", "Palette", "Quantize", "Dither", "Adaptive",
+    "NEAREST", "BOX", "BILINEAR", "HAMMING", "BICUBIC", "LANCZOS",
+    "FLIP_LEFT_RIGHT", "FLIP_TOP_BOTTOM", "ROTATE_90", "ROTATE_180", "ROTATE_270", "TRANSPOSE", "TRANSVERSE",
+))
+_SAFE_IMAGE_FILTER = _pick(_RawImageFilter, (
+    "BLUR", "CONTOUR", "DETAIL", "EDGE_ENHANCE", "EDGE_ENHANCE_MORE", "EMBOSS", "FIND_EDGES",
+    "SHARPEN", "SMOOTH", "SMOOTH_MORE", "BoxBlur", "GaussianBlur", "UnsharpMask", "Kernel",
+    "RankFilter", "MedianFilter", "MinFilter", "MaxFilter", "ModeFilter", "Filter", "MultibandFilter",
+))
+_SAFE_IMAGE_STAT = _pick(_RawImageStat, ("Stat",))
+_SAFE_IMAGE_OPS = _pick(_RawImageOps, (
+    "autocontrast", "colorize", "contain", "cover", "crop", "deform", "equalize", "expand",
+    "exif_transpose", "fit", "flip", "grayscale", "invert", "mirror", "pad", "posterize", "scale", "solarize",
+))
+_SAFE_IMAGE_DRAW = _pick(_RawImageDraw, ("Draw", "ImageDraw"))
+_SAFE_PIL = types.SimpleNamespace(
+    Image=_SAFE_IMAGE,
+    ImageFilter=_SAFE_IMAGE_FILTER,
+    ImageStat=_SAFE_IMAGE_STAT,
+    ImageOps=_SAFE_IMAGE_OPS,
+    ImageDraw=_SAFE_IMAGE_DRAW,
+)
+_SAFE_IMAGEHASH = _pick(_raw_imagehash, (
+    "average_hash", "phash", "phash_simple", "dhash", "dhash_vertical", "whash",
+    "colorhash", "crop_resistant_hash", "hex_to_hash", "hex_to_flathash", "ImageHash", "ImageMultiHash",
+))
+
 _MODULES = {
     "math": math,
     "json": json,
@@ -120,24 +156,29 @@ _MODULES = {
     "statistics": statistics,
     "collections": collections,
     "itertools": itertools,
-    "imagehash": imagehash,
-    "PIL": sys.modules["PIL"],
-    "PIL.Image": Image,
-    "PIL.ImageFilter": ImageFilter,
-    "PIL.ImageStat": ImageStat,
-    "PIL.ImageOps": ImageOps,
-    "PIL.ImageDraw": ImageDraw,
+    "imagehash": _SAFE_IMAGEHASH,
+    "PIL": _SAFE_PIL,
+    "PIL.Image": _SAFE_IMAGE,
+    "PIL.ImageFilter": _SAFE_IMAGE_FILTER,
+    "PIL.ImageStat": _SAFE_IMAGE_STAT,
+    "PIL.ImageOps": _SAFE_IMAGE_OPS,
+    "PIL.ImageDraw": _SAFE_IMAGE_DRAW,
 }
 
-def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
     if level:
         raise ImportError("禁止相对导入")
     if name in _MODULES:
         if fromlist:
             for item in fromlist:
+                if str(item).startswith("_") or item == "*":
+                    raise ImportError("禁止导入私有或通配符成员")
                 sub = f"{name}.{item}"
                 if name == "PIL" and sub not in _MODULES:
                     raise ImportError(f"不允许导入 {sub}")
+            return _MODULES[name]
+        if "." in name:
+            return _MODULES[name.split(".", 1)[0]]
         return _MODULES[name]
     raise ImportError(f"沙箱不允许导入模块 {name}")
 
@@ -152,7 +193,7 @@ _SAFE_BUILTINS = {
         "ZeroDivisionError", "RuntimeError", "StopIteration", "True", "False", "None",
     ) if hasattr(builtins, k)
 }
-_SAFE_BUILTINS["__import__"] = _safe_import
+_SAFE_BUILTINS["__import__"] = _guarded_import
 
 stdin = sys.stdin.buffer
 stdout = sys.stdout.buffer
@@ -167,7 +208,7 @@ def _read_exact(n):
     return bytes(buf)
 
 def _encode_img(img):
-    if not isinstance(img, Image.Image):
+    if not isinstance(img, _RawImage.Image):
         raise ValueError("返回的图像必须是 PIL.Image 对象")
     converted = img.convert("RGB")
     w, h = converted.size
@@ -194,12 +235,19 @@ while True:
             if len(logs) < 20:
                 logs.append(" ".join(str(a) for a in args)[:300])
         env_builtins = dict(_SAFE_BUILTINS, print=_log_print)
-        ns = {"__builtins__": env_builtins, "Image": Image, "ImageFilter": ImageFilter, "ImageStat": ImageStat, "ImageOps": ImageOps, "ImageDraw": ImageDraw}
+        ns = {
+            "__builtins__": env_builtins,
+            "Image": _SAFE_IMAGE,
+            "ImageFilter": _SAFE_IMAGE_FILTER,
+            "ImageStat": _SAFE_IMAGE_STAT,
+            "ImageOps": _SAFE_IMAGE_OPS,
+            "ImageDraw": _SAFE_IMAGE_DRAW,
+        }
         exec(compile(meta["code"], "<workflow_script>", "exec"), ns, ns)
         fn = ns.get("process")
         if not callable(fn):
             raise ValueError("未找到可调用的 process(ctx) 函数")
-        with Image.open(io.BytesIO(img_raw)) as opened:
+        with _RawImage.open(io.BytesIO(img_raw)) as opened:
             pic = opened.convert("RGB")
         ctx = {
             "image": pic,
@@ -245,7 +293,7 @@ while True:
             if not isinstance(out["crops"], list) or len(out["crops"]) > 50:
                 raise ValueError("crops 列表最多返回 50 张子图")
             for entry in out["crops"]:
-                if isinstance(entry, Image.Image):
+                if isinstance(entry, _RawImage.Image):
                     raw_b, dw, dh = _encode_img(entry)
                     label = str(meta.get("crop_label") or "script_crop")[:100]
                     box = None

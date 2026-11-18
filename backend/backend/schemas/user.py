@@ -6,11 +6,21 @@ from typing import Optional
 from datetime import datetime
 
 
+PLACEHOLDER_EMAIL_SUFFIX = "@placeholder.local"
+
+
 class UserBase(BaseModel):
     """用户基础模型"""
     username: str = Field(..., min_length=3, max_length=50, description="用户名")
-    email: EmailStr = Field(..., description="邮箱")
+    email: Optional[EmailStr] = Field(None, description="邮箱")
     full_name: Optional[str] = Field(None, max_length=100, description="全名")
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def empty_email_to_none(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class UserCreate(UserBase):
@@ -32,6 +42,13 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, max_length=100)
     is_active: Optional[bool] = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def empty_email_to_none(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class UserResponse(BaseModel):
     """用户响应"""
@@ -40,12 +57,19 @@ class UserResponse(BaseModel):
     id: int
     tenant_id: int
     username: str
-    email: str
+    email: Optional[str] = None
     full_name: Optional[str]
     role: str
     is_active: bool
     created_at: datetime
     last_login_at: Optional[datetime]
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def hide_placeholder_email(cls, value):
+        if isinstance(value, str) and value.endswith(PLACEHOLDER_EMAIL_SUFFIX):
+            return None
+        return value
 
 
 class UserLogin(BaseModel):

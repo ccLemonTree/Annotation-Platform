@@ -206,8 +206,13 @@ async def process_one(sessions, client):
         with await get_storage().get_file(work['path']) as file:content=file.read()
         if work['caption_model']:description=await caption(ModelServiceConfig(**work['caption_model']['config']),content,work['prompt'],client)
         if work['embedding_model']:vector=await embedding(ModelServiceConfig(**work['embedding_model']['config']),content=content,client=client)
+    except asyncio.CancelledError:
+        raise
     except HTTPException as exc:error=str(exc.detail)[:500]
     except (OSError, ValueError):error='图片无法读取或模型结果无效，原图已保留，可重试'
+    except Exception as exc:
+        logger.warning('Semantic item %s failed: %s', work['item_id'], type(exc).__name__)
+        error=f'语义推理异常（{type(exc).__name__}），原图已保留，可重试'
     await finish_item(sessions,work,description,vector,error)
     return True
 

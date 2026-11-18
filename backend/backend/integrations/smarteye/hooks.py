@@ -63,18 +63,29 @@ def install_hooks(app):
                 path = asset.get('local_path')
                 if path and not Path(path).resolve().is_relative_to(get_runtime().root / 'smarteye'):
                     return jsonify(code=400, message='非法素材路径'), 400
-        if '/scheduler/' in request.path and request.path.endswith('/start'):
-            sched_id = data.get('sched_id')
-            with get_runtime().engine.connect() as conn:
-                saved = conn.execute(select(schedules.c.tenant_id, schedules.c.payload)
-                    .where(schedules.c.sched_id == sched_id)).mappings().first()
-            if saved:
-                saved_owner = saved['payload'].get('owner', {})
+        if '/scheduler/' in request.path:
+            sched_id = (request.view_args or {}).get('sched_id') or data.get('sched_id') or request.args.get('sched_id')
+            requires_existing = (
+                request.path.endswith('/start')
+                or request.path.endswith('/stop')
+                or request.method == 'DELETE'
+                or (request.path.endswith('/configure') and bool(sched_id))
+            )
+            if requires_existing:
+                if not sched_id or not isinstance(sched_id, str):
+                    return jsonify(code=404, message='调度配置不存在'), 404
+                with get_runtime().engine.connect() as conn:
+                    saved = conn.execute(select(schedules.c.tenant_id, schedules.c.payload)
+                        .where(schedules.c.sched_id == sched_id)).mappings().first()
+                if not saved:
+                    return jsonify(code=404, message='调度配置不存在'), 404
+                saved_owner = (saved['payload'] or {}).get('owner', {})
                 if saved['tenant_id'] != owner['tenant_id'] or ('tenant_id' in saved_owner and saved_owner['tenant_id'] != owner['tenant_id']):
                     return jsonify(code=404, message='调度配置不存在'), 404
-                for key in ('project_id', 'collection_id', 'min_long_edge'):
-                    owner.pop(key, None)
-                owner.update(saved_owner)
+                if request.path.endswith('/start'):
+                    for key in ('project_id', 'collection_id', 'min_long_edge'):
+                        owner.pop(key, None)
+                    owner.update(saved_owner)
         if request.path.endswith('/scheduler/configure'):
             interval = data.get('interval_minutes', 120)
             duration = data.get('task_duration_hours', 0)
@@ -94,7 +105,22 @@ def install_hooks(app):
                     content['data'].update(status=state['status'], message=state.get('message', '任务已中断'))
                     response.set_data(app.json.dumps(content))
             if content.get('code') == 0 and '/scheduler/' in request.path:
-                persist_schedulers()
+                if request.path.endswith('/scheduler/status') and isinstance(content.get('data'), dict):
+                    tenant_id = actor.get()['tenant_id']
+                    with get_runtime().engine.connect() as conn:
+                        owned_scheds = set(conn.execute(
+                            select(schedules.c.sched_id).where(schedules.c.tenant_id == tenant_id)
+                        ).scalars())
+                    owned_tasks = {row['task_id'] for row in get_runtime().list(tenant_id=tenant_id)}
+                    content['data']['schedulers'] = [
+                        s for s in content['data'].get('schedulers', []) if s.get('sched_id') in owned_scheds
+                    ]
+                    content['data']['all_tasks'] = [
+                        t for t in content['data'].get('all_tasks', []) if t.get('task_id') in owned_tasks
+                    ]
+                    response.set_data(app.json.dumps(content))
+                elif request.method != 'GET':
+                    persist_schedulers()
         return response
 
     @app.errorhandler(Exception)
@@ -171,14 +197,24 @@ def persist_schedulers():
         ids = [s['sched_id'] for s in current]
         conn.execute(delete(schedules).where(schedules.c.tenant_id == owner['tenant_id'],
                                              schedules.c.sched_id.not_in(ids)))
+        existing_rows = {
+            row['sched_id']: row
+            for row in conn.execute(select(schedules.c.sched_id, schedules.c.tenant_id, schedules.c.payload)).mappings()
+        }
         for sched in current:
-            previous = conn.execute(select(schedules.c.payload).where(schedules.c.sched_id == sched['sched_id'])).scalar()
+            existing = existing_rows.get(sched['sched_id'])
+            if existing is not None and existing['tenant_id'] != owner['tenant_id']:
+                continue
+            previous = existing['payload'] if existing else None
             saved_owner = (previous or {}).get('owner', owner)
             payload = {**sched, 'owner': saved_owner}
-            if previous is None:
+            if existing is None:
                 conn.execute(insert(schedules).values(sched_id=sched['sched_id'], tenant_id=owner['tenant_id'], payload=payload))
             else:
-                conn.execute(update(schedules).where(schedules.c.sched_id == sched['sched_id']).values(payload=payload))
+                conn.execute(update(schedules).where(
+                    schedules.c.sched_id == sched['sched_id'],
+                    schedules.c.tenant_id == owner['tenant_id'],
+                ).values(payload=payload))
 
 def startup():
     runtime = get_runtime()

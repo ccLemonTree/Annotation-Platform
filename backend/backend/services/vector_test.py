@@ -31,9 +31,20 @@ from services.project_workflow import enqueue, output_ids
 
 COLLECTION = 'image_platform_vector_test_v1'
 SAMPLE_COLLECTION = 'image_platform_vector_test_samples_v1'
+PULL_TIMEOUT_SECONDS = 1800
+FOLLOW_DETECTION_INTERVAL = 30
 logger = logging.getLogger(__name__)
 workers = []
 DETECTION_KEY = 'vector_test_detection_job'
+
+
+class _StoppedEarly(Exception):
+    pass
+
+
+async def _release_clean_db(db):
+    if db is not None and not db.new and not db.dirty and not db.deleted and db.in_transaction():
+        await db.commit()
 
 
 async def detection_job(db, project):
@@ -136,7 +147,9 @@ async def connection(db, model, source=False):
 
 async def remote(db, model, action, *, from_source=False, transfer=None, **values):
     name, conn = await connection(db, model, from_source)
-    payload = dict(action=action, id=str(model.id), **values)
+    model_id = str(model.id)
+    await _release_clean_db(db)
+    payload = dict(action=action, id=model_id, **values)
     return await asyncio.to_thread(training_runs.bridge, name, dict(connection=conn, **(
         transfer if transfer is not None else dict(executor='vector_test', payload=payload))))
 
@@ -169,12 +182,21 @@ async def vectors(db, model, batches):
             raise
 
 
+async def _ensure_not_stopped(db, model_id):
+    state = await db.scalar(select(VectorTestModel.state).where(VectorTestModel.id == model_id).execution_options(populate_existing=True))
+    await _release_clean_db(db)
+    if state is None or state in ('stopping', 'stopped'):
+        raise _StoppedEarly(state or 'stopped')
+
+
 async def stage_model(db, model):
     source = {key: model.source[key] for key in ('root', 'artifact_path', 'runtime')}
     path = str(PurePosixPath(source['root']) / source['artifact_path'])
     if model.source['server']['id'] == model.server['id']:
         return dict(model_path=path)
+    await _ensure_not_stopped(db, model.id)
     receipt = await remote(db, model, 'pack', from_source=True, source=source)
+    await _ensure_not_stopped(db, model.id)
     folder = training_runs.ROOT/'.backups/vector-test-transfer'
     folder.mkdir(parents=True, exist_ok=True)
     size = receipt['bytes']
@@ -184,10 +206,13 @@ async def stage_model(db, model):
         bundle = Path(temp)/'bundle.zip'
         await remote(db, model, 'transfer', from_source=True, transfer=dict(download=dict(
             remotePath=receipt['path'], localPath=str(bundle), bytes=size)))
+        await _ensure_not_stopped(db, model.id)
         if bundle.stat().st_size != size or await asyncio.to_thread(sha, bundle) != receipt['sha256']:
             raise HTTPException(409, '测试模型中转校验失败')
         target = await remote(db, model, 'prepare')
+        await _ensure_not_stopped(db, model.id)
         await remote(db, model, 'transfer', transfer=dict(upload=dict(localPath=str(bundle), remotePath=target['path'])))
+        await _ensure_not_stopped(db, model.id)
         staged = await remote(db, model, 'receive', sha256=receipt['sha256'])
     return dict(model_path=staged['path'], fingerprint=staged['fingerprint'])
 
@@ -198,52 +223,114 @@ async def operate():
         model = await db.scalar(select(VectorTestModel).where(VectorTestModel.state.in_(
             ('queued', 'pulling', 'checking', 'stopping'))).order_by(priority, VectorTestModel.id).limit(1))
         if not model:
+            await _release_clean_db(db)
             return False
-        stopping = model.state == 'stopping'
+        model_id = model.id
+        initial_state = model.state
+        await _release_clean_db(db)
+
         try:
-            if stopping:
+            if initial_state == 'stopping':
                 await remote(db, model, 'stop')
-                model.state, model.gpu = 'stopped', None
-            else:
-                if model.state in ('queued', 'pulling'):
-                    image = await remote(db, model, 'image')
-                    if not image['ready']:
-                        if model.state != 'pulling':
-                            model.state = 'pulling'
-                            await db.commit()
-                        return False
-                    stage = await stage_model(db, model)
-                    await remote(db, model, 'start', **stage, gpu=model.gpu, port=model.port, token=token(model))
-                    model.state = 'checking'
-                    model.source = {**model.source, 'ready_deadline': int(time())+900}
+                locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+                if locked:
+                    locked.state, locked.gpu, locked.error = 'stopped', None, None
                     await db.commit()
-                    return True
-                deadline = model.source.get('ready_deadline')
-                if deadline is None:
-                    deadline = int(time())+900
-                    model.source = {**model.source, 'ready_deadline': deadline}
-                    await db.commit()
-                try:
-                    status = await remote(db, model, 'status')
-                except HTTPException:
-                    status = {'state': 'unreachable'}
-                if status.get('state') not in ('running', 'restarting', 'unreachable'):
-                    raise HTTPException(409, 'vLLM 已退出，请查看日志')
-                try:
-                    result = await vectors(db, model, [[{'type': 'text', 'text': 'service readiness'}]])
-                    full_vector(result[0].get('vector'))
-                except HTTPException:
-                    if time() < deadline:
+                return True
+
+            if initial_state in ('queued', 'pulling'):
+                image = await remote(db, model, 'image')
+                locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+                if locked is None or locked.state in ('stopping', 'stopped'):
+                    state_now = locked.state if locked else 'stopped'
+                    await _release_clean_db(db)
+                    return state_now == 'stopping'
+                if not image['ready']:
+                    pull_deadline = locked.source.get('pull_deadline')
+                    if pull_deadline is None:
+                        pull_deadline = int(time()) + PULL_TIMEOUT_SECONDS
+                        locked.source = {**locked.source, 'pull_deadline': pull_deadline}
+                        locked.state = 'pulling'
+                        await db.commit()
                         return False
-                    raise HTTPException(504, 'vLLM 就绪核验超时，请查看日志')
-                model.state = 'ready'
-            model.error = None
+                    if time() >= pull_deadline:
+                        raise HTTPException(504, '镜像拉取超时，请检查目标服务器网络与镜像仓库后重试')
+                    if locked.state != 'pulling':
+                        locked.state = 'pulling'
+                        await db.commit()
+                    else:
+                        await _release_clean_db(db)
+                    return False
+                await _release_clean_db(db)
+                stage = await stage_model(db, locked)
+                await _ensure_not_stopped(db, model_id)
+                await remote(db, locked, 'start', **stage, gpu=locked.gpu, port=locked.port, token=token(locked))
+                locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+                if locked is None or locked.state in ('stopping', 'stopped'):
+                    state_now = locked.state if locked else 'stopped'
+                    await _release_clean_db(db)
+                    return state_now == 'stopping'
+                source_clean = {k: v for k, v in locked.source.items() if k != 'pull_deadline'}
+                locked.state = 'checking'
+                locked.source = {**source_clean, 'ready_deadline': int(time()) + 900}
+                locked.error = None
+                await db.commit()
+                return True
+
+            deadline = model.source.get('ready_deadline')
+            if deadline is None:
+                locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+                if locked is None or locked.state in ('stopping', 'stopped'):
+                    state_now = locked.state if locked else 'stopped'
+                    await _release_clean_db(db)
+                    return state_now == 'stopping'
+                deadline = int(time()) + 900
+                locked.source = {**locked.source, 'ready_deadline': deadline}
+                await db.commit()
+                model = locked
+            try:
+                status = await remote(db, model, 'status')
+            except HTTPException:
+                status = {'state': 'unreachable'}
+            await _ensure_not_stopped(db, model_id)
+            if status.get('state') not in ('running', 'restarting', 'unreachable'):
+                raise HTTPException(409, 'vLLM 已退出，请查看日志')
+            try:
+                result = await vectors(db, model, [[{'type': 'text', 'text': 'service readiness'}]])
+                full_vector(result[0].get('vector'))
+            except HTTPException:
+                await _ensure_not_stopped(db, model_id)
+                if time() < deadline:
+                    return False
+                raise HTTPException(504, 'vLLM 就绪核验超时，请查看日志')
+            locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+            if locked is None or locked.state in ('stopping', 'stopped'):
+                state_now = locked.state if locked else 'stopped'
+                await _release_clean_db(db)
+                return state_now == 'stopping'
+            locked.state = 'ready'
+            locked.error = None
+            await db.commit()
+            return True
+        except _StoppedEarly as stopped:
+            await _release_clean_db(db)
+            return str(stopped) == 'stopping'
         except Exception as exc:
-            logger.warning('Vector test %s: %s', model.id, type(exc).__name__)
-            model.state = 'failed'
-            model.error = str(exc.detail) if isinstance(exc, HTTPException) else '测试服务操作失败，请查看日志或停止后重试'
-        await db.commit()
-        return True
+            logger.warning('Vector test %s: %s', model_id, type(exc).__name__)
+            await db.rollback()
+            locked = await db.scalar(select(VectorTestModel).where(VectorTestModel.id == model_id).with_for_update().execution_options(populate_existing=True))
+            if locked and locked.state not in ('stopping', 'stopped'):
+                if initial_state in ('queued', 'pulling'):
+                    locked.gpu = None
+                locked.state = 'failed'
+                locked.error = str(exc.detail) if isinstance(exc, HTTPException) else '测试服务操作失败，请查看日志或停止后重试'
+                await db.commit()
+            elif locked and initial_state == 'stopping':
+                locked.state = 'failed'
+                locked.gpu = None
+                locked.error = str(exc.detail) if isinstance(exc, HTTPException) else '测试服务停止失败，请核对远端容器后重试'
+                await db.commit()
+            return True
 
 
 def asset_items(project_id, model_id, asset=Asset, item=VectorTestItem):
@@ -356,14 +443,14 @@ async def compare(db, client, project, models, content, text, limit, isolated=Fa
     return dict(candidates=len(shared), results=results)
 
 
-async def loop(action):
+async def loop(action, interval=3):
     while True:
         try:
             if await action():
                 continue
         except Exception:
             logger.exception('Vector test worker failed')
-        await asyncio.sleep(3)
+        await asyncio.sleep(interval)
 
 
 async def index_loop():
@@ -406,7 +493,7 @@ async def detection_loop():
 
 async def start_worker():
     workers.extend([asyncio.create_task(loop(operate)), asyncio.create_task(index_loop()),
-                    asyncio.create_task(loop(follow_detection)), asyncio.create_task(detection_loop())])
+                    asyncio.create_task(loop(follow_detection, FOLLOW_DETECTION_INTERVAL)), asyncio.create_task(detection_loop())])
 
 
 async def stop_worker():

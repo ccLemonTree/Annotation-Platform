@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = Field(min_length=32, repr=False)
     JWT_EXPIRATION: int = Field(default=86400, ge=1)
     DEFAULT_TENANT_ID: int = Field(default=1, ge=1)
+    ALLOW_PUBLIC_REGISTER: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 

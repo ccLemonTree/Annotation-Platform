@@ -207,7 +207,7 @@ async def run_dry_run(db, project, request: WorkflowDryRunRequest) -> dict:
                             }
                             if handles and (passed or res.get('branch')):
                                 routed_outputs.append((handles, [next_sim]))
-                        item_summaries.append({
+                        summary_row = {
                             'name': sim['original_name'], 'passed': passed,
                             'reason': res.get('reason') or ('脚本通过' if passed else '脚本过滤'),
                             'logs': res.get('logs') or [],
@@ -215,7 +215,10 @@ async def run_dry_run(db, project, request: WorkflowDryRunRequest) -> dict:
                             'attributes': res.get('attributes'),
                             'description': res.get('description'),
                             'derived_previews': previews,
-                        })
+                        }
+                        if not res.get('derived') and res.get('boxes'):
+                            summary_row.update(preview_url=_preview_data_url(content), width=width, height=height)
+                        item_summaries.append(summary_row)
                     else:
                         cfg = ModelServiceConfig(**snapshots[node_key]['config'])
                         if op == 'caption':

@@ -98,6 +98,11 @@ async def validate_connections(row):
             raise HTTPException(409,'SSH连接目标已变化，请新建下发记录')
 
 
+async def _release_clean_db(db):
+    if db is not None and not db.new and not db.dirty and not db.deleted and db.in_transaction():
+        await db.commit()
+
+
 async def remote(db,row,action,source=False,control=False,**values):
     await authorized(db,row)
     conn=None
@@ -107,6 +112,7 @@ async def remote(db,row,action,source=False,control=False,**values):
         name='platform_training' if conn else row.source['server']['name']
     else:name=row.target['control_server'] if control else row.target['file_server']
     payload=dict(action=action,target=row.target,source=row.source,job_id=str(row.id),**values)
+    await _release_clean_db(db)
     return await asyncio.to_thread(training_runs.bridge,name,dict(connection=conn,executor='model_deployment',payload=payload))
 
 
@@ -163,10 +169,12 @@ async def transfer(db,row):
         await transfer_repository(db,row);return
     if row.source.get('kind')=='local_release':
         release=await local_release(db,row);local=Path(release.archive['path'])
+        await _release_clean_db(db)
         from services.model_deployment_executor import sha
         if await asyncio.to_thread(sha,local)!=release.archive['sha256']:raise HTTPException(409,'本地归档包已变化，请重新归档新版本')
         destination=await remote(db,row,'prepare')
         await authorized(db,row);await validate_connections(row)
+        await _release_clean_db(db)
         await asyncio.to_thread(training_runs.bridge,row.target['file_server'],dict(upload=dict(localPath=str(local),remotePath=destination['path'])))
         result=await remote(db,row,'receive',sha256=release.archive['sha256'])
         await save(db,row,'本地归档已传输，逐文件校验通过，等待手动生效','staged',
@@ -183,6 +191,7 @@ async def transfer(db,row):
         local=Path(temp)/'bundle.zip'
         conn=await training_runs.connection(db,SimpleNamespace(server=row.source['server'],tenant_id=row.tenant_id))
         await authorized(db,row)
+        await _release_clean_db(db)
         await asyncio.to_thread(training_runs.bridge,'platform_training' if conn else row.source['server']['name'],
             dict(connection=conn,download=dict(remotePath=receipt['path'],localPath=str(local),bytes=receipt['bytes'])))
         from services.model_deployment_executor import sha
@@ -190,6 +199,7 @@ async def transfer(db,row):
             raise HTTPException(409,'中转模型包校验失败')
         destination=await remote(db,row,'prepare')
         await authorized(db,row);await validate_connections(row)
+        await _release_clean_db(db)
         await asyncio.to_thread(training_runs.bridge,row.target['file_server'],dict(upload=dict(localPath=str(local),remotePath=destination['path'])))
         result=await remote(db,row,'receive',sha256=receipt['sha256'])
     await save(db,row,'传输和逐文件SHA256校验完成，等待手动生效','staged',
@@ -240,6 +250,7 @@ async def batch_repository_bundle(model,row):
 async def transfer_repository(db,row):
     from services import distribution_center as center,model_repository as repository
     model,_=await repository_source(db,row)
+    await _release_clean_db(db)
     temp=tempfile.TemporaryDirectory(prefix='deployment-',dir=repository.folder(model));local=Path(temp.name)/'bundle.zip'
     try:
         if row.batch_id:local,receipt=await batch_repository_bundle(model,row)
@@ -250,12 +261,14 @@ async def transfer_repository(db,row):
                 await packing;raise
         destination=await remote(db,row,'prepare')
         await authorized(db,row);await validate_connections(row)
+        await _release_clean_db(db)
         upload=asyncio.create_task(asyncio.to_thread(training_runs.bridge,row.target['file_server'],
             dict(upload=dict(localPath=str(local),remotePath=destination['path']))))
         try:await asyncio.shield(upload)
         except asyncio.CancelledError:
             await upload;raise
         await repository_source(db,row)
+        await _release_clean_db(db)
         hashing=asyncio.create_task(asyncio.to_thread(center.sha,local))
         try:digest=await asyncio.shield(hashing)
         except asyncio.CancelledError:
@@ -383,29 +396,43 @@ def schedule(row,operation):
 
 
 async def action(db,row,operation,actor=None):
-    row=await scoped(db,row.id,row.tenant_id,lock=True)
-    if str(row.id) in _tasks or row.status in BUSY:raise HTTPException(409,'此下发任务正在执行，请等待完成')
+    row_id,tenant_id=row.id,row.tenant_id
     if operation=='precheck':
+        row=await scoped(db,row_id,tenant_id,lock=True)
+        if str(row.id) in _tasks or row.status in BUSY:raise HTTPException(409,'此下发任务正在执行，请等待完成')
         if row.status not in ('draft','checked','transfer_failed'):raise HTTPException(409,'已传输的任务不能重新指定检查基线，请新建记录')
         if actor:row.user_id=actor.id
+        await db.commit()
         try:
             if row.kind=='image':
                 from services import image_updates
                 await image_updates.inspect_job(db,row)
             else:await inspect_job(db,row)
-            row.error=None;row.status='checked';await db.commit();await db.refresh(row)
+            row=await scoped(db,row_id,tenant_id,lock=True)
+            if row.status not in BUSY:
+                row.error=None;row.status='checked';await db.commit();await db.refresh(row)
         except HTTPException as error:
-            row.error=str(error.detail);row.inspection={**row.inspection,'check_ok':False};await db.commit();raise
+            await db.rollback()
+            row=await scoped(db,row_id,tenant_id,lock=True)
+            if row.status not in BUSY:
+                row.error=str(error.detail);row.inspection={**row.inspection,'check_ok':False};await db.commit()
+            raise
         return row
+    row=await scoped(db,row_id,tenant_id)
+    if str(row.id) in _tasks or row.status in BUSY:raise HTTPException(409,'此下发任务正在执行，请等待完成')
     allowed={'transfer':('draft','checked','transfer_failed'),'activate':('staged','activation_failed','unknown'),
         'rollback':('active','activation_failed','rollback_failed','unknown')}
     if row.status not in allowed.get(operation,()):raise HTTPException(409,'当前状态不能执行此操作')
-    if actor:row.user_id=actor.id
     if operation!='transfer' and not row.inspection.get('inventory'):raise HTTPException(409,'尚未完成传输预检查，不能使服务生效')
     if row.kind!='image' and operation!='transfer' and not row.inspection.get('promotion') and operation=='rollback':
+        await _release_clean_db(db)
         state=await remote(db,row,'state')
         if not state.get('receipt') or state['receipt'].get('state') not in ('promoted','promoting','restored'):
             raise HTTPException(409,'尚未切换在线目录，无需恢复旧版本')
+    row=await scoped(db,row_id,tenant_id,lock=True)
+    if str(row.id) in _tasks or row.status in BUSY or row.status not in allowed.get(operation,()):
+        raise HTTPException(409,'此下发任务状态已变化或正在执行，请刷新后重试')
+    if actor:row.user_id=actor.id
     await authorized(db,row)
     from services import distribution_center as center
     if not row.target.get('platform_id'):await center.acquire(db,row)
@@ -442,13 +469,25 @@ async def start_worker():
     async with AsyncSessionLocal() as db:
         conn=await db.connection()
         if not await conn.run_sync(lambda c:inspect(c).has_table('model_deployments')):return
+        has_leases=await conn.run_sync(lambda c:inspect(c).has_table('deployment_leases'))
         rows=(await db.scalars(select(ModelDeployment).where(ModelDeployment.status.in_(BUSY)))).all()
-        for row in rows:row.status='unknown';row.error='应用重启中断了执行，请先核对远端状态'
+        released=[]
+        for row in rows:
+            if row.status=='transferring' and not row.inspection.get('mutation_started') and not row.inspection.get('apply_started'):
+                row.status='transfer_failed'
+                row.error='应用重启中断了传输，未变更线上服务，可重试或删除'
+                released.append(row)
+            else:
+                row.status='unknown';row.error='应用重启中断了执行，请先核对远端状态'
         from models.model_deployment import ModelRelease
         if await conn.run_sync(lambda c:inspect(c).has_table('model_releases')):
             releases=(await db.scalars(select(ModelRelease).where(ModelRelease.status=='archiving'))).all()
             for row in releases:row.status='interrupted';row.error='应用重启中断归档，可手动重试'
         await db.commit()
+        if has_leases and released:
+            from services import distribution_center as center
+            for row in released:
+                await center.release_lease(db,row)
 
 
 async def stop_worker():

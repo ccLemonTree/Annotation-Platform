@@ -1,5 +1,7 @@
+from datetime import timedelta
+from types import SimpleNamespace
 from uuid import UUID
-from fastapi import APIRouter,Depends,Query,Response,HTTPException
+from fastapi import APIRouter,Depends,Query,Request,Response,HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db_session
@@ -9,6 +11,7 @@ from models.training_run import TrainingRun,TrainingTrainer
 from schemas.training_run import BuiltinTrainerDefaults,TrainingRunInput,TrainingDatasetInput,TrainingTrainerInput
 from schemas.common import PaginationParams
 from services import training_runs,gpu_servers
+from services.auth import create_access_token,decode_access_token
 from services.training_config import catalog,validate_defaults
 from api.automation_routes import page_result
 from services import training_analysis
@@ -17,7 +20,7 @@ from schemas.model_output import ModelOutputCreate
 from services import model_output
 import asyncio
 
-router=APIRouter(dependencies=[Depends(get_current_user)])
+router=APIRouter()
 
 
 @router.get('/catalog')
@@ -192,11 +195,52 @@ async def remove(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depen
 
 @router.get('/runs/{id}/artifacts/download')
 async def download(id:UUID,path:str=Query(min_length=1,max_length=1000),db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
-    run=await training_runs.scoped(db,id,user.tenant_id)
+    user_id,tenant_id,is_admin=user.id,user.tenant_id,user.role=='admin'
+    run=await training_runs.scoped(db,id,tenant_id)
+    run_snap=SimpleNamespace(id=run.id,tenant_id=run.tenant_id,user_id=run.user_id,kind=run.kind,status=run.status)
     response=await training_runs.download_artifact(db,run,path)
-    if user.role=='admin':
+    if is_admin:
         from services.model_repository import schedule_automatic
-        schedule_automatic(run,path,user.id)
+        schedule_automatic(run_snap,path,user_id)
+    return response
+
+
+@router.post('/runs/{id}/artifacts/browser-download',status_code=204)
+async def authorize_artifact_download(id:UUID,request:Request,path:str=Query(min_length=1,max_length=1000),
+        db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+    training_runs.validate_artifact_path(path)
+    user_id,tenant_id=user.id,user.tenant_id
+    run=await training_runs.scoped(db,id,tenant_id)
+    run_id_str=str(run.id)
+    await db.rollback()
+    lifetime=timedelta(hours=2)
+    ticket=create_access_token({'training_artifact_download':run_id_str,'artifact_path':path,
+        'download_user_id':user_id,'tenant_id':tenant_id},lifetime)
+    response=Response(status_code=204,headers={'Cache-Control':'no-store'})
+    response.set_cookie('training_artifact_download',ticket,max_age=int(lifetime.total_seconds()),
+        path=request.url.path,secure=request.url.scheme=='https',httponly=True,samesite='strict')
+    return response
+
+
+@router.get('/runs/{id}/artifacts/browser-download')
+async def browser_artifact_download(id:UUID,request:Request,path:str=Query(min_length=1,max_length=1000),
+        db:AsyncSession=Depends(get_db_session)):
+    training_runs.validate_artifact_path(path)
+    cookie=request.cookies.get('training_artifact_download')
+    ticket=decode_access_token(cookie) if cookie else None
+    if (not ticket or ticket.get('training_artifact_download')!=str(id)
+            or ticket.get('artifact_path')!=path or not ticket.get('download_user_id')):
+        raise HTTPException(401,'下载授权已失效，请从训练任务列表重新下载')
+    user=await db.get(User,ticket['download_user_id'])
+    if user is None or not user.is_active or user.role!='admin' or user.tenant_id!=ticket.get('tenant_id'):
+        raise HTTPException(403,'当前账号无权下载此训练产物')
+    user_id,tenant_id,is_admin=user.id,user.tenant_id,user.role=='admin'
+    run=await training_runs.scoped(db,id,tenant_id)
+    run_snap=SimpleNamespace(id=run.id,tenant_id=run.tenant_id,user_id=run.user_id,kind=run.kind,status=run.status)
+    response=await training_runs.download_artifact(db,run,path)
+    if is_admin:
+        from services.model_repository import schedule_automatic
+        schedule_automatic(run_snap,path,user_id)
     return response
 
 

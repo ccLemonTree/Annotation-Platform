@@ -2,6 +2,7 @@ import asyncio
 import tarfile
 from io import BytesIO
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from typing import Annotated
 from uuid import UUID
 from zipfile import BadZipFile
@@ -123,9 +124,11 @@ async def deploy(request: Deploy, db: Db, user: Admin):
 @router.post('/models/{identifier}/stop', status_code=202)
 async def stop(identifier: UUID, db: Db, user: Admin):
     model = await model_scope(db, user, identifier, lock=True)
-    if model.state not in ('ready', 'failed'):
+    if model.state not in ('queued', 'pulling', 'checking', 'ready', 'failed'):
         raise HTTPException(409, '等待当前部署或停止操作完成后再操作')
-    model.state = 'stopping'
+    model.state = 'stopped' if model.state == 'queued' else 'stopping'
+    model.gpu = None
+    model.error = None
     await db.commit()
     return summary(model)
 
@@ -158,9 +161,11 @@ async def sample_content(identifier: UUID, sample_id: UUID, db: Db, user: Admin)
     if not row:
         raise HTTPException(404, '测试图片不存在')
     path = samples.storage().resolve_path(row.blob_path)
+    media_type = IMAGE_TYPES[row.format][1]
+    await db.rollback()
     if not path.is_file():
         raise HTTPException(404, '测试图片文件不存在')
-    return FileResponse(path, media_type=IMAGE_TYPES[row.format][1], headers={'Cache-Control':'private, no-store'})
+    return FileResponse(path, media_type=media_type, headers={'Cache-Control':'private, no-store'})
 
 
 @router.get('/datasets/{identifier}/images/{sample_id}/preview')
@@ -181,11 +186,14 @@ async def result_image(identifier: UUID, sample_id: UUID, db: Db, user: Admin, i
             parent_id = None
         if parent_id:
             parent = await db.scalar(select(source).where(source.project_id == identifier, source.id == parent_id))
-    await db.commit()
+    region = crop.get('region') if parent else None
+    primary_row = SimpleNamespace(blob_path=(parent or row).blob_path, content_hash=(parent or row).content_hash)
+    target_row = SimpleNamespace(blob_path=row.blob_path, content_hash=row.content_hash) if isolated and parent is not None else None
+    await db.rollback()
     try:
-        original = await read(parent or row)
-        target = await read(row) if isolated and parent is not None else None
-        image = await asyncio.to_thread(samples.result_preview, original, target, crop.get('region') if parent else None)
+        original = await read(primary_row)
+        target = await read(target_row) if target_row is not None else None
+        image = await asyncio.to_thread(samples.result_preview, original, target, region)
     except (OSError, ValueError) as exc:
         raise HTTPException(404, '无法读取测试图片') from exc
     return Response(image, media_type='image/jpeg', headers={'Cache-Control':'private, no-store'})
