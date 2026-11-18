@@ -21,6 +21,7 @@ ANNOTATION_ROUTES = {
     'GET': {'/api/auth/me','/api/projects','/api/projects/{project_id}',
         '/api/projects/{project_id}/stats','/api/projects/{project_id}/annotation-models',
         '/api/projects/{project_id}/attributes','/api/projects/{project_id}/attribute-options','/api/projects/{project_id}/crop-labels',
+        '/api/projects/{project_id}/used-labels',
         '/api/assets','/api/assets/selection','/api/assets/collections','/api/assets/{asset_id}',
         '/api/assets/{asset_id}/content','/api/assets/{asset_id}/neighbors','/api/assets/{asset_id}/source','/api/assets/{asset_id}/source/content',
         '/api/annotations','/api/annotations/{annotation_id}','/api/annotations/assets/{asset_id}/events',

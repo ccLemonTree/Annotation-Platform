@@ -1,5 +1,6 @@
 """Explicit source groups and advisory splits; no filename/time inference."""
-from collections import Counter
+from collections import Counter, defaultdict
+from itertools import chain
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -68,19 +69,55 @@ def source_groups(rows, fields=SOURCE_FIELDS):
 
 
 def near_duplicate_pairs(fingerprints, policy):
-    items = [(key,(int(str(phash),16),color)) for key,(phash,color) in sorted(fingerprints.items())]
-    # shortcut: pairwise checks suit small curated datasets; index fingerprints before bulk-scale use.
-    for index, (left, (phash, color)) in enumerate(items):
-        for right, (other, other_color) in items[:index]:
-            if (phash ^ other).bit_count() <= policy.phash_distance and max(abs(a-b) for a, b in zip(color, other_color)) <= policy.color_distance:
+    items = [(key,int(str(phash),16),color) for key,(phash,color) in sorted(fingerprints.items())]
+    distance = policy.phash_distance
+    # Any match shares a complete block when 64 bits are split into distance + 1 blocks.
+    # shortcut: thresholds above seven use an exact scan, where short buckets offer little pruning.
+    widths = [(64*i//(distance+1), 64*(i+1)//(distance+1)) for i in range(distance+1)] if distance <= 7 else []
+    blocks = [(start, (1 << (end-start))-1, defaultdict(list)) for start,end in widths]
+    for index, (left, phash, color) in enumerate(items):
+        if blocks:
+            candidates = set()
+            for start, mask, buckets in blocks:
+                bucket = buckets[phash >> start & mask]
+                candidates.update(bucket)
+                bucket.append(index)
+            matches = sorted(candidates)
+        else:
+            matches = range(index)
+        for candidate in matches:
+            right, other, other_color = items[candidate]
+            if (phash ^ other).bit_count() <= distance and max(abs(a-b) for a,b in zip(color, other_color)) <= policy.color_distance:
                 yield left, right
 
 
-def split_report(rows, labels, policy, splits=None, suggest=False, fingerprints=None):
+def similar_image_groups(rows, policy, fingerprints):
+    groups, sources, _ = source_groups(rows)
+    representatives, unique, identical = {}, {}, []
+    for key, (phash, color) in fingerprints.items():
+        signature = (str(phash), tuple(color))
+        representative = representatives.setdefault(signature, key)
+        if representative == key:
+            unique[key] = signature
+        else:
+            identical.append((key, representative))
+    source_links = ((group[0],key) for group in groups for key in group[1:])
+    return _components(sources, chain(source_links, identical, near_duplicate_pairs(unique, policy)))
+
+
+def split_report(rows, labels, policy, splits=None, suggest=False, fingerprints=None, *, similar_groups=None):
     groups, sources, missing = source_groups(rows)
-    near_pairs = list(near_duplicate_pairs(fingerprints or {}, policy))
-    links = [(group[0], key) for group in groups for key in group[1:]] + near_pairs
-    combined = _components(sources, links)
+    cross_split_pairs = []
+    if similar_groups is None and not suggest:
+        def matching_links():
+            for left,right in near_duplicate_pairs(fingerprints or {}, policy):
+                if splits and left in splits and right in splits and splits[left]!=splits[right]:
+                    cross_split_pairs.append((left,right))
+                yield left,right
+        links = ((group[0],key) for group in groups for key in group[1:])
+        combined = _components(sources, chain(links, matching_links()))
+    else:
+        combined = similar_groups if similar_groups is not None else similar_image_groups(rows, policy, fingerprints or {})
     per_image = {str(asset.id): {b['label'] for b in ann.annotation_data['boxes'] if b['label'] in labels}
                  for asset, ann in rows}
     if suggest:
@@ -111,9 +148,12 @@ def split_report(rows, labels, policy, splits=None, suggest=False, fingerprints=
     for group in groups:
         if len({splits[key] for key in group if key in splits}) > 1:
             error('source_leakage', '同来源/同内容分组不能跨训练、验证、测试划分', asset_ids=group)
-    for left, right in near_pairs:
-        if left in splits and right in splits and splits[left] != splits[right]:
-            error('near_duplicate_leakage', '近重复图片跨数据划分，请放在同一划分', asset_ids=[left, right])
+    for left,right in cross_split_pairs:
+        error('near_duplicate_leakage', '近重复图片跨数据划分，请放在同一划分', asset_ids=[left,right])
+    if similar_groups is not None:
+        for group in similar_groups:
+            if len({splits[key] for key in group if key in splits}) > 1:
+                error('near_duplicate_leakage', '近重复图片跨数据划分，请放在同一划分', asset_ids=group)
     if missing:
         warnings.append(f'{len(missing)} 张图片缺少明确来源，无法排除未知父图/设备/连续帧泄漏')
         if policy.require_source:

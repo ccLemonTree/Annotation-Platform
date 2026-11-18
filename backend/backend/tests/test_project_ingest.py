@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
+from zipfile import ZipFile
 from uuid import uuid4
 
 import pytest
@@ -159,6 +160,8 @@ async def test_map_yolo_classes_by_upload_batch(client, auth_headers, work_env):
     batches = client.get(endpoint, headers=auth_headers)
     assert batches.status_code == 200
     assert {row['batch_id']: row['images'] for row in batches.json()} == {selected: 2, other: 1, None: 1}
+    assert all(row['classes'] == [{'id': 0, 'boxes': row['images']}, {'id': 1, 'boxes': row['images']}]
+        for row in batches.json())
     async with env.sessions() as db:
         initial = {row.asset_id: row for row in (await db.scalars(select(Annotation).where(
             Annotation.asset_id.in_(assets.values())))).all()}
@@ -189,6 +192,45 @@ async def test_map_yolo_classes_by_upload_batch(client, auth_headers, work_env):
         assert not (await db.get(Annotation, one.id)).is_latest
     legacy = client.post(endpoint, headers=auth_headers, json={'batch_id': None, 'labels': ['person', 'car']})
     assert legacy.json()['updated_boxes'] == 2
+    remaining = next(row for row in client.get(endpoint, headers=auth_headers).json() if row['batch_id'] == selected)
+    assert remaining['classes'] == [{'id': 1, 'boxes': 1}]
+    sparse = client.post(endpoint, headers=auth_headers, json={'batch_id': selected, 'class_labels': {'1': 'car'}})
+    assert sparse.status_code == 200, sparse.text
+    assert sparse.json() == {'updated_images': 1, 'updated_boxes': 1}
+    assert [row['batch_id'] for row in client.get(endpoint, headers=auth_headers).json()] == [other]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('already_mapped', [False, True])
+async def test_merged_yolo_categories_export_as_one_class(client, auth_headers, work_env, already_mapped):
+    env = work_env
+    env.project.task_type = 'detection'
+    env.project.label_schema = {'labels': []}
+    env.asset.original_name = 'fixture.png'
+    await env.db.commit()
+    project_id, asset_id, batch_id = env.project.id, env.asset.id, str(uuid4())
+    base = f'/api/projects/{project_id}'
+    imported = client.post(base+'/yolo-labels', headers=auth_headers, data={'batch_id': batch_id},
+        files={'files': ('fixture.txt', b'0 .25 .25 .25 .25\n1 .75 .75 .25 .25')})
+    assert imported.status_code == 200 and imported.json()['items'][0]['status'] == 'imported'
+    mapped = client.post(base+'/yolo-class-mapping', headers=auth_headers,
+        json={'batch_id': batch_id, 'class_labels': {'0': 'smoke', '1': 'fire' if already_mapped else 'smoke'}})
+    assert mapped.status_code == 200 and mapped.json() == {'updated_images': 1, 'updated_boxes': 2}
+    if already_mapped:
+        merged = client.put(base, headers=auth_headers, json={
+            'base_label_schema': {'labels': ['smoke', 'fire']},
+            'label_schema': {'labels': ['smoke']}, 'label_renames': {'fire': 'smoke'},
+        })
+        assert merged.status_code == 200, merged.text
+    exported = client.get(f'/api/export/projects/{project_id}/export', headers=auth_headers,
+        params={'format': 'yolo', 'approved_only': False})
+    assert exported.status_code == 200, exported.text
+    with ZipFile(BytesIO(exported.content)) as package:
+        assert package.read(f'labels/all/{asset_id}.txt').decode().splitlines() == [
+            '0 0.2500000000 0.2500000000 0.2500000000 0.2500000000',
+            '0 0.7500000000 0.7500000000 0.2500000000 0.2500000000',
+        ]
+        assert package.read('data.yaml').decode().split('names:\n')[1] == '  0: "smoke"\n'
 
 
 @pytest.mark.asyncio

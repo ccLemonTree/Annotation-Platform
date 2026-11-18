@@ -1,8 +1,8 @@
 """
 项目相关的数据模型
 """
-from pydantic import BaseModel, Field, ConfigDict, field_validator, StrictInt
-from typing import Optional
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator, StrictInt
+from typing import Annotated, Optional
 from datetime import datetime
 from uuid import UUID
 from models.project import TaskType, ProjectStatus
@@ -58,16 +58,18 @@ class ProjectLabelsAdd(BaseModel):
         return list(dict.fromkeys(value.strip() for value in values))
 
 
-class YoloClassMapping(ProjectLabelsAdd):
+class YoloClassMapping(BaseModel):
+    model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     batch_id: UUID | None
-    labels:list[str]=Field(min_length=1,max_length=100)
+    labels:list[Annotated[str, Field(min_length=1,max_length=100)]]|None=Field(default=None,min_length=1,max_length=100)
+    class_labels:dict[Annotated[int, Field(ge=0)], Annotated[str, Field(min_length=1,max_length=100)]]|None=Field(
+        default=None,min_length=1,max_length=100)
 
-    @field_validator('labels')
-    @classmethod
-    def label_names(cls, values):
-        if any(not value.strip() or len(value.strip())>100 for value in values):
-            raise ValueError('类别名称须为1至100字符')
-        return [value.strip() for value in values]
+    @model_validator(mode='after')
+    def require_one_mapping(self):
+        if (self.labels is None)==(self.class_labels is None):
+            raise ValueError('请提供一种 YOLO 类别映射')
+        return self
 
 
 class ProjectUpdate(BaseModel):

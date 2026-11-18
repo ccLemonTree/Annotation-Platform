@@ -1,5 +1,6 @@
 """Bound preview decoding concurrency and retain exact pHash matching semantics."""
 import hashlib
+import random
 import threading
 from io import BytesIO
 from types import SimpleNamespace
@@ -20,6 +21,31 @@ def test_pairs_use_integer_hamming_distance_without_numpy_per_pair(monkeypatch):
     def no_array_subtraction(*args):raise AssertionError('per-pair NumPy subtraction')
     monkeypatch.setattr(imagehash.ImageHash,'__sub__',no_array_subtraction)
     assert list(dataset_splits.near_duplicate_pairs(fingerprints,policy))==expected
+
+
+@pytest.mark.parametrize('distance',[0,4,7,8,64])
+def test_index_preserves_exact_matches_and_order(distance):
+    rng = random.Random(19)
+    fingerprints = {}
+    for index in range(96):
+        base = rng.getrandbits(64)
+        for variant in range(3):
+            mask = sum(1 << bit for bit in rng.sample(range(64), variant * 3))
+            fingerprints[f'{index}-{variant}'] = f'{base ^ mask:016x}', (index, 40, variant * 7)
+    policy = dataset_splits.SplitPolicy(phash_distance=distance, color_distance=10)
+    items = sorted(fingerprints.items())
+    expected = [(left, right) for i, (left, (p, c)) in enumerate(items)
+                for right, (q, d) in items[:i] if (int(p, 16) ^ int(q, 16)).bit_count() <= distance
+                and max(abs(a - b) for a, b in zip(c, d)) <= 10]
+    assert list(dataset_splits.near_duplicate_pairs(fingerprints, policy)) == expected
+
+
+def test_grouping_connects_exact_and_transitive_matches():
+    ids = ('a', 'b', 'c', 'd', 'e')
+    fingerprints = {key: (f'{value:016x}', (0, 0, 0)) for key, value in zip(ids, (0, 0, 1, 3, 255))}
+    rows = [(SimpleNamespace(id=key, content_hash=key, device_info={}), None) for key in ids]
+    policy = dataset_splits.SplitPolicy(phash_distance=1)
+    assert dataset_splits.similar_image_groups(rows, policy, fingerprints) == [['a','b','c','d'],['e']]
 
 
 @pytest.mark.asyncio

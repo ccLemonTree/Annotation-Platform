@@ -25,13 +25,12 @@ import {
   getProjects,
   getProject,
   getProjectUsedLabels,
-  createProject,
   updateProject,
   deleteProject,
   type Project,
-  type ProjectCreate,
 } from '../api/projects';
 
+import CreateProjectModal from '../components/CreateProjectModal';
 import ProjectAssignments from '../components/ProjectAssignments';
 import ProjectWorkflow from '../components/ProjectWorkflow';
 import './ProjectsPage.css';
@@ -48,6 +47,7 @@ export default function ProjectsPage() {
   const projectRequest = useRef(0);
   const [assignmentProject,setAssignmentProject] = useState<Project>();
   const [loading, setLoading] = useState(false);
+  const [createModalVisible, setCreateModalVisible] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [pagination, setPagination] = useState({ page: 1, page_size: 10, total: 0 });
@@ -114,10 +114,7 @@ export default function ProjectsPage() {
   };
 
   const handleCreate = () => {
-    setSaveError('');
-    setEditingProject(null); setRenames({}); setUsedLabels([]); setLabelsError(''); setLabelsLoading(false);
-    form.resetFields();
-    setModalVisible(true);
+    setCreateModalVisible(true);
   };
 
   const handleEdit = (project: Project) => {
@@ -138,37 +135,36 @@ export default function ProjectsPage() {
   };
 
   const handleSubmit = async () => {
+    if (!editingProject) return;
     const validated = await form.validateFields().catch(() => null);
     if (!validated) return;
     try {
-      const { labels=editingProject?.label_schema?.labels || [], classification_mode, ...values } = validated;
+      const { labels = editingProject.label_schema?.labels || [], classification_mode, ...values } = validated;
       if (submitting || labelsLoading || labelsError) return;
       const normalized = labels.map((label: string) => label.trim());
       const mapping = changingTaskType ? {} : Object.fromEntries(Object.entries(renames).filter(([source, target]) => target && source !== target));
       if (!changingTaskType && usedLabels.some(source => !normalized.includes(mapping[source] || source))) {
         message.error('已有框使用了被移除的类别，请指定旧类别到新类别的对应关系'); return;
       }
-      const payload = { ...values, label_schema: { ...(editingProject?.label_schema || {}), labels: normalized },
-        ...(editingProject ? { label_renames: mapping, base_label_schema: editingProject.label_schema } : {}) };
-      if(values.task_type==='classification')payload.label_schema.classification_mode=classification_mode||'single';
+      const payload = {
+        ...values,
+        label_schema: { ...(editingProject.label_schema || {}), labels: normalized },
+        label_renames: mapping,
+        base_label_schema: editingProject.label_schema,
+      };
+      if (values.task_type === 'classification') payload.label_schema.classification_mode = classification_mode || 'single';
       setSubmitting(true);
       setSaveError('');
 
-      if (editingProject) {
-        const { task_type, ...changes } = payload;
-        await updateProject(editingProject.id, changingTaskType ? { ...changes, task_type } : changes);
-        message.success('更新成功');
-      } else {
-        const created = await createProject(payload as ProjectCreate);
-        message.success('项目已创建，先添加图片');
-        setModalVisible(false); navigate(`/projects/${created.id}/images`); return;
-      }
+      const { task_type, ...changes } = payload;
+      await updateProject(editingProject.id, changingTaskType ? { ...changes, task_type } : changes);
+      message.success('更新成功');
 
       setModalVisible(false);
       fetchProjects();
     } catch (error) {
       const detail = isAxiosError(error) ? error.response?.data?.detail : undefined;
-      setSaveError(typeof detail === 'string' ? detail : editingProject ? '更新失败，请重新打开最新配置后重试' : '创建失败，请重试');
+      setSaveError(typeof detail === 'string' ? detail : '更新失败，请重新打开最新配置后重试');
     } finally { setSubmitting(false); }
   };
 
@@ -217,9 +213,18 @@ export default function ProjectsPage() {
         </div>
       </>}
 
+      <CreateProjectModal
+        open={createModalVisible}
+        onCancel={() => setCreateModalVisible(false)}
+        onSuccess={created => {
+          setCreateModalVisible(false);
+          navigate(`/projects/${created.id}/images`);
+        }}
+      />
+
       <Modal
-        title={editingProject ? '编辑项目' : '新建项目'}
-        open={modalVisible}
+        title="编辑项目"
+        open={modalVisible && !!editingProject}
         confirmLoading={submitting}
         okButtonProps={{ disabled: labelsLoading || !!labelsError }}
         onOk={handleSubmit}
@@ -228,7 +233,7 @@ export default function ProjectsPage() {
         mask={{closable:!submitting}}
         width={600}
         styles={{ body: { maxHeight: '72dvh', overflowY: 'auto' } }}
-        okText={editingProject ? "保存设置" : "创建项目"}
+        okText="保存设置"
         cancelText="取消"
       >
         <Form

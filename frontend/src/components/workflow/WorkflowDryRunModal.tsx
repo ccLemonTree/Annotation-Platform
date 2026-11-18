@@ -7,7 +7,7 @@ import {
   type WorkflowConfig,
   type WorkflowDryRunResult,
 } from '../../api/projectWork';
-import { labelColor } from '../detectionEditor';
+import { DetectionBoxOverlay } from '../DetectionBoxOverlay';
 
 const errorText = (error: unknown) =>
   isAxiosError(error) && typeof error.response?.data?.detail === 'string'
@@ -236,36 +236,14 @@ export default function WorkflowDryRunModal({
                         </pre>
                       )}
                       {item.preview_url && !!item.boxes?.length && item.width && item.height && (
-                        <div style={{ position: 'relative', display: 'inline-block', marginTop: 8, maxWidth: 260, lineHeight: 0 }}>
-                          <img src={item.preview_url} alt={item.name} style={{ width: '100%', borderRadius: 4 }} />
-                          <svg
-                            viewBox={`0 0 ${item.width} ${item.height}`}
-                            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-                          >
-                            {item.boxes.map((b, bi) => {
-                              const color = labelColor(b.label);
-                              const fontSize = Math.max(14, item.width! / 38);
-                              return (
-                                <g key={bi}>
-                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke="#0b101b" strokeWidth={6} vectorEffect="non-scaling-stroke" />
-                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke="white" strokeWidth={4} vectorEffect="non-scaling-stroke" />
-                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-                                  <text
-                                    x={b.x}
-                                    y={Math.max(fontSize, b.y - 4)}
-                                    fill="white"
-                                    stroke="#0b101b"
-                                    strokeWidth={Math.max(3, fontSize * 0.2)}
-                                    paintOrder="stroke"
-                                    strokeLinejoin="round"
-                                    fontSize={fontSize}
-                                  >
-                                    {b.label}{typeof b.score === 'number' ? ` ${(b.score * 100).toFixed(1)}%` : ''}
-                                  </text>
-                                </g>
-                              );
-                            })}
-                          </svg>
+                        <div style={{ marginTop: 8, maxWidth: 260 }}>
+                          <DetectionBoxOverlay
+                            src={item.preview_url}
+                            width={item.width}
+                            height={item.height}
+                            boxes={item.boxes}
+                            alt={item.name}
+                          />
                         </div>
                       )}
                       {!!item.derived_previews?.length && (

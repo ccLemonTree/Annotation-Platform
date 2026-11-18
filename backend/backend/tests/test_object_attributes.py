@@ -89,7 +89,7 @@ async def test_targeted_attribute_retry_preserves_existing_annotation(work_env,m
         assert await project_work.process_one(env.sessions,client)
         async with env.sessions() as db:
             first=await db.get(ProjectWorkItem,item.id)
-            assert first.status==('cancelled' if manual else 'failed')
+            assert first.status==('cancelled' if manual else 'retry_wait')
             if not manual:assert first.result['retry_at']>now
         if not manual:
             now+=60
