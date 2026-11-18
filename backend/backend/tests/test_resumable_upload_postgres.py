@@ -17,7 +17,7 @@ from database import get_db_session
 from services.auth import create_access_token
 from services.storage import reset_storage
 
-@pytest.mark.skipif(os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS')!='1' and os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
 @pytest.mark.asyncio
 async def test_012_and_real_http_resume(tmp_path,monkeypatch,mock_image_data):
     from api.image_upload_routes import router as uploads_router

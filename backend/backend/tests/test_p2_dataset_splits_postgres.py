@@ -23,7 +23,7 @@ from services.detection_export import export_rows
 from services.storage import get_storage, reset_storage
 
 
-@pytest.mark.skipif(os.environ.get('P2_DATASET_POSTGRES_INTEGRATION') != '1', reason='explicit temporary PostgreSQL required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS') != '1' and os.environ.get('P2_DATASET_POSTGRES_INTEGRATION') != '1', reason='explicit temporary PostgreSQL required')
 @pytest.mark.asyncio
 async def test_jsonb_source_freeze_evidence_and_source_edit_lock(tmp_path, monkeypatch):
     name = 'codex_p2_dataset_' + uuid4().hex

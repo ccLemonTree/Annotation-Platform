@@ -61,6 +61,8 @@ def test_health_check():
 
 
 if __name__ == "__main__":
+    if os.environ.get("RUN_MANUAL_CHECKS") != "1":
+        raise SystemExit("安全拦截：此手工联调脚本会请求运行中服务，仅允许在隔离环境显式设置 RUN_MANUAL_CHECKS=1 后执行。")
     print("开始测试 API...")
 
     # 测试健康检查

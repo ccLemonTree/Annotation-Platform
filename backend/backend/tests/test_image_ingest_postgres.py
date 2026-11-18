@@ -16,7 +16,7 @@ from services.image_scenes import classify_one
 from config.settings import settings
 from services.storage import reset_storage
 
-@pytest.mark.skipif(os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS')!='1' and os.environ.get('P3_POSTGRES_INTEGRATION')!='1',reason='explicit isolated PostgreSQL required')
 @pytest.mark.asyncio
 @pytest.mark.parametrize('preexisting_columns',[False,True])
 async def test_010_migration_and_scene_claim(tmp_path,monkeypatch,preexisting_columns):

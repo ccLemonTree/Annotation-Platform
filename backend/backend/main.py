@@ -1,15 +1,21 @@
 """
 FastAPI主应用
 """
+from contextlib import asynccontextmanager
+from pathlib import Path
+import asyncio
+import gc
+import logging
+import shutil
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
-import logging
 
-from database import engine
+from database import engine, get_db_session
 from models import Base
 from api import api_router
 from schemas.common import ResponseModel
@@ -27,6 +33,94 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_orphan_transfer_dirs(backups_dir: Path | None = None) -> None:
+    """清理启动前残留的孤儿传输与下载临时目录"""
+    root = backups_dir or (Path(__file__).resolve().parent / ".backups")
+    if not root.is_dir() or root.is_symlink():
+        return
+    for target in (*root.glob("*-transfer"), root / "artifact-downloads"):
+        if target.exists() and not target.is_symlink():
+            shutil.rmtree(target, ignore_errors=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    logger.info("Starting application...")
+    if not app.dependency_overrides:
+        _cleanup_orphan_transfer_dirs()
+        from integrations.smarteye.hooks import startup
+        startup()
+        from services.image_scenes import start_worker
+        await start_worker()
+        from services.image_uploads import start_worker as start_upload_worker
+        await start_upload_worker()
+        from services.automation import start_worker as start_automation_worker
+        from services.image_semantics import start_worker as start_semantic_worker
+        await start_automation_worker()
+        await start_semantic_worker()
+        from services.project_work import start_worker as start_project_work
+        await start_project_work()
+        from services.vector_test import start_worker as start_vector_test
+        await start_vector_test()
+        from services.validation import start_worker as start_validation_worker
+        await start_validation_worker()
+        from services.training_runs import start_worker as start_training_worker
+        await start_training_worker()
+        from services.model_deployments import start_worker as start_deployment_worker
+        await start_deployment_worker()
+        from services.model_repository import start_worker as start_repository_worker
+        await start_repository_worker()
+        from services.snapshot_jobs import start_worker as start_snapshot_worker
+        await start_snapshot_worker()
+    # 注意：数据库表已经存在，不需要自动创建
+    # 如果需要创建表，请运行 alembic upgrade head
+    logger.info("Application started successfully")
+    try:
+        yield
+    finally:
+        logger.info("Shutting down application...")
+        from services.gpu_terminal import close_all as close_terminals
+        await close_terminals()
+        from services import script_sandbox
+        if script_sandbox._slots:
+            sandbox_transports = [getattr(s.proc, "_transport", None) for s in script_sandbox._slots if s.proc is not None]
+            await script_sandbox.shutdown_sandbox()
+            for tr in sandbox_transports:
+                if tr is not None:
+                    tr.close()
+            gc.collect()
+            await asyncio.sleep(0)
+        if not app.dependency_overrides:
+            from integrations.smarteye.hooks import shutdown
+            from services.image_scenes import stop_worker
+            await stop_worker()
+            from services.image_uploads import stop_worker as stop_upload_worker
+            await stop_upload_worker()
+            from services.automation import stop_worker as stop_automation_worker
+            from services.image_semantics import stop_worker as stop_semantic_worker
+            await stop_automation_worker()
+            await stop_semantic_worker()
+            from services.project_work import stop_worker as stop_project_work
+            await stop_project_work()
+            from services.vector_test import stop_worker as stop_vector_test
+            await stop_vector_test()
+            from services.validation import stop_worker as stop_validation_worker
+            await stop_validation_worker()
+            from services.training_runs import stop_worker as stop_training_worker
+            await stop_training_worker()
+            from services.model_deployments import stop_worker as stop_deployment_worker
+            await stop_deployment_worker()
+            from services.model_repository import stop_worker as stop_repository_worker
+            await stop_repository_worker()
+            from services.snapshot_jobs import stop_worker as stop_snapshot_worker
+            await stop_snapshot_worker()
+            shutdown()
+        if get_db_session not in app.dependency_overrides:
+            await engine.dispose()
+            logger.info("Database connection closed")
+
+
 # 创建FastAPI应用
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -34,7 +128,8 @@ app = FastAPI(
     description="图像标注数据管理平台API",
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
 )
 
 
@@ -108,79 +203,6 @@ async def general_exception_handler(request: Request, exc: Exception):
             data=None
         ).model_dump()
     )
-
-
-# 启动事件
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时执行"""
-    logger.info("Starting application...")
-    if not app.dependency_overrides:
-        from integrations.smarteye.hooks import startup
-        startup()
-        from services.image_scenes import start_worker
-        await start_worker()
-        from services.image_uploads import start_worker as start_upload_worker
-        await start_upload_worker()
-        from services.automation import start_worker as start_automation_worker
-        from services.image_semantics import start_worker as start_semantic_worker
-        await start_automation_worker()
-        await start_semantic_worker()
-        from services.project_work import start_worker as start_project_work
-        await start_project_work()
-        from services.vector_test import start_worker as start_vector_test
-        await start_vector_test()
-        from services.validation import start_worker as start_validation_worker
-        await start_validation_worker()
-        from services.training_runs import start_worker as start_training_worker
-        await start_training_worker()
-        from services.model_deployments import start_worker as start_deployment_worker
-        await start_deployment_worker()
-        from services.model_repository import start_worker as start_repository_worker
-        await start_repository_worker()
-        from services.snapshot_jobs import start_worker as start_snapshot_worker
-        await start_snapshot_worker()
-    # 注意：数据库表已经存在，不需要自动创建
-    # 如果需要创建表，请运行 alembic upgrade head
-    logger.info("Application started successfully")
-
-
-# 关闭事件
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭时执行"""
-    logger.info("Shutting down application...")
-    from services.gpu_terminal import close_all as close_terminals
-    await close_terminals()
-    from services.script_sandbox import shutdown_sandbox
-    await shutdown_sandbox()
-    if not app.dependency_overrides:
-        from integrations.smarteye.hooks import shutdown
-        from services.image_scenes import stop_worker
-        await stop_worker()
-        from services.image_uploads import stop_worker as stop_upload_worker
-        await stop_upload_worker()
-        from services.automation import stop_worker as stop_automation_worker
-        from services.image_semantics import stop_worker as stop_semantic_worker
-        await stop_automation_worker()
-        await stop_semantic_worker()
-        from services.project_work import stop_worker as stop_project_work
-        await stop_project_work()
-        from services.vector_test import stop_worker as stop_vector_test
-        await stop_vector_test()
-        from services.validation import stop_worker as stop_validation_worker
-        await stop_validation_worker()
-        from services.training_runs import stop_worker as stop_training_worker
-        await stop_training_worker()
-        from services.model_deployments import stop_worker as stop_deployment_worker
-        await stop_deployment_worker()
-        from services.model_repository import stop_worker as stop_repository_worker
-        await stop_repository_worker()
-        from services.snapshot_jobs import stop_worker as stop_snapshot_worker
-        await stop_snapshot_worker()
-        shutdown()
-    await engine.dispose()
-    logger.info("Database connection closed")
 
 
 # 健康检查

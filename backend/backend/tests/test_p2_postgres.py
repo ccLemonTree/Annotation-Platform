@@ -19,7 +19,7 @@ from api.annotation_routes import create_annotation, update_annotation, review_a
 from schemas.annotation import AnnotationCreate, AnnotationUpdate, AnnotationReview
 from services.auth import get_password_hash
 
-@pytest.mark.skipif(os.environ.get('P2_POSTGRES_INTEGRATION') != '1', reason='explicit isolated PostgreSQL required')
+@pytest.mark.skipif(os.environ.get('RUN_POSTGRES_TESTS') != '1' and os.environ.get('P2_POSTGRES_INTEGRATION') != '1', reason='explicit isolated PostgreSQL required')
 @pytest.mark.asyncio
 async def test_migration_and_concurrent_version_writes(tmp_path, monkeypatch):
     name = 'codex_p2_' + uuid4().hex
