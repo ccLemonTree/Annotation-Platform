@@ -1,11 +1,11 @@
-.platform-content-dashboard { width: 100%; max-width: 1664px; align-self: center; }
+.platform-content-dashboard { width: 100%; }
 .dashboard-heading-action { margin-top: 0; flex-shrink: 0; }
 .dashboard-shell { display: grid; gap: 20px; }
 .dashboard-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .dashboard-tabs a { padding: 10px 16px; color: var(--ui-muted); border-radius: 6px; }
 .dashboard-tabs a[aria-current] { color: var(--ui-primary); background: var(--ui-primary-soft); }
 .dashboard-tabs > span { margin-left: auto; color: var(--ui-muted); font-size: 12px; }
-.dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--ui-surface); border-radius: 12px; padding: 24px 0; }
+.dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 24px 0; }
 .dashboard-metric { padding: 0 28px; min-width: 0; }
 .dashboard-metric + .dashboard-metric { border-left: 1px solid var(--ui-border); }
 .dashboard-metric > span { color: var(--ui-muted); font-size: 13px; }
@@ -14,7 +14,7 @@
 .dashboard-metric p { font-size: 12px; color: var(--ui-muted); margin: 0; }
 .dashboard-metric-attention > strong { color: var(--ui-warning); }
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); gap: 20px; }
-.dashboard-panel.ant-card { min-width: 0; height: 100%; display: flex; flex-direction: column; border: 0; }
+.dashboard-panel.ant-card { min-width: 0; height: 100%; display: flex; flex-direction: column; border: 1px solid var(--ui-border); }
 .dashboard-panel > .ant-card-head { padding: 22px 24px 0; min-height: 0; border-bottom: 0; }
 .dashboard-panel .ant-card-head-title h2 { margin: 0; font-size: 16px; line-height: 1.5; font-weight: 600; }
 .dashboard-panel .ant-card-extra { font-size: 13px; }

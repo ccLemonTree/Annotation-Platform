@@ -14,6 +14,8 @@ export const removeProjectLabel=async(projectId:string,preview:LabelRemovalPrevi
 export interface Annotation {
   id: string;
   asset_id: string;
+  asset_original_name?: string | null;
+  asset_source_type?: string | null;
   annotator_id: number | null;
   reviewer_id: number | null;
   annotation_source: string | null;
@@ -63,6 +65,9 @@ export const getAnnotations = async (params?: {
   scope?: 'all' | 'annotation';
   latest_only?: boolean;
   review_status?: string;
+  q?: string;
+  label?: string;
+  annotation_source?: string;
   kind?: AnnotationKind|'all';
   ai_pending?: boolean;
   work_job_id?: string;

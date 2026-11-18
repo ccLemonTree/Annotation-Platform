@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import JsonInput from '../JsonInput';
 import { Alert, Button, Form, Input, InputNumber, Modal, Select, Space, Typography } from 'antd';
 import type { Project } from '../../api/projects';
 import CheckpointFields from './CheckpointFields';
 import {getModelServices,hasDetectionConfidence,isModelOffline,type ModelService} from '../../api/modelServices';
+import { getTrainingArtifacts, getTrainingRun } from '../../api/training';
 import type { CheckpointInput } from '../../api/validation';
 import { createValidationRun, createValidationSet, getValidationSnapshots, validationError } from '../../api/validation';
 import type { ValidationConfig, ValidationSet, ValidationSnapshot } from '../../api/validation';
@@ -53,42 +54,82 @@ export function CreateValidationSet({ projects, projectId:initialProjectId, proj
   };
   return <Modal open title="创建验证集" onCancel={() => { if (!saving.current) onClose(); }} closable={!busy} mask={{ closable: !busy }} footer={null}>
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-      <Alert type="info" title="需有已确认的标注真值" description="人工审核通过，或管理员在YOLO导入时选择信任标注的样本可用。AI自动通过不直接纳入；冻结val/test须保留对应版本的确认记录。请使用独立验证项目或划分。" />
-      {error && <Alert type="error" title={error} />}
-      {busy && <Alert type="info" title={`正在保存验证集，已等待 ${elapsed} 秒`} description="正在核对冻结版本和已确认标注，请勿重复提交。" />}
+      <Alert type="info" showIcon title="需有已确认的标注真值" description="人工审核通过，或管理员在YOLO导入时选择信任标注的样本可用。AI自动通过不直接纳入；冻结val/test须保留对应版本的确认记录。请使用独立验证项目或划分。" />
+      {error && <Alert type="error" showIcon title={error} />}
+      {busy && <Alert type="info" showIcon title={`正在保存验证集，已等待 ${elapsed} 秒`} description="正在核对冻结版本和已确认标注，请勿重复提交。" />}
       <Form form={form} layout="vertical" initialValues={{ source: projectLocked ? 'snapshot' : 'approved', split: 'val', project_id:initialProjectId }} onFinish={save} disabled={busy}>
         <Form.Item name="name" label="验证集名称" rules={[{ required: true, whitespace: true, message: '请输入验证集名称' }]}><Input maxLength={200} /></Form.Item>
         <Form.Item name="project_id" label="验证项目" rules={[{ required: true, message: '请选择检测项目' }]}>
           <Select aria-label="验证项目" disabled={projectLocked} showSearch optionFilterProp="label" options={projects.map(p => ({ value: p.id, label: p.project_name }))} />
         </Form.Item>
         <Form.Item name="source" label="真值来源" extra="模型预测会与这些已确认标注比较，用于计算评估结果。"><Select aria-label="真值来源" options={[{ value: 'approved', label: '当前已确认标注的样本' }, { value: 'snapshot', label: '冻结包 val/test 划分' }]} /></Form.Item>
-        {source !== 'snapshot' ? <Alert type="warning" title="当前样本未验证独立于训练数据" description="创建时固定真值，不应仅凭创建时间宣称验证集独立。" /> : <>
-          <Alert type="warning" title="冻结时间早不等于独立验证" description="只使用冻结的 val/test 划分；仍需核对训练数据来源和划分证据。旧版未划分包不可选。" />
+        {source !== 'snapshot' ? <Alert type="warning" showIcon title="当前样本未验证独立于训练数据" description="创建时固定真值，不应仅凭创建时间宣称验证集独立。" /> : <>
+          <Alert type="warning" showIcon title="冻结时间早不等于独立验证" description="只使用冻结的 val/test 划分；仍需核对训练数据来源和划分证据。旧版未划分包不可选。" />
           <Form.Item name="split" label="冻结划分"><Select aria-label="冻结划分" disabled={loading} options={[{ value: 'val', label: 'val（验证）' }, { value: 'test', label: 'test（测试）' }]} onChange={() => { form.setFieldValue('snapshot_id', undefined); setError(''); }} /></Form.Item>
-          {snapshotError && <Alert type="error" title={snapshotError} description={<Button onClick={() => setReload(n => n + 1)}>重试读取冻结包</Button>} />}
-          {projectId && !loading && !snapshotError && !available && <Alert type="info" title="当前划分暂无可用冻结包" description={<><p>先在本项目导出中预览并冻结 val/test 划分，再返回创建验证集。仍需确认评估图片未用于训练。</p><Space wrap><Link to={`/projects/${projectId}/deliver`}>前往本项目导出准备</Link><Button onClick={() => setReload(n => n + 1)}>重新读取冻结包</Button></Space></>} />}
+          {snapshotError && <Alert type="error" showIcon title={snapshotError} description={<Button size="small" onClick={() => setReload(n => n + 1)}>重试读取冻结包</Button>} />}
+          {projectId && !loading && !snapshotError && !available && <Alert type="info" showIcon title="当前划分暂无可用冻结包" description={<><p>先在本项目导出中预览并冻结 val/test 划分，再返回创建验证集。仍需确认评估图片未用于训练。</p><Space wrap><Link to={`/projects/${projectId}/deliver`}>前往本项目导出准备</Link><Button size="small" onClick={() => setReload(n => n + 1)}>重新读取冻结包</Button></Space></>} />}
           <Form.Item name="snapshot_id" label="冻结包" rules={[{ required: true, message: '请选择包含对应划分的冻结包' }]}>
             <Select aria-label="冻结包" loading={loading} disabled={!projectId || loading || !!snapshotError} notFoundContent="暂无可用冻结包，请先冻结 val/test 划分"
               options={snapshots.map(s => ({ value: s.id, label: `${s.id} · ${s.format} · ${s.created_at}`,
                 disabled: !s.manifest.assets.some(a => a.split === split) }))} />
           </Form.Item>
         </>}
-        <Space wrap style={{ marginTop: 16 }}><Button disabled={busy} onClick={onClose}>取消</Button><Button aria-label="保存验证集" type="primary" htmlType="submit" loading={busy} disabled={source === 'snapshot' && (loading || !!snapshotError || !available)}>保存验证集</Button></Space>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <Space wrap><Button disabled={busy} onClick={onClose}>取消</Button><Button aria-label="保存验证集" type="primary" htmlType="submit" loading={busy} disabled={source === 'snapshot' && (loading || !!snapshotError || !available)}>保存验证集</Button></Space>
+        </div>
       </Form>
     </Space>
   </Modal>;
 }
 
 const defaults: ValidationConfig = { inference_confidence: .001, confidence: .25, match_iou: .5, nms_iou: .45, label_mapping: {}, labels: [] };
-export function CreateValidationRun({ dataset,projectId, onClose, onCreated }: { dataset: ValidationSet;projectId?:string; onClose: () => void; onCreated: () => void }) {
+export function CreateValidationRun({ dataset, projectId, initialTrainingRunId, onClose, onCreated }: { dataset: ValidationSet; projectId?: string; initialTrainingRunId?: string; onClose: () => void; onCreated: () => void }) {
+  const [params] = useSearchParams();
+  const effectiveRunId = initialTrainingRunId || params.get('training_run_id') || undefined;
+  const defaultSource: 'service' | 'checkpoint' = effectiveRunId ? 'checkpoint' : (projectId ? 'service' : 'checkpoint');
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [models,setModels]=useState<ModelService[]>(),[modelError,setModelError]=useState(''),[modelRevision,setModelRevision]=useState(0);
-  const source=Form.useWatch('source',form)||(projectId?'service':'checkpoint');
+  const source=Form.useWatch('source',form)||defaultSource;
   useEffect(()=>{if(source!=='service')return;let active=true;
     getModelServices({kind:'detection',enabled:true}).then(rows=>{if(active){const choices=rows.filter(model=>model.enabled&&model.kind==='detection'&&hasDetectionConfidence(model));setModels(choices);setModelError('');if(!form.getFieldValue('model_id'))form.setFieldValue('model_id',choices.find(model=>!isModelOffline(model))?.id);}}).catch(()=>{if(active)setModelError('检测模型读取失败，请重试或切换为训练权重');});
     return()=>{active=false;};
   },[form,modelRevision,source]);
+  useEffect(() => {
+    if (!effectiveRunId) return;
+    let active = true;
+    Promise.all([getTrainingRun(effectiveRunId), getTrainingArtifacts(effectiveRunId).catch(() => ({ files: [], truncated: false }))])
+      .then(([run, art]) => {
+        if (!active || run.config.execution_backend === 'k8s') return;
+        let names = run.config.selected_labels || run.source.labels || [];
+        if (!names.length) {
+          try {
+            const metadata = JSON.parse(run.inspection.checks?.find(check => check.name === '训练数据与类别')?.detail || '{}');
+            if (Array.isArray(metadata.labels)) names = metadata.labels;
+          } catch { /* ignore */ }
+        }
+        const weightFiles = art.files.filter(f => f.role === 'weights' && /\.(pt|pth|ckpt)$/i.test(f.path));
+        const preferred = weightFiles.find(f => /best/i.test(f.path)) || weightFiles[0];
+        const weightPath = preferred ? `${run.output_dir}/${run.config.output_subdir}/${preferred.path}` : undefined;
+        form.setFieldsValue({
+          source: 'checkpoint',
+          weight_source: 'training',
+          ...(form.getFieldValue('name') ? {} : { name: `${run.name} 验证` }),
+          checkpoint: {
+            training_run_id: run.id,
+            server_id: run.server.id,
+            kind: run.kind,
+            image: run.config.image,
+            weight_path: weightPath,
+            device: 'cpu',
+            class_names: run.kind === 'dinov3_vits16_ltdetr' ? [] : names,
+            accept_platform_model_license: run.config.accept_platform_model_license,
+          },
+        });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [effectiveRunId, form]);
   const saving = useRef(false), mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const save = async (values: ValidationConfig & { target_overlap_percent:number; source:'service'|'checkpoint';model_id?:string;checkpoint: CheckpointInput; weight_source: string; name?: string; mapping: string }) => {
@@ -105,12 +146,12 @@ export function CreateValidationRun({ dataset,projectId, onClose, onCreated }: {
   return <Modal open title="评估检测模型" width={720} styles={{ body: { maxHeight: '75dvh', overflowY: 'auto' } }} onCancel={() => { if (!saving.current) onClose(); }} closable={!busy} mask={{ closable: !busy }} footer={null}>
     <Typography.Paragraph>验证集：{dataset.name} · {dataset.total} 张 · 真值类别：{dataset.labels.join('、') || '无类别'}</Typography.Paragraph>
     <Typography.Paragraph type="secondary">模型配置或权重版本在创建时固定。使用权重时，类别映射方向为训练类别 → 验证集真值类别。</Typography.Paragraph>
-    {error && <Alert type="error" title={error} />}
-    <Form form={form} layout="vertical" initialValues={{ ...defaults, source:projectId?'service':'checkpoint',target_overlap_percent:20, mapping: '{}', weight_source: 'training', checkpoint: { server_id: 'default', kind: 'yolo26', device: 'cpu', image: 'aisfh5.com:9091/ai/jashan_train:yolo-rfdetr', class_names: [], accept_platform_model_license: false } }} onFinish={save} disabled={busy}>
+    {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
+    <Form form={form} layout="vertical" initialValues={{ ...defaults, source: defaultSource, target_overlap_percent: 20, mapping: '{}', weight_source: 'training', checkpoint: { training_run_id: effectiveRunId, server_id: 'default', kind: 'yolo26', device: 'cpu', image: 'aisfh5.com:9091/ai/jashan_train:yolo-rfdetr', class_names: [], accept_platform_model_license: false } }} onFinish={save} disabled={busy}>
       <Form.Item name="source" label="模型来源"><Select aria-label="评估模型来源" options={[{value:'service',label:'已部署检测模型'},{value:'checkpoint',label:'训练权重'}]}/></Form.Item>
       {source==='service'?<>
-        {modelError&&<Alert type="error" title={modelError} action={<Button onClick={()=>setModelRevision(n=>n+1)}>重试读取模型</Button>}/>}
-        {models&&!models.some(model=>!isModelOffline(model))&&<Alert type="info" title="暂无提供检测置信度的在线模型，可切换为训练权重或先在模型管理中配置。"/>}
+        {modelError&&<Alert type="error" showIcon title={modelError} action={<Button size="small" onClick={()=>setModelRevision(n=>n+1)}>重试读取模型</Button>} style={{marginBottom:12}}/>}
+        {models&&!models.some(model=>!isModelOffline(model))&&<Alert type="info" showIcon title="暂无提供检测置信度的在线模型，可切换为训练权重或先在模型管理中配置。" style={{marginBottom:12}}/>}
         <Form.Item name="model_id" label="检测模型" rules={[{required:true,message:'请选择提供检测置信度的在线模型'}]}><Select aria-label="评估检测模型" loading={!models&&!modelError} showSearch optionFilterProp="label" options={models?.map(model=>({value:model.id,label:model.name,disabled:isModelOffline(model)}))}/></Form.Item>
       </>:<CheckpointFields form={form} busy={busy} projectId={projectId} />}
 
@@ -125,7 +166,9 @@ export function CreateValidationRun({ dataset,projectId, onClose, onCreated }: {
         try { const value = JSON.parse(text); if (value && !Array.isArray(value) && typeof value === 'object' && Object.entries(value).every(([key, label]) => key.trim() && typeof label === 'string' && label.trim())) return Promise.resolve(); } catch { /* Report invalid JSON beside the field. */ }
         return Promise.reject(Error('请输入字符串到字符串的 JSON 对象'));
       } }]}><JsonInput rows={3} placeholder={'{"person":"人"}'} /></Form.Item>
-      <Space wrap><Button onClick={onClose}>取消</Button><Button aria-label="开始验证" type="primary" htmlType="submit" loading={busy}>开始验证</Button></Space>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <Space wrap><Button onClick={onClose}>取消</Button><Button aria-label="开始验证" type="primary" htmlType="submit" loading={busy}>开始验证</Button></Space>
+      </div>
     </Form>
   </Modal>;
 }

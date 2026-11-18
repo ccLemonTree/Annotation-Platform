@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import { isAxiosError } from 'axios';
-import { getModelServices, getPromptDefaults, type ModelService } from '../api/modelServices';
+import { getModelServices, getPromptDefaults, isModelOffline, type ModelService } from '../api/modelServices';
 import type { AttributeSchema } from '../api/objectAttributes';
 import {
   deleteWorkflowTemplate,
@@ -14,7 +14,7 @@ import {
 import { AttributeFields, validAttributeFields } from '../components/ObjectAttributes';
 import { operations } from '../components/WorkflowStepsFields';
 import WorkflowGraphBuilder from '../components/workflow/WorkflowGraphBuilder';
-import { createDefaultStep, normalizeGraph } from '../components/workflow/workflowGraph';
+import { MODEL_OPERATIONS, createDefaultStep, normalizeGraph } from '../components/workflow/workflowGraph';
 
 const errorText = (error: unknown) =>
   isAxiosError(error) && typeof error.response?.data?.detail === 'string'
@@ -100,8 +100,8 @@ export default function WorkflowTemplatesPage() {
             title: '操作',
             width: 170,
             render: (_, row) => (
-              <Space>
-                <Button type="link" onClick={() => setEditing(row)}>编辑</Button>
+              <Space size="small">
+                <Button type="link" size="small" onClick={() => setEditing(row)}>编辑</Button>
                 <Popconfirm
                   title="删除这个模板？"
                   description="已经启动的工作流会继续执行。"
@@ -109,7 +109,7 @@ export default function WorkflowTemplatesPage() {
                   cancelText="取消"
                   onConfirm={() => remove(row.id)}
                 >
-                  <Button type="link" danger disabled={removing}>删除</Button>
+                  <Button type="link" size="small" danger disabled={removing}>删除</Button>
                 </Popconfirm>
               </Space>
             ),
@@ -129,6 +129,7 @@ function TemplateEditor({
   onCancel: () => void;
   onSaved: (row: WorkflowTemplate) => void;
 }) {
+  const { message } = App.useApp();
   const initial = useMemo(() => {
     if (template) {
       return normalizeGraph(structuredClone(template.steps), template.edges ? structuredClone(template.edges) : undefined);
@@ -168,6 +169,15 @@ function TemplateEditor({
       setError('请填写模板名称。');
       return;
     }
+    const invalidModelIdx = steps.findIndex(
+      step =>
+        MODEL_OPERATIONS.has(step.operation) &&
+        !models.some(m => m.id === step.model_id && m.enabled !== false && !isModelOffline(m)),
+    );
+    if (invalidModelIdx >= 0) {
+      setError(`第 ${invalidModelIdx + 1} 步「${steps[invalidModelIdx].title || operations[steps[invalidModelIdx].operation]}」尚未选择可用在线模型。`);
+      return;
+    }
     const needsAttributes = steps.some(step => step.operation === 'attributes' && step.attribute_templates == null);
     if (needsAttributes && !attributes) {
       setError('请先配置目标与属性。');
@@ -185,6 +195,7 @@ function TemplateEditor({
         },
         template?.id,
       );
+      message.success('工作流模板已保存');
       onSaved(saved);
     } catch (cause) {
       setError(errorText(cause));
@@ -249,10 +260,12 @@ function TemplateEditor({
           }
         />
 
-        <Space wrap>
-          <Button type="primary" loading={busy} onClick={() => void submit()}>保存模板</Button>
-          <Button disabled={busy} onClick={onCancel}>返回模板列表</Button>
-        </Space>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Space wrap>
+            <Button disabled={busy} onClick={onCancel}>返回模板列表</Button>
+            <Button type="primary" loading={busy} onClick={() => void submit()}>保存模板</Button>
+          </Space>
+        </div>
       </Space>
 
       <Modal

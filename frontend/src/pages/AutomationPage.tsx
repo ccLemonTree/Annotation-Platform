@@ -83,21 +83,23 @@ export default function AutomationPage({embeddedProject}:{embeddedProject?:Proje
     {!embeddedProject&&currentProject&&<ProjectWorkflow project={currentProject} active="prepare"/>}
     <Alert type="info" showIcon title="预标注只处理未标注图片，已有标注不覆盖；AI审核只处理已有标注，不改人工框。"
       description="所有框置信度均高于阈值，且整图完整性与外扩框检查均通过，才可自动通过。低分、不确定及全部负样本交管理员最终审核，零框不能自动判负。" />
-    {ready && !admin && <Alert type="info" title="当前为只读模式，任务创建、取消、重试及最终审核仅管理员可操作。" />}
-    {setupError && <Alert type="error" title={setupError} action={<Button onClick={() => { setSetupError(''); setSetupRevision(n => n + 1); }}>重试初始化</Button>} />}
-    <Space wrap>
-      {!embeddedProject&&<><label htmlFor="automation-project">项目</label>
-      <Select id="automation-project" aria-label="筛选项目" placeholder="全部项目" allowClear showSearch optionFilterProp="label"
-        loading={!ready && !setupError} value={projectId} style={{ width: 260, maxWidth: '100%' }}
-        options={projects.map(project => ({ value: project.id, label: project.project_name }))}
-        onChange={id => { const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');next.delete('job_id');setParams(next);setPage(1); setDetails(undefined); setActionError(''); }} /></>}
-      <Button loading={loading} onClick={refresh}>刷新任务</Button>
+    {ready && !admin && <Alert type="info" showIcon title="当前为只读模式，任务创建、取消、重试及最终审核仅管理员可操作。" />}
+    {setupError && <Alert type="error" showIcon title={setupError} action={<Button size="small" onClick={() => { setSetupError(''); setSetupRevision(n => n + 1); }}>重试初始化</Button>} />}
+    <div className="page-toolbar">
+      <Space wrap>
+        {!embeddedProject&&<><label htmlFor="automation-project">项目</label>
+        <Select id="automation-project" aria-label="筛选项目" placeholder="全部项目" allowClear showSearch optionFilterProp="label"
+          loading={!ready && !setupError} value={projectId} style={{ width: 260, maxWidth: '100%' }}
+          options={projects.map(project => ({ value: project.id, label: project.project_name }))}
+          onChange={id => { const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');next.delete('job_id');setParams(next);setPage(1); setDetails(undefined); setActionError(''); }} /></>}
+        <Button loading={loading} onClick={refresh}>刷新任务</Button>
+        {!embeddedProject&&projectId&&<Link to={`/annotations?project_id=${projectId}`}>查看项目审核 →</Link>}
+        {!embeddedProject&&admin&&<Link to={`/review-queue${projectId?`?project_id=${projectId}`:''}`}>管理员待审队列 →</Link>}
+      </Space>
       {admin && ready && (embeddedProject?<Link to={`/projects/${embeddedProject.id}/prepare`}>在工作流中创建预标注或 AI 审核</Link>:<Button type="primary" onClick={() => setCreating(true)} disabled={!projects.length}>创建任务</Button>)}
-      {!embeddedProject&&projectId&&<Link to={`/annotations?project_id=${projectId}`}>查看项目审核 →</Link>}
-      {!embeddedProject&&admin&&<Link to={`/review-queue${projectId?`?project_id=${projectId}`:''}`}>管理员待审队列 →</Link>}
-    </Space>
+    </div>
     {error && <Alert type="error" showIcon title="任务读取失败，请重试；当前显示可能已过期。" />}
-    {actionError && <Alert type="error" title={actionError} />}
+    {actionError && <Alert type="error" showIcon title={actionError} />}
     <Card title="批量任务" styles={{ body: { minWidth: 0 } }}>
       <Typography.Paragraph type="secondary">等待中 / 进行中任务每 3 秒刷新，请求结束后计时；失败时可手动重试读取。</Typography.Paragraph>
       <Table rowKey="id" loading={loading} dataSource={data?.items || []} scroll={{ x: 1150 }} columns={[
@@ -109,12 +111,12 @@ export default function AutomationPage({embeddedProject}:{embeddedProject?:Proje
         { title: '通过 / 待审 / 失败', width: 150, render: (_, job) => `${job.approved_count} / ${job.needs_review_count} / ${job.failed_count}` },
         { title: '创建时间', dataIndex: 'created_at', width: 180, render: value => new Date(value).toLocaleString('zh-CN') },
         { title: '错误', dataIndex: 'error', width: 200, render: value => value || '—' },
-        { title: '操作', width: 230, render: (_, job) => <Space wrap>
-          <Button onClick={() => setDetails(job)}>查看明细</Button>
+        { title: '操作', width: 200, render: (_, job) => <Space size="small" wrap>
+          <Button size="small" onClick={() => setDetails(job)}>查看明细</Button>
           {admin && (job.status === 'pending' || job.status === 'running') && <Popconfirm title="确认取消此任务？已处理结果会保留。" okText="确认取消" cancelText="继续任务" onConfirm={() => changeJob(job, 'cancel')}>
-            <Button loading={busyId === job.id} disabled={!!busyId}>取消任务</Button>
+            <Button size="small" loading={busyId === job.id} disabled={!!busyId}>取消任务</Button>
           </Popconfirm>}
-          {admin && (job.status === 'failed' || job.status === 'canceled') && <Button loading={busyId === job.id} disabled={!!busyId} onClick={() => { void changeJob(job, 'retry'); }}>重试任务</Button>}
+          {admin && (job.status === 'failed' || job.status === 'canceled') && <Button size="small" loading={busyId === job.id} disabled={!!busyId} onClick={() => { void changeJob(job, 'retry'); }}>重试任务</Button>}
         </Space> },
       ]} pagination={{ current: page, pageSize, total: data?.total || 0, showSizeChanger: true, pageSizeOptions: [20, 50, 100],
         onChange: (next, size) => { setPage(size === pageSize ? next : 1); setPageSize(size); setDetails(undefined); } }} />

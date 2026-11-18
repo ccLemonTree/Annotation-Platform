@@ -5,16 +5,17 @@ import type { GpuServer } from '../api/gpuResources';
 import GpuReleaseWorkspace from '../components/gpu/GpuReleaseWorkspace';
 import { connectionError, forbidden } from '../components/gpu/connectionError';
 import { Link,useSearchParams } from 'react-router-dom';
+import { useCurrentUser } from '../components/currentUser';
 
 export default function GpuResourcesPage() {
   const [params]=useSearchParams();
-  const [admin, setAdmin] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; } catch { return false; }
-  });
+  const currentUser = useCurrentUser();
+  const [forbiddenAccess, setForbiddenAccess] = useState(false);
+  const admin = currentUser?.role === 'admin' && !forbiddenAccess;
   const [servers, setServers] = useState<GpuServer[]>([]), [selectedId, setSelectedId] = useState(params.get('server_id')||'default');
   const [loading, setLoading] = useState(true), [listError, setListError] = useState(''), [reload, setReload] = useState(0);
   const onForbidden = useCallback(() => {
-    setAdmin(false); setServers([]); setListError('');
+    setForbiddenAccess(true); setServers([]); setListError('');
   }, []);
   useEffect(() => {
     if (!admin) return;

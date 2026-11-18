@@ -5,9 +5,9 @@
   min-width: 0;
   padding: 14px;
   overflow: hidden;
-  border: 1px solid #273449;
-  border-radius: 10px;
-  background: #111827;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-code-bg, var(--ui-background));
 }
 .gpu-terminal-viewport, .gpu-terminal-surface .xterm { height: 100%; }
 @media (max-width: 600px) {

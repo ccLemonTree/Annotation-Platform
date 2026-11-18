@@ -77,7 +77,7 @@ export default function WorkflowCanvas({
           <span><i className="wf-legend-dot" style={{ background: 'var(--ui-primary)' }} />模型推理</span>
           <span><i className="wf-legend-dot" style={{ background: 'var(--ui-success)' }} />内置功能</span>
           <span><i className="wf-legend-dot" style={{ background: 'var(--ui-warning)' }} />条件分流</span>
-          <span><i className="wf-legend-dot" style={{ background: '#b69cff' }} />Python 脚本</span>
+          <span><i className="wf-legend-dot" style={{ background: 'var(--ui-node-script-accent, #b69cff)' }} />Python 脚本</span>
           {!readonly && <span>· 点击节点编辑参数，点击连线「+」插入步骤或分支</span>}
         </div>
         <Space size="small">

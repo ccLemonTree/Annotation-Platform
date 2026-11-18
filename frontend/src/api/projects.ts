@@ -46,14 +46,17 @@ export const createProject = async (data: ProjectCreate): Promise<Project> => (a
 export const getProject = async (id: string): Promise<Project> => (await apiClient.get(`/api/projects/${id}`)).data;
 export const getAnnotationStats = async (id:string):Promise<Pick<Project,'total_assets'|'annotated_count'|'reviewed_count'>> =>
   (await apiClient.get(`/api/projects/${id}/stats`,{params:{scope:'annotation'}})).data;
-export const updateProject = async (id: string, data: ProjectUpdate): Promise<Project> => (await apiClient.put(`/api/projects/${id}`, data)).data;
+export const updateProject = async (id:string,data:ProjectUpdate,config?:{timeout?:number;skipErrorToast?:boolean}):Promise<Project> =>
+  (await apiClient.put(`/api/projects/${id}`,data,config)).data;
 export const addProjectLabels = async (id:string,labels:string[]):Promise<Project> =>
   (await apiClient.post(`/api/projects/${id}/labels`,{labels},{skipErrorToast:true})).data;
-export interface YoloMappingBatch { batch_id:string|null; images:number; latest_at:string }
+export const getProjectUsedLabels = async (id: string): Promise<{ labels: string[] }> =>
+  (await apiClient.get(`/api/projects/${id}/used-labels`, { skipErrorToast: true })).data;
+export interface YoloMappingBatch { batch_id:string|null; images:number; latest_at:string; classes:{id:number;boxes:number}[] }
 export const getYoloMappingBatches = async (id:string):Promise<YoloMappingBatch[]> =>
   (await apiClient.get(`/api/projects/${id}/yolo-class-mapping`,{skipErrorToast:true})).data;
-export const mapYoloClasses = async (id:string,batchId:string|null,labels:string[]):Promise<{updated_images:number;updated_boxes:number}> =>
-  (await apiClient.post(`/api/projects/${id}/yolo-class-mapping`,{batch_id:batchId,labels},{skipErrorToast:true,timeout:0})).data;
+export const mapYoloClasses = async (id:string,batchId:string|null,classLabels:Record<number,string>):Promise<{updated_images:number;updated_boxes:number}> =>
+  (await apiClient.post(`/api/projects/${id}/yolo-class-mapping`,{batch_id:batchId,class_labels:classLabels},{skipErrorToast:true,timeout:0})).data;
 export const deleteProject = async (id: string): Promise<void> => { await apiClient.delete(`/api/projects/${id}`); };
 
 export interface ProjectAssignments { user_ids: number[] }

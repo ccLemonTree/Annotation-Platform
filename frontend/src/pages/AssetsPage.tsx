@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { Alert, AutoComplete, Breadcrumb, Button, Card, Checkbox, Collapse, Input, message, Modal, Select, Space, Table, Tag } from 'antd';
+import { Alert, App, AutoComplete, Button, Card, Checkbox, Collapse, Input, Modal, Select, Space, Table, Tag } from 'antd';
 import { DeleteOutlined, UploadOutlined } from '@ant-design/icons';
 import type { TableColumnsType } from 'antd';
 import { getAssets, deleteAsset,getAllAssetIds,getProjectAssetCollections } from '../api/assets';
@@ -30,7 +30,7 @@ const sceneStatus=(row:Row)=>sceneResultStatus(row.scene_metadata?.basis==='devi
 const sceneStatusLabel=(row:Row)=>row.scene_metadata?.name_confirmation_required?'设备名待确认':row.scene_metadata?.basis==='device_name'?({unclassified:'待设备分类',pending:'待设备分类',processing:'设备分类中',completed:'已分类',unmatched:'未匹配场景',failed:'设备分类失败'} as Record<string,string>)[sceneStatus(row)]:({unclassified:'未分类',pending:'待分类',processing:'分类中',completed:'已分类',unmatched:'未匹配场景',failed:'分类失败'} as Record<string,string>)[sceneStatus(row)];
 export default function AssetsPage() {
   const admin=useCurrentUser()?.role==='admin';
-  const [notice, context] = message.useMessage();
+  const { message: notice, modal } = App.useApp();
   const { projectId } = useParams();
   const [params]=useSearchParams();
   const workJobId=projectId?params.get('work_job_id')||undefined:undefined;
@@ -156,10 +156,10 @@ export default function AssetsPage() {
     finally{setBusy(false);}
   };
   const remove=(row:Row)=>{
-    Modal.confirm({
+    modal.confirm({
       title:projectId?'从项目移除此图片？':'删除图片库记录？',
       content:projectId?'此项目中的标注与审核记录会删除，图片库和其他项目保持不变。':'被项目使用的图片不能删除。原图文件与冻结包继续保留。',
-      okText:'确认',cancelText:'取消',
+      okText:'确认',cancelText:'取消',okButtonProps:{danger:true},
       onOk:async()=>{
         try{if(projectId)await deleteAsset(row.id);else await deleteImage(row.id);setReload(n=>n+1);setSelected(keys=>keys.filter(key=>key!==row.id));}
         catch{setError('删除失败：请先移除项目引用，或检查网络');}
@@ -194,32 +194,31 @@ export default function AssetsPage() {
     {title:'尺寸',width:110,render:(_,row)=>row.width&&row.height?`${row.width} × ${row.height}`:'—'},
     {title:'大小',dataIndex:'file_size',width:110,render:(size:number)=>`${(size/1024).toFixed(1)} KB`},
     {title:projectId?'加入项目时间':'入库时间',dataIndex:'created_at',width:180,render:(value:string)=>new Date(value).toLocaleString()},
-    {title:'操作',width:projectId?240:160,fixed:'right',render:(_,row)=><Space wrap>
+    {title:'操作',width:projectId?240:160,fixed:'right',render:(_,row)=><Space size="small" wrap>
       {projectId&&(project?.task_type==='segmentation'?<span>分割标注暂不支持</span>:project?.label_schema?.annotation_scope!=='crops'||row.source_type==='model_crop'?<Link to={`/annotate/${row.id}${workJobId?`?${annotationSearch}`:''}`}>标注 / 审核</Link>:<span>切图来源</span>)}
-      {projectId&&row.source_type==='model_crop'?<DeleteCropButton assetId={row.id} name={row.original_name} disabled={busy} onDeleted={()=>{setSelected(keys=>keys.filter(key=>key!==row.id));if(rows.length===1&&page>1)setPage(page-1);setReload(n=>n+1);}}/>:<Button type="link" danger icon={<DeleteOutlined/>} onClick={()=>remove(row)}>{projectId?'移除':'删除'}</Button>}
+      {projectId&&row.source_type==='model_crop'?<DeleteCropButton assetId={row.id} name={row.original_name} disabled={busy} onDeleted={()=>{setSelected(keys=>keys.filter(key=>key!==row.id));if(rows.length===1&&page>1)setPage(page-1);setReload(n=>n+1);}}/>:<Button type="link" size="small" danger icon={<DeleteOutlined/>} onClick={()=>remove(row)}>{projectId?'移除':'删除'}</Button>}
     </Space>},
   ];
   return <>
     {project&&projectId&&<ProjectWorkflow project={project} active="images"/>}
     <Card title={projectId?undefined:'共享数据源'}>
-    {context}
     {preview&&preview.scope===previewScope&&rows[preview.index]&&<PagedAssetPreview rows={rows} index={preview.index} page={page} pageSize={pageSize} total={total}
       projectId={projectId} workJobId={workJobId} imageKind={imageKind} filters={filters} onClose={()=>setPreview(undefined)}/>}
-    {projectId?<><Breadcrumb items={[{title:<Link to="/projects">项目管理</Link>},{title:project?.project_name||'读取项目中'},{title:'项目图片'}]} style={{marginBottom:12}}/>
-      <p className="workspace-help">上传、复用或采集的数据都会进入当前项目。已入库的批次可进入批量处理，已有标注的图片可直接审核。</p></>
+    {projectId
+      ?<p className="workspace-help">上传、复用或采集的数据都会进入当前项目。已入库的批次可进入批量处理，已有标注的图片可直接审核。</p>
       :<p className="workspace-help">这里管理平台的全部原图。上传、分类和筛选后，可以选择图片添加到标注项目。</p>}
     {!projectId&&addedProject&&<Alert type="success" showIcon title={`已添加到 ${addedProject.project_name}`}
       description="可以继续整理图片，或查看该项目的图片。" style={{marginBottom:12}}
       action={<Space wrap><Link to={`/projects/${addedProject.id}/images`}>查看项目图片</Link><Link to={`/projects/${addedProject.id}/prepare`}>检测切图 / 标注准备 →</Link></Space>}/>}
 
-    {workJobId&&<Alert type="info" title="正在查看处理结果" description="标注工作台的上一张和下一张仅在此结果范围内切换。"
+    {workJobId&&<Alert type="info" showIcon title="正在查看处理结果" description="标注工作台的上一张和下一张仅在此结果范围内切换。"
       action={<Link to={`/projects/${projectId}/images`}>查看全部项目图片</Link>} style={{marginBottom:12}}/>}
-    {uploadBusy&&<Alert type="info" showIcon title="图片正在上传，关闭上传窗口后仍会继续" description="请留在数据页；离开页面会暂停传输，再次选择相同文件可继续。" action={<Button onClick={()=>setUploadOpen(true)}>查看上传进度</Button>} style={{marginBottom:12}}/>}
+    {uploadBusy&&<Alert type="info" showIcon title="图片正在上传，关闭上传窗口后仍会继续" description="请留在数据页；离开页面会暂停传输，再次选择相同文件可继续。" action={<Button size="small" onClick={()=>setUploadOpen(true)}>查看上传进度</Button>} style={{marginBottom:12}}/>}
     {error&&<Alert type="error" showIcon title={error} style={{marginBottom:12}}/>}
     <div className="page-toolbar">
       <div className="page-toolbar-actions">
         {projectId&&<><Button type="primary" aria-label="上传到项目" disabled={!project} icon={<UploadOutlined/>} onClick={openUpload}>上传到项目</Button>{admin&&project?.id===projectId&&<ProjectUploadCurl key={projectId} projectId={projectId} detection={project.task_type==="detection"}/>}<Button disabled={!project} onClick={()=>setPickerOpen(true)}>复用已有数据</Button><Link aria-label="项目数据拉取" to={`/projects/${projectId}/capture`}>定时抓图 / 数据拉取</Link><Link to={`/projects/${projectId}/prepare`}>进入批量处理 →</Link></>}
-        {!projectId&&<><Button onClick={()=>{setNewName(uploadName);setError('');setNewOpen(true);}}>新建图片集</Button><ImageIngestSettings collectionId={filters.collection_id} collectionName={currentCollection?.name} onSaved={()=>setReload(n=>n+1)}/></>}
+        {!projectId&&<>{admin&&<Button type="primary" aria-label="上传到图片库" icon={<UploadOutlined/>} onClick={openUpload}>上传到图片库</Button>}<Button onClick={()=>{setNewName(uploadName);setError('');setNewOpen(true);}}>新建图片集</Button><ImageIngestSettings collectionId={filters.collection_id} collectionName={currentCollection?.name} onSaved={()=>setReload(n=>n+1)}/></>}
         {!projectId&&<DeleteImageCollection collection={currentCollection} disabled={busy} onDeleted={(group,result)=>{
           setCollections(items=>items.filter(item=>item.id!==group.id));
           setFilters(previous=>previous.collection_id===group.id?{...previous,collection_id:undefined}:previous);
@@ -230,14 +229,14 @@ export default function AssetsPage() {
         {!projectId&&<Button loading={busy} disabled={!filters.collection_id||!selected.length||busy||!ingest?.classification_enabled} onClick={classify}>场景分类 / 重试（{selected.length}）</Button>}
         {!projectId&&<Button disabled={!selected.length||busy} onClick={()=>{setError('');setGroupName(uploadName);setGroupOpen(true);}}>加入图片集（{selected.length}）</Button>}
         {!projectId&&<Button disabled={!selected.length||busy} onClick={()=>{setError('');setIncludeImported(false);setAssociateOpen(true);}}>添加到标注项目（{selected.length}）</Button>}
-        {!projectId&&<Link to="/projects">进入项目上传图片</Link>}
+        {!projectId&&<Link to="/projects">进入项目管理</Link>}
       </div>
     </div>
-    {projectId&&project&&<Collapse style={{marginBottom:20}} items={[{key:'filters',label:'筛选与批量管理',children:<Space wrap><Select aria-label="项目图片来源" style={{width:180}} value={imageKind} onChange={value=>{setImageKind(value);setPage(1);setSelected([]);}} options={[{value:'all',label:'全部项目图片'},{value:'originals',label:'仅原图'},{value:'crops',label:'仅裁剪图'}]}/>
-      <Select aria-label="项目标注标签" placeholder="全部标注标签" allowClear showSearch optionFilterProp="label" style={{width:180}} value={filters.label} onChange={label=>filter({...filters,label})} options={(Array.isArray(project.label_schema?.labels)?project.label_schema.labels as string[]:[]).map(label=>({value:label,label}))}/>
+    {projectId&&project&&<Collapse style={{marginBottom:20}} items={[{key:'filters',label:'筛选与批量管理',children:<Space wrap><Select aria-label="项目图片来源" style={{width:180,maxWidth:'100%'}} value={imageKind} onChange={value=>{setImageKind(value);setPage(1);setSelected([]);}} options={[{value:'all',label:'全部项目图片'},{value:'originals',label:'仅原图'},{value:'crops',label:'仅裁剪图'}]}/>
+      <Select aria-label="项目标注标签" placeholder="全部标注标签" allowClear showSearch optionFilterProp="label" style={{width:180,maxWidth:'100%'}} value={filters.label} onChange={label=>filter({...filters,label})} options={(Array.isArray(project.label_schema?.labels)?project.label_schema.labels as string[]:[]).map(label=>({value:label,label}))}/>
       <SceneFilter label="项目图片场景" value={filters.scene} onChange={scene=>filter({...filters,scene})} groups={sceneGroups} scenes={rows.flatMap(row=>row.scene_labels||[])}/>
       <ImageSourceFilters value={filters} projectId={projectId} disabled={busy} onChange={filter}/>
-      <Select aria-label="项目图片集" style={{width:180}} placeholder="全部图片集" allowClear showSearch optionFilterProp="label" value={filters.collection_id} onChange={collection_id=>filter({...filters,collection_id})} options={projectCollections.map(group=>({value:group.id,label:group.name}))}/>
+      <Select aria-label="项目图片集" style={{width:180,maxWidth:'100%'}} placeholder="全部图片集" allowClear showSearch optionFilterProp="label" value={filters.collection_id} onChange={collection_id=>filter({...filters,collection_id})} options={projectCollections.map(group=>({value:group.id,label:group.name}))}/>
       <Input.Search aria-label="项目图片文件名" placeholder="按图片文件名搜索" allowClear maxLength={255} style={{width:320,maxWidth:'100%'}} value={nameQuery} disabled={busy}
         onChange={event=>{setNameQuery(event.target.value);if(!event.target.value)filter({...filters,q:undefined});}}
         onSearch={value=>filter({...filters,q:value.trim()||undefined})} enterButton="搜索"/>
@@ -251,15 +250,15 @@ export default function AssetsPage() {
     {!projectId&&<p className="workspace-help">{currentCollection?`当前图片集：${currentCollection.name}；配置仅作用于此集。`:'请先选择图片集，再修改入库规则或发起分类。'} 同集按内容去重，场景随原图共享；重新分类会更新该图在所有图片集中的场景。</p>}
     <Table columns={columns} dataSource={rows} rowKey="id" loading={loading} scroll={{x:projectId?1260:1570}}
       rowSelection={{selectedRowKeys:selected,onChange:setSelected,preserveSelectedRowKeys:true,getCheckboxProps:()=>({disabled:busy||loading})}}
-      locale={{emptyText:projectId?<span>当前没有图片，请从上方上传或复用已有数据；也可以<Link to={`/projects/${projectId}/prepare`}>检测切图</Link>。</span>:<span>暂无审核通过的共享图片，请先在<Link to="/projects">项目中上传、标注并审核</Link>。</span>}}
-      pagination={{current:page,pageSize,total,placement:['topEnd','bottomEnd'],showSizeChanger:true,pageSizeOptions:[20,50,100],disabled:busy,showTotal:n=>`共 ${n} 张`,onChange:(p,size)=>{setPage(p);setPageSize(size);}}}/>
+      locale={{emptyText:projectId?<span>当前没有图片，请从上方上传或复用已有数据；也可以<Link to={`/projects/${projectId}/prepare`}>检测切图</Link>。</span>:<span>图片库暂无图片，{admin?<>可点击上方「上传到图片库」，或在<Link to="/projects">项目中上传与采集</Link></>:<>请联系管理员上传图片，或前往<Link to="/projects">项目列表</Link>查看</>}。</span>}}
+      pagination={{current:page,pageSize,total,placement:['bottomEnd'],showSizeChanger:true,pageSizeOptions:[20,50,100],disabled:busy,showTotal:n=>`共 ${n} 张`,onChange:(p,size)=>{setPage(p);setPageSize(size);}}}/>
     {pickerOpen&&project&&<ProjectImagePicker projectId={project.id} projectName={project.project_name} taskType={project.task_type}
       onClose={()=>setPickerOpen(false)} onAdded={(count,summary)=>{
         setPickerOpen(false);setReload(n=>n+1);notice.success(summary||(count?`已添加 ${count} 张图片到 ${project.project_name}`:'所选图片已在项目中'));
       }}/>}
     <Modal title="新建图片集" open={newOpen} onCancel={()=>{if(!busy)setNewOpen(false);}} onOk={createCollection} confirmLoading={busy} okText="创建" cancelText="取消">
       <p>先创建空图片集，再独立配置分辨率和场景分类。同名集继续复用。</p>
-      {error&&<Alert type="error" title={error}/>}
+      {error&&<Alert type="error" showIcon title={error}/>}
       <Input aria-label="新图片集名称" value={newName} onChange={event=>setNewName(event.target.value)} maxLength={200} disabled={busy}/>
     </Modal>
     <ImageUploadDialog key={projectId??'library'} onBusyChange={setUploadBusy} open={uploadOpen} initialName={uploadName} collections={collections} projectId={projectId} projectName={project?.project_name} taskType={project?.task_type} onClose={()=>{setUploadOpen(false);setReload(n=>n+1);}}
@@ -268,7 +267,7 @@ export default function AssetsPage() {
     <Modal title="加入图片集" open={groupOpen} onCancel={()=>{if(!busy)setGroupOpen(false);}} onOk={group}
       confirmLoading={busy} okText="加入" cancelText="取消">
       <p>将所选 {selected.length} 张图片加入命名图片集，已有归属和项目标注保留。</p>
-      {error&&<Alert type="error" title={error}/>}
+      {error&&<Alert type="error" showIcon title={error}/>}
       <AutoComplete value={groupName} onChange={setGroupName} disabled={busy} style={{width:'100%'}}
         options={collections.map(group=>({value:group.name}))} filterOption={(input,option)=>(option?.value||'').toLowerCase().includes(input.toLowerCase())}>
         <Input aria-label="归类图片集名称" maxLength={200} placeholder="输入新名称或选择已有图片集" disabled={busy}/>
@@ -277,7 +276,7 @@ export default function AssetsPage() {
     <Modal title="添加到标注项目" open={associateOpen} onCancel={()=>{if(!busy)setAssociateOpen(false);}} onOk={associate}
       confirmLoading={busy} okText="添加图片" cancelText="取消">
       <p>已选 {selected.length} 张图片，只建立项目使用记录，不复制原图。可多次选择不同批次。</p>
-      {error&&<Alert type="error" title={error}/>}
+      {error&&<Alert type="error" showIcon title={error}/>}
       <Select aria-label="图片添加到的项目" placeholder="选择标注项目" value={target} onChange={value=>{setTarget(value);setIncludeImported(false);}} disabled={busy} showSearch optionFilterProp="label"
         style={{width:'100%'}} options={projects.map(project=>({label:project.project_name,value:project.id}))}/>
       <Checkbox style={{marginTop:12}} checked={includeImported} disabled={busy||projects.find(project=>project.id===target)?.task_type!=='detection'} onChange={event=>setIncludeImported(event.target.checked)}>带入已有YOLO标注</Checkbox>

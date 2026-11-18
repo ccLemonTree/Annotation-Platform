@@ -1,7 +1,7 @@
 import { useEffect,useMemo,useRef,useState } from 'react';
 import JsonView from '../components/JsonView';
 import { Link,useBlocker,useNavigate,useSearchParams } from 'react-router-dom';
-import { Alert,AutoComplete,Button,Card,Checkbox,Input,InputNumber,message,Modal,Radio,Select,Space,Tag,Typography } from 'antd';
+import { Alert,App,AutoComplete,Button,Card,Checkbox,Input,InputNumber,Modal,Radio,Select,Space,Tag,Typography } from 'antd';
 import { isAxiosError } from 'axios';
 import type { Asset,AssetNeighbors,AssetAttributeFilters,AssetImageKind } from '../api/assets';
 import { getAssetNeighbors,getAssets,getProjectAssetCollections,readAssetImageKind } from '../api/assets';
@@ -27,7 +27,7 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
   const canvasPanels=useFittedImageColumn();
   const admin=useCurrentUser()?.role==='admin';
   const [params,setParams]=useSearchParams();
-  const [notice,noticeContext]=message.useMessage();
+  const { message: notice } = App.useApp();
   const navigate=useNavigate(),writing=useRef(false);
   const navigationRequest=useRef(0);
   const classification=project.task_type==='classification';
@@ -108,7 +108,7 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
     const updated=await reviewAnnotation(current.id,{kind:'image', approved,review_comment:comment});setCurrent(updated);setVersions(rows=>rows.map(a=>a.id===updated.id?updated:a));
   }catch(error){fail(error);}finally{writing.current=false;setBusy(false);}};
   const go=(id:string,query=params)=>navigate(`/annotate/${id}?${query}`);
-  const canApproveNext=!loading&&!busy&&!jumping&&(!!draft.skipped||!!draft.attributes||!!draft.description.trim());
+  const canApproveNext=!loading&&!busy&&!jumping&&(!!draft.skipped||(classification?!!draft.labels.length:!!draft.attributes||!!draft.description.trim()));
   const approveNext=async()=>{
     if(!canApproveNext||writing.current)return;
     writing.current=true;setBusy(true);setError('');
@@ -169,7 +169,9 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
     finally{if(request===navigationRequest.current)setJumping(false);}
   };
   const attributeMode=!classification&&!!(draft.attribute_schema||project.label_schema?.object_attributes||fromAttributes);
-  const advanceOnReview=attributeMode||draft.skipped;
+  const advanceOnReview=classification||attributeMode||!!draft.skipped;
+  const labels=Array.isArray(project.label_schema?.labels)?project.label_schema.labels as string[]:[];
+  const multiple=project.label_schema?.classification_mode==='multi';
   useAnnotationShortcuts((event,key)=>{
     if((event.ctrlKey||event.metaKey)&&!event.shiftKey&&key==='s'){event.preventDefault();void save();return;}
     if(event.ctrlKey||event.metaKey||writing.current||jumping)return;
@@ -178,9 +180,23 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
       event.preventDefault();const id=key==='arrowleft'||key==='a'?neighbors?.previous_id:neighbors?.next_id;
       if(id)void go(id);
     }
+    else if(classification&&!multiple&&!draft.skipped&&!event.shiftKey&&/^[1-9]$/.test(key)&&labels[Number(key)-1]){
+      event.preventDefault();setDraft(prev=>({...prev,skipped:false,labels:[labels[Number(key)-1]]}));
+    }
   },!loading&&!showShortcuts,true);
-  const labels=Array.isArray(project.label_schema?.labels)?project.label_schema.labels as string[]:[];
-  const multiple=project.label_schema?.classification_mode==='multi';
+  useEffect(()=>{
+    if(!classification||multiple||loading||busy||jumping||showShortcuts||draft.skipped||!labels.length)return;
+    const onDigit=(event:KeyboardEvent)=>{
+      if(event.defaultPrevented||event.repeat||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey)return;
+      if(!/^[1-9]$/.test(event.key))return;
+      const target=event.target instanceof Element?event.target:null;
+      if(target?.closest('input:not([type="radio"]),textarea,select,[contenteditable="true"],[role="textbox"],[role="combobox"],[role="dialog"],.ant-select,.ant-modal-wrap,.ant-drawer'))return;
+      const picked=labels[Number(event.key)-1];
+      if(picked){event.preventDefault();setDraft(prev=>({...prev,skipped:false,labels:[picked]}));}
+    };
+    window.addEventListener('keydown',onDigit);
+    return()=>window.removeEventListener('keydown',onDigit);
+  },[classification,multiple,loading,busy,jumping,showShortcuts,draft.skipped,labels]);
   const preannotations=versions.find(row=>row.annotation_source==='auto'&&JSON.stringify(row.annotation_data.attribute_schema)===JSON.stringify(draft.attribute_schema))?.annotation_data.attributes as AttributeValues|undefined;
   const projectFields=(project.label_schema?.object_attributes as AttributeSchema|undefined)?.fields||[];
   const attributeFields=[...projectFields,...(draft.attribute_schema?.fields||[]).filter(field=>!projectFields.some(current=>current.key===field.key))];
@@ -200,10 +216,10 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
     notice.success('分析结果已填入，请核对并保存');
   };
   const imageFields=<Space orientation="vertical" size="middle" style={{width:'100%'}}>
-    {classification?<><Typography.Text strong>图片分类 · {multiple?'可多选':'单选'}</Typography.Text>
+    {classification?<><Typography.Text strong>图片分类 · {multiple?'可多选':'单选（快捷键 1–9）'}</Typography.Text>
       {!labels.length&&<Typography.Text type="secondary">请在项目设置中添加标注类别。</Typography.Text>}
       {multiple?<Checkbox.Group aria-label="图片分类" options={labels} value={draft.labels} disabled={loading||busy||draft.skipped} onChange={values=>setDraft({...draft,labels:values as string[]})}/>:
-        <Radio.Group aria-label="图片分类" options={labels} value={draft.labels[0]} disabled={loading||busy||draft.skipped} onChange={e=>setDraft({...draft,labels:[e.target.value]})}/>}</>:<>
+        <div data-annotation-view><Radio.Group aria-label="图片分类" options={labels.map((item,idx)=>({value:item,label:idx<9?`${idx+1}. ${item}`:item}))} value={draft.labels[0]} disabled={loading||busy||draft.skipped} onChange={e=>setDraft({...draft,labels:[e.target.value]})}/></div>}</>:<>
       <div className="image-annotation-attribute-heading">
         <label htmlFor={descriptionCollapsed?undefined:'image-annotation-description'}>图片描述</label>
         {attributeMode&&<Button size="small" aria-expanded={!descriptionCollapsed} onClick={()=>setDescriptionCollapsed(value=>!value)}>{descriptionCollapsed?'展开图片描述':'收起图片描述'}</Button>}
@@ -213,7 +229,6 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
   </Space>;
   return <Card className="image-annotation-workspace" title={<Space wrap><span>{project.project_name}</span><Tag>{classification?'图片分类':attributeMode?'图片描述与属性':'图片描述标注'}</Tag></Space>}
     extra={<Space wrap><AnnotationFullscreenButton/>{!classification&&<CurrentImageAnalysis assetId={asset.id} name={asset.original_name} attributesAvailable={!!project.label_schema?.object_attributes} disabled={loading||busy||jumping} onApply={applyAnalysis}/>}</Space>}>
-    {noticeContext}
     <Space wrap className="image-annotation-toolbar"><Link to={back}>{workJobId&&admin?'返回处理结果':fromAttributes?'返回批量处理':fromAnnotation?'返回人工标注':fromReview?'返回审核列表':project.task_type==='vector'?'返回向量标注':admin?'返回项目图片':'返回标注与审核'}</Link>
       <AnnotationImageKindSelect value={imageKind} cropsOnly={project.label_schema?.annotation_scope==='crops'}
         disabled={loading||dirty||busy||jumping} onChange={value=>void filterQueue({image_kind:value==='all'?undefined:value})}/>
@@ -224,23 +239,23 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
       {neighbors?.previous_id&&<Link aria-disabled={busy||jumping} onClick={event=>{if(busy||jumping)event.preventDefault();}} to={`/annotate/${neighbors.previous_id}?${params}`}>上一张</Link>}
       {neighbors&&<Space size={6}><InputNumber aria-label="跳转图片序号" min={1} max={neighbors.total||1} precision={0} value={jumpPosition} placeholder={neighbors.matched===false?'未匹配':''} style={{width:88}} disabled={loading||busy||jumping||!neighbors.total} onChange={setJumpPosition} onPressEnter={()=>void jump()} title="输入图片序号，按回车跳转"/><Typography.Text aria-live="polite">{neighbors.matched===false?`未匹配 / ${neighbors.total} 张`:`第 ${neighbors.position} / ${neighbors.total} 张`}</Typography.Text></Space>}
       {neighbors?.next_id&&<Link aria-disabled={busy||jumping} onClick={event=>{if(busy||jumping)event.preventDefault();}} to={`/annotate/${neighbors.next_id}?${params}`}>下一张</Link>}
-      <Button onClick={()=>setShowShortcuts(true)}>快捷键</Button><Typography.Text type="secondary">← / → 切图 · Ctrl+S 保存 · {attributeMode?'R 保存并通过下一张':'R 通过'} · Shift+R 驳回</Typography.Text></Space>
+      <Button onClick={()=>setShowShortcuts(true)}>快捷键</Button><Typography.Text type="secondary">← / → 切图 · Ctrl+S 保存 · {classification&&!multiple?'1–9 选类别 · ':''}{classification||attributeMode?'R 保存并通过下一张':'R 通过'} · Shift+R 驳回</Typography.Text></Space>
     {attributeMode&&<Space wrap className="image-annotation-toolbar">
       <Select aria-label="筛选目标属性" prefix="属性：" placeholder="全部属性" allowClear showSearch optionFilterProp="label" value={attributeKey} style={{minWidth:180}} disabled={loading||dirty||busy||jumping} options={attributeFields.map(field=>({value:field.key,label:field.name}))} onChange={attribute_key=>void filterQueue({attribute_key,attribute_value:undefined,attribute_state:attribute_key?'analyzed':undefined})}/>
-      <AutoComplete value={attributeValueInput} onChange={setAttributeValueInput} onSelect={value=>void applyAttributeValue(value)} defaultActiveFirstOption={false} options={(attributeFields.find(field=>field.key===attributeKey)?.options||[]).map(value=>({value}))} filterOption={(input,option)=>String(option?.value).includes(input)} style={{width:260}} disabled={attributeValueDisabled}>
+      <AutoComplete value={attributeValueInput} onChange={setAttributeValueInput} onSelect={value=>void applyAttributeValue(value)} defaultActiveFirstOption={false} options={(attributeFields.find(field=>field.key===attributeKey)?.options||[]).map(value=>({value}))} filterOption={(input,option)=>String(option?.value).includes(input)} style={{width:260,maxWidth:'100%'}} disabled={attributeValueDisabled}>
         <Input.Search aria-label="属性值筛选" placeholder="输入精确值，回车筛选" enterButton="筛选" maxLength={500} onSearch={value=>void applyAttributeValue(value)}/>
       </AutoComplete>
       <Select aria-label="筛选属性状态" value={attributeState} style={{minWidth:190}} disabled={loading||dirty||busy||jumping||!attributeKey} options={[{value:'all',label:'全部（含尚未分析）'},{value:'analyzed',label:'已分析（含无法判断）'},{value:'known',label:'已确认值'},{value:'unknown',label:'无法判断'},{value:'missing',label:'尚未分析此属性'}]} onChange={attribute_state=>void filterQueue({attribute_state,...(['unknown','missing'].includes(attribute_state)?{attribute_value:undefined}:{})})}/>
     </Space>}
     {error&&<Alert type="error" showIcon title={error} style={{marginBottom:16}}/>}
-    {navigationError&&<Alert type="error" title={navigationError} action={<Button onClick={()=>setNavigationReload(value=>value+1)}>重试切图读取</Button>}/>}
-    {collectionError&&<Alert type="error" title={collectionError} action={<Button onClick={()=>setNavigationReload(value=>value+1)}>重试图片集读取</Button>}/>}
-    {neighbors?.matched===false&&<Alert type="info" title={neighbors.total?'当前图片已不符合筛选，上一张 / 下一张仍在筛选结果中切换':'当前筛选已无匹配图片，可清除筛选查看全部'} action={<Button disabled={dirty||busy||jumping} onClick={()=>void filterQueue({label:undefined,crop_label:[],review_status:undefined,collection_id:undefined,attribute_key:undefined,attribute_value:undefined,attribute_state:undefined,image_kind:undefined})}>清除筛选</Button>}/>}
+    {navigationError&&<Alert type="error" showIcon title={navigationError} action={<Button size="small" onClick={()=>setNavigationReload(value=>value+1)}>重试切图读取</Button>}/>}
+    {collectionError&&<Alert type="error" showIcon title={collectionError} action={<Button size="small" onClick={()=>setNavigationReload(value=>value+1)}>重试图片集读取</Button>}/>}
+    {neighbors?.matched===false&&<Alert type="info" showIcon title={neighbors.total?'当前图片已不符合筛选，上一张 / 下一张仍在筛选结果中切换':'当前筛选已无匹配图片，可清除筛选查看全部'} action={<Button size="small" disabled={dirty||busy||jumping} onClick={()=>void filterQueue({label:undefined,crop_label:[],review_status:undefined,collection_id:undefined,attribute_key:undefined,attribute_value:undefined,attribute_state:undefined,image_kind:undefined})}>清除筛选</Button>}/>}
     <div className="image-annotation-panels" ref={canvasPanels}><section className="image-annotation-picture" aria-label="当前标注图片"><AnnotationImageViewer asset={asset} view={imageView} setView={setImageView}/>
     </section><div className="image-annotation-sidebar"><section className="image-annotation-fields" aria-label="标注内容" tabIndex={0}><Space orientation="vertical" size={attributeMode?'small':'middle'} style={{width:'100%'}}>
       <Checkbox data-annotation-skip checked={!!draft.skipped} disabled={loading||busy} onChange={e=>setDraft(e.target.checked?{labels:[],description:'',skipped:true}:{...empty})}>无法判断 / 跳过（不作负样本）</Checkbox>
       {draft.skipped&&<Typography.Text type="secondary">R：保存跳过并审核通过，进入下一张，不作负样本。直接切图仅保存跳过；保存或审核失败时留在当前图。</Typography.Text>}
-      {suggestionsError&&<Alert type="warning" title={suggestionsError}/>}
+      {suggestionsError&&<Alert type="warning" showIcon title={suggestionsError}/>}
       {imageFields}
       {attributeMode&&(draft.attribute_schema&&draft.attributes?<>
         <div className="image-annotation-attribute-heading">
@@ -261,16 +276,16 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
       <details><summary>历史版本（{versions.length}）</summary>{versions.map(ann=><div key={ann.id}><Tag>v{ann.version}</Tag>{new Date(ann.created_at).toLocaleString('zh-CN')}<JsonView label={`标注历史 v${ann.version}`} value={ann.annotation_data}/></div>)}</details>
     </Space></section><div className="image-annotation-review-actions" aria-label="审核操作">
       {advanceOnReview&&<Button block type="primary" aria-label="保存并通过，下一张" aria-busy={busy} onClick={()=>void approveNext()} loading={busy} disabled={!canApproveNext} title={draft.skipped?'R：保存跳过状态、审核通过并进入下一张，不作负样本':'R：保存修改、人工通过并转到当前筛选的下一张'}>保存并通过，下一张</Button>}
-      <Space wrap><Button type={attributeMode?'default':'primary'} onClick={save} loading={busy} disabled={loading||busy||(!dirty&&hasImageAnnotation)}>保存标注</Button><Button disabled={loading||dirty||busy||!current||!hasImageAnnotation||annotationReviewStatus(current,'image')==='approved'} onClick={()=>review(true)}>审核通过</Button><Button danger disabled={loading||dirty||busy||!current||!hasImageAnnotation||annotationReviewStatus(current,'image')==='rejected'} onClick={()=>review(false)}>驳回</Button></Space>
+      <Space wrap><Button type={classification||attributeMode?'default':'primary'} onClick={save} loading={busy} disabled={loading||busy||(!dirty&&hasImageAnnotation)}>保存标注</Button><Button disabled={loading||dirty||busy||!current||!hasImageAnnotation||annotationReviewStatus(current,'image')==='approved'} onClick={()=>review(true)}>审核通过</Button><Button danger disabled={loading||dirty||busy||!current||!hasImageAnnotation||annotationReviewStatus(current,'image')==='rejected'} onClick={()=>review(false)}>驳回</Button></Space>
       <div className="image-annotation-review-meta"><Tag>{current&&hasImageAnnotation?`v${current.version} · ${{pending:'待审核',approved:'已通过',rejected:'已驳回'}[annotationReviewStatus(current,'image')]}`:'尚未保存'}</Tag>{dirty&&<Typography.Text type="warning">有未保存修改</Typography.Text>}<details><summary>审核意见（可选）</summary><Input aria-label="审核意见" value={comment} maxLength={2000} placeholder="审核意见（可选）" onChange={e=>setComment(e.target.value)}/></details></div>
     </div></div></div>
     <div className="image-annotation-source" title={asset.original_name}>{asset.original_name} · {asset.width} × {asset.height}{asset.source_type==='model_crop'?' · 模型裁剪图':''}{!!asset.device_info?.crop&&<> · 裁剪框：<code>{(asset.device_info.crop as {region:number[]}).region.join(', ')}</code></>}</div>
     <Modal title="有未保存的标注" open={blocker.state==='blocked'&&!savingSkip} onCancel={()=>blocker.reset?.()} onOk={()=>blocker.proceed?.()} okText="放弃修改并离开" cancelText="继续编辑"><p>请先保存，或确认放弃当前修改。</p></Modal>
     <Modal title="标注快捷键" open={showShortcuts} onCancel={()=>setShowShortcuts(false)} footer={null}>
       <p>← / → 或 A / D 切换图片；勾选跳过时自动保存后切换，失败留在当前图。其他未保存修改会先提示，确认前保留草稿。</p>
-      <p>Ctrl / Cmd + S 保存标注，在描述和审核意见输入框内也可使用。{attributeMode?'属性标注按 R 保存、通过并进入下一张；其他标注按 R 审核通过。':'R 审核通过。'}Shift + R 驳回，使用当前审核意见。</p>
-      <p>属性快速审核先保存修改，再通过；失败时停留当前图片。整图勾选跳过后，R 同样保存、审核通过并进入下一张，保留跳过标记，不作负样本。单独审核和驳回须先保存。请求进行中不重复提交。</p>
-      <p>普通快捷键在输入框、筛选框和弹窗中停用。图片视图切换按钮或整图跳过复选框聚焦时仍可按 R。</p>
+      <p>{classification&&!multiple?'单选分类按数字键 1–9 直接选择前 9 个类别。':''}Ctrl / Cmd + S 保存标注，在描述和审核意见输入框内也可使用。{classification||attributeMode?'分类与属性标注按 R 保存、通过并进入下一张；其他标注按 R 审核通过。':'R 审核通过。'}Shift + R 驳回，使用当前审核意见。</p>
+      <p>快速审核先保存修改，再通过；失败时停留当前图片。整图勾选跳过后，R 同样保存、审核通过并进入下一张，保留跳过标记，不作负样本。单独审核和驳回须先保存。请求进行中不重复提交。</p>
+      <p>普通快捷键在输入框、筛选框和弹窗中停用。图片视图切换按钮、单选分类或整图跳过复选框聚焦时仍可按 R。</p>
     </Modal>
   </Card>;
 }

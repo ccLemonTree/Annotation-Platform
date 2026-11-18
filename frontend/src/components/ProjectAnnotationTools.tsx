@@ -52,13 +52,21 @@ export default function ProjectAnnotationTools({project,onRefresh}:{project:Proj
     if(removed)onRefresh();
   };
   const fail=(error:unknown)=>{if(mounted.current)setError(isAxiosError(error)&&typeof error.response?.data?.detail==='string'?error.response.data.detail:'操作失败，请重试');};
-  useEffect(()=>{let active=true,inFlight=false;
-    const load=async()=>{if(inFlight)return;inFlight=true;try{const rows=await getWorkJobs(project.id,jobPage);if(active){setJobs(rows);refreshCompletedQuality(rows);}}catch(error){if(active)fail(error);}finally{inFlight=false;}};
-    void load();const timer=setInterval(load,3000);return()=>{active=false;clearInterval(timer);};
+  useEffect(()=>{let active=true,inFlight=false,shouldPoll=true;
+    const load=async()=>{if(inFlight)return;inFlight=true;try{const rows=await getWorkJobs(project.id,jobPage);if(active){setJobs(rows);refreshCompletedQuality(rows);shouldPoll=rows.some(row=>canCancel(row)||!!row.retrying_count);}}catch(error){if(active)fail(error);}finally{inFlight=false;}};
+    const onVisible=()=>{if(!document.hidden&&shouldPoll)void load();};
+    void load();
+    const timer=setInterval(()=>{if(shouldPoll&&!document.hidden)void load();},3000);
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>{active=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[project.id,jobPage,reload]);
-  useEffect(()=>{if(!jobId)return;let active=true,inFlight=false;
-    const load=async()=>{if(inFlight)return;inFlight=true;try{const detail=await getWork(project.id,jobId,itemPage);if(active){setJob(detail);refreshCompletedQuality([detail]);}}catch(error){if(active)fail(error);}finally{inFlight=false;}};
-    void load();const timer=setInterval(load,3000);return()=>{active=false;clearInterval(timer);};
+  useEffect(()=>{if(!jobId)return;let active=true,inFlight=false,shouldPoll=true;
+    const load=async()=>{if(inFlight)return;inFlight=true;try{const detail=await getWork(project.id,jobId,itemPage);if(active){setJob(detail);refreshCompletedQuality([detail]);shouldPoll=canCancel(detail)||!!detail.retrying_count;}}catch(error){if(active)fail(error);}finally{inFlight=false;}};
+    const onVisible=()=>{if(!document.hidden&&shouldPoll)void load();};
+    void load();
+    const timer=setInterval(()=>{if(shouldPoll&&!document.hidden)void load();},3000);
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>{active=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[project.id,jobId,itemPage,reload]);
   const action=async(action:'cancel'|'retry',target:WorkJob)=>{if(busy)return;setBusy(true);setError('');try{await workAction(project.id,target.id,action);if(mounted.current){if(action==='retry'&&target.operation==='quality')qualityActive.current.set(target.id,true);setReload(v=>v+1);}}catch(error){fail(error);}finally{if(mounted.current)setBusy(false);}};
   const removeJob=async(target:WorkJob)=>{
@@ -80,12 +88,9 @@ export default function ProjectAnnotationTools({project,onRefresh}:{project:Proj
   const detailsOpen=!!jobId;
   const showJob=(id:string)=>{setJobId(id);setItemPage(1);setError('');};
   return <Card size="small"><Space className="project-annotation-tools" orientation="vertical" size="middle" style={{width:'100%',minWidth:0}}>
-      {error&&!detailsOpen&&<Alert type="error" showIcon title={error} action={<Button onClick={()=>{setError('');setReload(v=>v+1);}}>刷新重试</Button>}/>}
-      <Space wrap style={{display:'flex',justifyContent:'space-between',marginBottom:12}}>
-        <Typography.Text type="secondary">每行是一次历史任务；已归并的内部批次统一显示进度。</Typography.Text>
-        <Space><Button disabled={jobPage===1} onClick={()=>setJobPage(v=>v-1)}>上一页</Button><span>第 {jobPage} 页</span><Button disabled={jobs.length<20} onClick={()=>setJobPage(v=>v+1)}>下一页</Button></Space>
-      </Space>
-      <Table<WorkJob> size="small" rowKey="id" dataSource={jobs} pagination={false} scroll={{x:960,y:'min(48vh, 420px)'}} locale={{emptyText:'此页暂无批次'}} columns={[
+      {error&&!detailsOpen&&<Alert type="error" showIcon title={error} action={<Button size="small" onClick={()=>{setError('');setReload(v=>v+1);}}>刷新重试</Button>}/>}
+      <Typography.Text type="secondary">每行是一次历史任务；已归并的内部批次统一显示进度。</Typography.Text>
+      <Table<WorkJob> size="small" rowKey="id" dataSource={jobs} pagination={false} scroll={{x:960}} locale={{emptyText:'此页暂无批次'}} columns={[
         {title:'处理流程',width:230,render:(_,row)=><Space orientation="vertical" size={0} style={{maxWidth:'100%'}}>
           <Typography.Text strong>{workLabels[row.operation]}</Typography.Text>
           {!!row.target_labels?.length&&<Typography.Text type="secondary" ellipsis={{tooltip:row.target_labels.join('、')}} style={{maxWidth:195}}>目标：{row.target_labels.join('、')}</Typography.Text>}
@@ -103,10 +108,13 @@ export default function ProjectAnnotationTools({project,onRefresh}:{project:Proj
             <Link to={`/projects/${project.id}/images?work_job_id=${row.id}`}>查看裁剪结果</Link>
             <Link to={`/projects/${project.id}/prepare?source_job_id=${row.id}`}>用于新工作流</Link>
           </Space>}</Space>}]}/>
+      <div style={{display:'flex',justifyContent:'flex-end'}}>
+        <Space size="small"><Button size="small" disabled={jobPage===1} onClick={()=>setJobPage(v=>v-1)}>上一页</Button><Typography.Text type="secondary">第 {jobPage} 页</Typography.Text><Button size="small" disabled={jobs.length<20} onClick={()=>setJobPage(v=>v+1)}>下一页</Button></Space>
+      </div>
       <Drawer open={detailsOpen} size={780} styles={{wrapper:{maxWidth:'100vw'}}} destroyOnHidden
         title={detail?`${workLabels[detail.operation]} · 批次明细`:'批次明细'} loading={!detail&&!error}
         onClose={()=>{setJobId(undefined);setError('');}}>
-      {error&&<Alert type="error" showIcon title={error} action={<Button onClick={()=>{setError('');setReload(v=>v+1);}}>刷新重试</Button>} style={{marginBottom:12}}/>}
+      {error&&<Alert type="error" showIcon title={error} action={<Button size="small" onClick={()=>{setError('');setReload(v=>v+1);}}>刷新重试</Button>} style={{marginBottom:12}}/>}
       {detail&&<><Space orientation="vertical" size="small" style={{display:'flex',marginBottom:16}}>
         <Typography.Text type="secondary">批次 {detail.id.slice(0,8)} · {detail.model_name||'模型'} r{detail.revision}{detail.attribute_model_name&&` · ${detail.attribute_model_name}`}</Typography.Text>
         {!!detail.target_labels?.length&&<Typography.Text>目标：{detail.target_labels.join('、')}</Typography.Text>}
@@ -128,13 +136,13 @@ export default function ProjectAnnotationTools({project,onRefresh}:{project:Proj
           <Checkbox checked={!!detail.follow_uploads} disabled={busy} onChange={event=>void setFollow(event.target.checked)}>自动加入新上传图片</Checkbox>
           <p className="workspace-help">{detail.operation==='quality'?'新图入队后自动质检，不合格的项目图片及标注会删除。':'新图沿用本批次的模型和处理规则。'}关闭后，已入队的图片继续处理。</p>
         </div>}
-        {detail.operation==='quality'&&<Alert type="info" title="本批质检要求" description={detail.quality_requirement} style={{margin:'12px 0'}}/>}
-        {detail.parent&&<Typography.Paragraph>来源原图：{detail.parent.original_name||'已移除'} <Button type="link" onClick={()=>showJob(detail.parent!.job_id)}>返回所属分析流程</Button></Typography.Paragraph>}
+        {detail.operation==='quality'&&<Alert type="info" showIcon title="本批质检要求" description={detail.quality_requirement} style={{margin:'12px 0'}}/>}
+        {detail.parent&&<Typography.Paragraph>来源原图：{detail.parent.original_name||'已移除'} <Button type="link" size="small" onClick={()=>showJob(detail.parent!.job_id)}>返回所属分析流程</Button></Typography.Paragraph>}
         {detail.example&&<Typography.Paragraph>本批正确范例：<Link to={`/annotate/${detail.example.asset_id}?from=attributes`} target="_blank" rel="noopener noreferrer">{detail.example.original_name}</Link> · 人工标注 v{detail.example.annotation_version}</Typography.Paragraph>}
         <Table size="small" rowKey="id" dataSource={detail.items} pagination={false} scroll={{x:600}} style={{marginBlock:12}} columns={[
           {title:'图片',render:(_,item)=>item.asset_id?<Space><AssetImage assetId={item.asset_id} width={64} height={48} style={{objectFit:'contain'}}/><Link to={`/annotate/${item.asset_id}`}>{item.original_name||item.asset_id.slice(0,8)}</Link></Space>:item.original_name||item.result?.original_name||'已移除'},
-          {title:'状态',render:(_,item)=>detail.operation==='quality'&&item.status==='failed'?<Tag color="error">{item.asset_id?'失败 · 图片保留':'失败 · 图片已移除'}</Tag>:item.result?.deleted?<Tag color="error">不合格 · 已删除</Tag>:detail.operation==='quality'&&item.result?.passed===true?<Tag color="success">{item.asset_id?'合格 · 保留':'合格 · 图片已移除'}</Tag>:statuses[item.status]||item.status},{title:'结果',render:(_,item)=><Space wrap>{item.error||item.result?.reason||item.result?.warning||item.result?.description||(item.result?.attributes?`已分析 ${Object.keys(item.result.attributes).length} 项属性`:item.result?.detected_count!==undefined?`生成 ${item.result.detected_count} 张裁剪图`:'')}{item.result?.attribute_job_id&&<Button type="link" onClick={()=>{setJobId(item.result!.attribute_job_id);setItemPage(1);}}>查看逐目标属性批次</Button>}{!!item.result?.filtered_count&&<span>尺寸过滤 {item.result.filtered_count} 张</span>}{!!item.result?.skipped_annotated_count&&<span>保留 {item.result.skipped_annotated_count} 张已有标注</span>}</Space>}]}/>
-        <Pagination current={itemPage} pageSize={20} total={detail.total} showSizeChanger={false} onChange={setItemPage}/></>}
+          {title:'状态',render:(_,item)=>detail.operation==='quality'&&item.status==='failed'?<Tag color="error">{item.asset_id?'失败 · 图片保留':'失败 · 图片已移除'}</Tag>:item.result?.deleted?<Tag color="error">不合格 · 已删除</Tag>:detail.operation==='quality'&&item.result?.passed===true?<Tag color="success">{item.asset_id?'合格 · 保留':'合格 · 图片已移除'}</Tag>:statuses[item.status]||item.status},{title:'结果',render:(_,item)=><Space wrap>{item.error||item.result?.reason||item.result?.warning||item.result?.description||(item.result?.attributes?`已分析 ${Object.keys(item.result.attributes).length} 项属性`:item.result?.detected_count!==undefined?`生成 ${item.result.detected_count} 张裁剪图`:'')}{item.result?.attribute_job_id&&<Button type="link" size="small" onClick={()=>{setJobId(item.result!.attribute_job_id);setItemPage(1);}}>查看逐目标属性批次</Button>}{!!item.result?.filtered_count&&<span>尺寸过滤 {item.result.filtered_count} 张</span>}{!!item.result?.skipped_annotated_count&&<span>保留 {item.result.skipped_annotated_count} 张已有标注</span>}</Space>}]}/>
+        <div style={{display:'flex',justifyContent:'flex-end'}}><Pagination current={itemPage} pageSize={20} total={detail.total} showSizeChanger={false} onChange={setItemPage}/></div></>}
       </Drawer>
   </Space></Card>;
 }

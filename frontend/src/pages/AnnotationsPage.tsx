@@ -1,13 +1,13 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, Breadcrumb, Button, Card, Col, Empty, Pagination, Row, Select, Space, Statistic, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Pagination, Row, Select, Space, Statistic, Table, Tabs, Tag } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { annotationReviewStatus, getAnnotations } from '../api/annotations';
 import type { Annotation } from '../api/annotations';
-import { getProject, getProjects,getAnnotationStats } from '../api/projects';
+import { getProject, getProjects, getAnnotationStats } from '../api/projects';
 import type { Project } from '../api/projects';
 import { getAsset } from '../api/assets';
-import type { Asset } from '../api/assets';
+import type { WorkflowHistoryConfig } from '../api/projectWork';
 import AssetImage from '../components/AssetImage';
 import ContinueAnnotation from '../components/ContinueAnnotation';
 import ProjectWorkflow from '../components/ProjectWorkflow';
@@ -19,9 +19,15 @@ import MatchReviews from '../components/MatchReviews';
 import { useCurrentUser } from '../components/currentUser';
 const AutomationPage=lazy(()=>import('./AutomationPage'));
 
-type ReviewRow = Annotation & { asset: Asset };
+type ReviewRow = Annotation & { display_name: string };
 const statuses = [
   { label: '待审核', value: 'pending' }, { label: '已通过', value: 'approved' }, { label: '已驳回', value: 'rejected' },
+];
+const sourceOptions = [
+  { label: '手动标注', value: 'manual' },
+  { label: '模型自动', value: 'auto' },
+  { label: 'YOLO导入', value: 'import_yolo' },
+  { label: '项目复用', value: 'reuse' },
 ];
 const annotationContent=(data:ReviewRow['annotation_data'],taskType?:Project['task_type'])=>[
   taskType==='detection'?(data.boxes?.length?`${data.boxes.length} 个目标`:'检测负样本'):undefined,
@@ -40,6 +46,7 @@ export default function AnnotationsPage() {
   const [editingAttributes,setEditingAttributes]=useState(false);
   const [attributeCropLabels,setAttributeCropLabels]=useState<string[]>([]);
   const [attributeRevision,setAttributeRevision]=useState(0);
+  const [loadedWorkflow, setLoadedWorkflow] = useState<{ config: WorkflowHistoryConfig; seq: number }>();
   const configureAttributes=(labels:string[]=[])=>{setAttributeCropLabels(labels);setEditingAttributes(true);};
   const closeAttributes=()=>{
     setEditingAttributes(false);
@@ -62,12 +69,19 @@ export default function AnnotationsPage() {
   const annotationSearch = new URLSearchParams(params);
   annotationSearch.set('stage','annotate');
   const status = statuses.some(item => item.value === params.get('review_status')) ? params.get('review_status')! : undefined;
+  const q = params.get('q')?.trim() || undefined;
+  const label = params.get('label') || undefined;
+  const annotationSource = sourceOptions.some(item => item.value === params.get('annotation_source')) ? params.get('annotation_source')! : undefined;
+  const [queryInput, setQueryInput] = useState(q || '');
+  useEffect(() => { setQueryInput(q || ''); }, [q]);
   const page = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
   const requestedSize = Number(params.get('page_size'));
   const pageSize = projectId ? ([20, 50, 100].includes(requestedSize) ? requestedSize : 20) : 12;
   const [projects, setProjects] = useState<Project[]>([]);
   const [project, setProject] = useState<Project>();
   const kind=project?.task_type==='detection'?'detection':project?'image':undefined;
+  const configuredLabels = Array.isArray(project?.label_schema?.labels) ? (project.label_schema.labels as string[]).filter(Boolean) : [];
+  const unconfiguredLabels = !!project && ['detection', 'classification'].includes(project.task_type) && !configuredLabels.length;
   const [stats,setStats]=useState<Pick<Project,'total_assets'|'annotated_count'|'reviewed_count'>>();
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const [total, setTotal] = useState(0), [loading, setLoading] = useState(true);
@@ -81,30 +95,48 @@ export default function AnnotationsPage() {
         if (active) { setProjects(result.items); setTotal(result.total); }
         return;
       }
-      const [current, annotations,currentStats] = await Promise.all([
-        getProject(projectId), reviewing ? getAnnotations({ project_id: projectId, scope:'annotation', latest_only: true, review_status: status, ai_pending:aiPending||undefined, work_job_id:workJobId,image_kind:imageKind,page,page_size:pageSize }) : undefined, getAnnotationStats(projectId),
+      const [current, annotations, currentStats] = await Promise.all([
+        getProject(projectId),
+        reviewing ? getAnnotations({
+          project_id: projectId,
+          scope: 'annotation',
+          latest_only: true,
+          review_status: status,
+          q,
+          label,
+          annotation_source: annotationSource,
+          ai_pending: aiPending || undefined,
+          work_job_id: workJobId,
+          image_kind: imageKind,
+          page,
+          page_size: pageSize,
+        }) : undefined,
+        getAnnotationStats(projectId),
       ]);
       const items = await Promise.all((annotations?.items || []).map(async annotation => {
-        const asset = await getAsset(annotation.asset_id);
-        if (asset.project_id !== projectId) throw Error('图片不属于当前项目');
-        return { ...annotation, asset };
+        if (annotation.asset_original_name) {
+          return { ...annotation, display_name: annotation.asset_original_name };
+        }
+        const asset = await getAsset(annotation.asset_id).catch(() => undefined);
+        if (asset && asset.project_id !== projectId) throw Error('图片不属于当前项目');
+        return { ...annotation, display_name: asset?.original_name || annotation.asset_id.slice(0, 8) };
       }));
       if (active) { setProject(current); setStats(currentStats); setRows(items); setTotal(annotations?.total || 0); }
     })().catch(() => { if (active) setError('读取失败，请重试或返回标注项目重新选择'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [projectId, reviewing, status, aiPending, workJobId, imageKind, page, pageSize, reload]);
+  }, [projectId, reviewing, status, q, label, annotationSource, aiPending, workJobId, imageKind, page, pageSize, reload]);
 
-  const update = (next: { page?: number; page_size?: number; review_status?: string; kind?: string }) => {
+  const update = (next: { page?: number; page_size?: number; review_status?: string; q?: string; label?: string; annotation_source?: string; kind?: string }) => {
     const search = new URLSearchParams(params);
     for (const [key, value] of Object.entries(next)) {
-      if (value === undefined) search.delete(key); else search.set(key, String(value));
+      if (value === undefined || value === '') search.delete(key); else search.set(key, String(value));
     }
     setParams(search);
   };
   const columns: TableColumnsType<ReviewRow> = [
     { title: '预览', width: 88, render: (_, row) => <AssetImage assetId={row.asset_id} width={56} height={56} style={{ objectFit: 'cover', borderRadius: 4 }} /> },
-    { title: '图片名称', width: 260, ellipsis: true, render: (_, row) => row.asset.original_name },
+    { title: '图片名称', width: 260, ellipsis: true, render: (_, row) => row.display_name },
     { title: '标注内容', width: 240, ellipsis:true, render: (_, row) => annotationContent(row.annotation_data,project?.task_type) },
     { title: '版本', width: 80, render: (_, row) => <Tag>v{row.version}</Tag> },
     { title: '审核状态', width: 190, render: (_, row) => {
@@ -149,14 +181,17 @@ export default function AnnotationsPage() {
           setReload(value=>value+1);
         }}/>
         <Tabs activeKey={processingTab} onChange={key=>showProcessing(key)} items={[
-          {key:'workflow',label:'处理工作流',children:<ProjectProcessingWorkflow key={project.id} project={project} attributeRevision={attributeRevision} onConfigureAttributes={configureAttributes} onNavigate={showProcessing}/>},
+          {key:'workflow',label:'处理工作流',children:<ProjectProcessingWorkflow key={project.id} project={project} loadedHistory={loadedWorkflow} attributeRevision={attributeRevision} onConfigureAttributes={configureAttributes} onNavigate={showProcessing}/>},
           {key:'history',label:'历史任务',children:processingTab==='history'&&<Space orientation="vertical" size="middle" style={{width:'100%'}}>
             <Space><label htmlFor="processing-history-source">记录来源</label><Select id="processing-history-source" value={historySource} style={{width:210}}
               options={[{value:'workflow',label:'工作流'},{value:'single',label:'历史单项处理'},{value:'automation',label:'历史预标注与审核'}]}
               onChange={value=>{const next=new URLSearchParams(params);next.set('history_source',value);setParams(next);}}/></Space>
             {historySource==='single'?<ProjectAnnotationTools key={project.id} project={project} onRefresh={()=>setReload(n=>n+1)}/>
               :historySource==='automation'?<Suspense fallback={<p>正在读取历史记录…</p>}><AutomationPage key={project.id} embeddedProject={project}/></Suspense>
-              :<ProjectProcessingWorkflow key={project.id} project={project} history onConfigureAttributes={configureAttributes} onNavigate={showProcessing}/>}
+              :<ProjectProcessingWorkflow key={project.id} project={project} history onLoadHistory={cfg => {
+                setLoadedWorkflow(prev => ({ config: cfg, seq: (prev?.seq || 0) + 1 }));
+                showProcessing('workflow', cfg.source_job_id || undefined);
+              }} onConfigureAttributes={configureAttributes} onNavigate={showProcessing}/>}
           </Space>},
         ]}/>
         <ProjectAttributeConfigDialog key={project.id+JSON.stringify(project.label_schema?.object_attributes)} project={project}
@@ -170,10 +205,13 @@ export default function AnnotationsPage() {
   return <>
     {project&&<ProjectWorkflow project={project} active="review"/>}
     <Card title={projectId ? undefined : '标注项目'}>
-    {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => setReload(n => n + 1)}>重试读取</Button>} style={{ marginBottom: 16 }} />}
+    {error && <Alert type="error" showIcon title={error} action={<Button size="small" onClick={() => setReload(n => n + 1)}>重试读取</Button>} style={{ marginBottom: 16 }} />}
     {projectId ? <>
-      <Breadcrumb items={[{ title: <Link to={admin?'/projects':'/annotations'}>{admin?'项目管理':'标注项目'}</Link> }, { title: project?.project_name || '读取项目中' }, { title: '标注与审核' }]} style={{ marginBottom: 16 }} />
       {project && <div style={{ marginBottom: 20 }}>{counts({...project,...stats},true)}</div>}
+      {unconfiguredLabels && <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+        title="此项目尚未配置标注类别"
+        description={admin ? '请先在项目设置中添加标注类别，即可开始画框或分类标注。' : '请联系管理员在项目设置中添加标注类别。'}
+        action={admin && <Link to={`/projects/${project.id}/settings?edit=1`}><Button size="small" type="primary">设置标注类别</Button></Link>} />}
       {missingCrops&&<Alert type="info" showIcon style={{marginBottom:16}}
         title={`项目已有 ${project.total_assets.toLocaleString('zh-CN')} 张图片，当前仅标注裁剪图`}
         description={admin?<span>先在<Link to={`/projects/${projectId}/prepare`}>批量处理</Link>中切图，或把标注范围改为「原图与裁剪图」。</span>:'请联系管理员生成裁剪图或调整项目标注范围。'}/>}
@@ -192,15 +230,26 @@ export default function AnnotationsPage() {
       {reviewing&&<>
       <div className="page-toolbar">
         <div className="page-toolbar-fields">
-          <label htmlFor="project-review-status">审核状态</label>
-          <Select id="project-review-status" aria-label="项目审核状态" showSearch optionFilterProp="label" allowClear disabled={aiPending}
-            placeholder="全部状态" value={status} options={statuses} style={{ width: 160 }}
+          <Select id="project-review-status" aria-label="项目审核状态" prefix="审核：" showSearch optionFilterProp="label" allowClear disabled={aiPending}
+            placeholder="全部状态" value={status} options={statuses} style={{ width: 165, maxWidth: '100%' }}
             onChange={review_status => update({ review_status, page: 1 })} />
+          {!!configuredLabels.length && (
+            <Select aria-label="筛选标注类别" prefix="类别：" showSearch optionFilterProp="label" allowClear
+              placeholder="全部类别" value={label} options={configuredLabels.map(l => ({ label: l, value: l }))}
+              style={{ width: 170, maxWidth: '100%' }} onChange={nextLabel => update({ label: nextLabel, page: 1 })} />
+          )}
+          <Select aria-label="筛选标注来源" prefix="来源：" allowClear placeholder="全部来源" value={annotationSource}
+            options={sourceOptions} style={{ width: 165, maxWidth: '100%' }}
+            onChange={annotation_source => update({ annotation_source, page: 1 })} />
+          <Input.Search aria-label="搜索标注图片文件名" placeholder="按图片文件名搜索" allowClear maxLength={255}
+            style={{ width: 240, maxWidth: '100%' }} value={queryInput}
+            onChange={e => { setQueryInput(e.target.value); if (!e.target.value) update({ q: undefined, page: 1 }); }}
+            onSearch={val => update({ q: val.trim() || undefined, page: 1 })} enterButton="搜索" />
         </div>
       </div>
       <Table columns={columns} dataSource={rows} rowKey="id" loading={loading} scroll={{ x: 1080 }}
-        locale={{ emptyText: error ? '读取失败，请重试' : missingCrops ? '还没有可标注的裁剪图' : status ? '此项目没有符合审核状态的标注' :
-          project?.task_type==='segmentation'?'暂无已保存的分割标注记录':project&&['detection','classification'].includes(project.task_type)&&!(project.label_schema?.labels as string[]|undefined)?.length?'此项目还没有已保存的标注，请先完成上方准备。':project?.task_type==='vector'?'暂无图片描述或分类标注；检索匹配标注见上方审核区':project&&!(stats?.total_assets??project.total_assets)?'当前标注范围暂无图片，请先添加图片。':<span>此项目还没有已保存的标注，请从上方开始标注。</span> }}
+        locale={{ emptyText: error ? '读取失败，请重试' : missingCrops ? '还没有可标注的裁剪图' : (status || q || label || annotationSource) ? '此项目没有符合筛选条件的标注' :
+          project?.task_type==='segmentation'?'暂无已保存的分割标注记录':unconfiguredLabels?(admin?<Space wrap><span>此项目尚未设置标注类别</span><Link to={`/projects/${project.id}/settings?edit=1`}><Button size="small" type="primary">设置标注类别</Button></Link></Space>:'此项目尚未设置标注类别，请联系管理员配置'):project?.task_type==='vector'?'暂无图片描述或分类标注；检索匹配标注见上方审核区':project&&!(stats?.total_assets??project.total_assets)?'当前标注范围暂无图片，请先添加图片。':<span>此项目还没有已保存的标注，请从上方开始标注。</span> }}
         pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100],
           showTotal: count => `共 ${count} 张已标注图片`, onChange: (page, page_size) => update({ page, page_size }) }} />
       </>}
@@ -226,9 +275,10 @@ export default function AnnotationsPage() {
           </Col>)}
         </Row>
       </Card>
-      <Pagination current={page} pageSize={pageSize} total={total} showSizeChanger={false}
-        showTotal={count => `共 ${count} 个项目`} onChange={page => update({ page })}
-        style={{ marginTop: 20, justifyContent: 'flex-end' }} />
+      <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+        <Pagination current={page} pageSize={pageSize} total={total} showSizeChanger={false}
+          showTotal={count => `共 ${count} 个项目`} onChange={page => update({ page })} />
+      </div>
     </>}
   </Card></>;
 }

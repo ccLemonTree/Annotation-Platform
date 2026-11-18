@@ -1,6 +1,7 @@
 import { useEffect,useRef,useState } from 'react';
 import { Link,useSearchParams } from 'react-router-dom';
-import { Alert,Button,Card,Checkbox,Col,Input,InputNumber,Modal,Radio,Row,Select,Space,Tag,Typography } from 'antd';
+import { Alert,Button,Card,Checkbox,Col,DatePicker,Input,InputNumber,Modal,Radio,Row,Select,Space,Tag,Typography } from 'antd';
+import dayjs from 'dayjs';
 import { isAxiosError } from 'axios';
 import { getImages,uploadImages,type LibraryImage } from '../api/images';
 import { getModelServices,isModelOffline,type ModelService } from '../api/modelServices';
@@ -76,15 +77,15 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
     else if(active&&['1','2','3'].includes(event.key)){event.preventDefault();void judge(active.asset_id,(['correct','incorrect','unknown'] as Judgment[])[Number(event.key)-1]);}
   },!!active&&!busy&&!showShortcuts&&!cropTarget);
   return <Space orientation="vertical" size="middle" style={{width:'100%'}}>
-    {error&&<Alert type="error" showIcon title={error} action={<Button onClick={()=>setReload(v=>v+1)}>刷新重试</Button>}/>}{info&&<Alert type="success" title={info}/>}
+    {error&&<Alert type="error" showIcon title={error} action={<Button size="small" onClick={()=>setReload(v=>v+1)}>刷新重试</Button>}/>}{info&&<Alert type="success" showIcon title={info}/>}
     <Card title="向量检索与匹配标注" extra={<Button onClick={()=>setShowShortcuts(true)}>快捷键</Button>}>
       <Radio.Group aria-label="匹配检索来源" value={source} disabled={busy} onChange={e=>setSource(e.target.value)} options={[{value:'smart',label:'智搜平台'},{value:'local',label:'本地向量索引'}]} style={{marginBottom:16}}/>
       <Typography.Paragraph type="secondary">{source==='smart'?'直接搜索智搜平台，结果按目标框切图后保存到当前项目，可立即标注，无需建立本地索引。':'图片先建立 Milvus 索引，再用文本或图片检索。'}正确 / 错误仅针对当前查询；描述与类别按图片共用。</Typography.Paragraph>
       {source==='smart'&&<Space wrap style={{marginBottom:16}}>
         <Select aria-label="智搜平台" showSearch optionFilterProp="label" placeholder="选择智搜平台" style={{width:280,maxWidth:'100%'}} loading={platformLoading} value={platform} disabled={busy} onChange={value=>{setPlatform(value);setReference(undefined);}} options={platforms.map(p=>({value:p.id,label:p.name}))}/>
         <Button disabled={busy||platformLoading} onClick={()=>setPlatformReload(v=>v+1)}>刷新平台</Button>
-        <label>开始时间 <Input aria-label="智搜开始时间" type="datetime-local" step={1} value={start} disabled={busy} onChange={e=>setStart(e.target.value)} style={{width:235}}/></label>
-        <label>结束时间 <Input aria-label="智搜结束时间" type="datetime-local" step={1} value={end} disabled={busy} onChange={e=>setEnd(e.target.value)} style={{width:235}}/></label>
+        <Space size={6}><span>开始时间</span><DatePicker showTime format="YYYY-MM-DD HH:mm:ss" allowClear={false} aria-label="智搜开始时间" value={start ? dayjs(start) : null} disabled={busy} onChange={date => setStart(date ? date.format('YYYY-MM-DDTHH:mm:ss') : '')} style={{width:205,maxWidth:'100%'}}/></Space>
+        <Space size={6}><span>结束时间</span><DatePicker showTime format="YYYY-MM-DD HH:mm:ss" allowClear={false} aria-label="智搜结束时间" value={end ? dayjs(end) : null} disabled={busy} onChange={date => setEnd(date ? date.format('YYYY-MM-DDTHH:mm:ss') : '')} style={{width:205,maxWidth:'100%'}}/></Space>
       </Space>}
       <Space wrap style={{marginBottom:16}}>
         {source==='local'&&<Select aria-label="检索向量模型" placeholder="选择已建立索引的模型" style={{width:260,maxWidth:'100%'}} value={embedding} disabled={busy} onChange={value=>{setEmbedding(value);setQuery(undefined);setSelected([]);}} options={models.filter(m=>m.kind==='embedding').map(m=>({value:m.id,disabled:isModelOffline(m),label:`${m.name} · r${m.revision}${isModelOffline(m)?' · 离线':''}`}))}/>}
@@ -95,9 +96,17 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
         <Button aria-label="检索并标注" type="primary" disabled={busy||(source==='smart'?(!platform||!start||!end||end<start||(mode==='text'?!text.trim():!reference)):(!embedding||(mode==='text'?!text.trim():!queryImage)))} loading={busy} onClick={()=>source==='smart'?void smartSearch():void search()}>检索并标注</Button>
       </Space>
       {busy&&<Alert type="info" showIcon title="正在处理，请稍候…" description={source==='smart'?'正在登录平台、搜索并裁剪图片。完成后显示可标注的目标切图。':undefined} style={{marginBottom:16}}/>}
-      <Space wrap style={{marginBottom:16}}><Select aria-label="历史匹配查询" placeholder="打开已保存的查询与判定" value={query?.id} style={{width:320,maxWidth:'100%'}} disabled={busy} onChange={id=>{setQuery(history.find(q=>q.id===id));openQuery(id);}} options={history.map(q=>({value:q.id,label:`${q.query.platform_name||'本地'} · ${q.query.text||'以图搜图'} · ${q.id.slice(0,8)}`}))}/>
-        <Button disabled={historyPage===1||busy} onClick={()=>openQuery(undefined,historyPage-1)}>上一页查询</Button><Button disabled={history.length<20||busy} onClick={()=>openQuery(undefined,historyPage+1)}>下一页查询</Button>
-        <Radio.Group aria-label="匹配标注视图" value={view} onChange={e=>setView(e.target.value)} options={[{value:'description',label:'描述视图'},{value:'classification',label:'分类视图'}]}/></Space>
+      <Space wrap style={{marginBottom:16,justifyContent:'space-between',width:'100%'}}>
+        <Space wrap>
+          <Select aria-label="历史匹配查询" placeholder="打开已保存的查询与判定" value={query?.id} style={{width:320,maxWidth:'100%'}} disabled={busy} onChange={id=>{setQuery(history.find(q=>q.id===id));openQuery(id);}} options={history.map(q=>({value:q.id,label:`${q.query.platform_name||'本地'} · ${q.query.text||'以图搜图'} · ${q.id.slice(0,8)}`}))}/>
+          <Radio.Group aria-label="匹配标注视图" value={view} onChange={e=>setView(e.target.value)} options={[{value:'description',label:'描述视图'},{value:'classification',label:'分类视图'}]}/>
+        </Space>
+        <Space size="small">
+          <Button size="small" disabled={historyPage===1||busy} onClick={()=>openQuery(undefined,historyPage-1)}>上一页查询</Button>
+          <Typography.Text type="secondary">第 {historyPage} 页</Typography.Text>
+          <Button size="small" disabled={history.length<20||busy} onClick={()=>openQuery(undefined,historyPage+1)}>下一页查询</Button>
+        </Space>
+      </Space>
       {query&&active&&<Space wrap style={{marginBottom:16}}>
         <Button aria-label="上一匹配图片" disabled={busy||activeIndex<=0} onClick={()=>move(-1)}>← 上一张</Button>
         <Typography.Text style={{overflowWrap:'anywhere'}}>当前 {activeIndex+1} / {query.hits.length} · {active.original_name}</Typography.Text>
@@ -115,9 +124,9 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
           <Typography.Paragraph type="secondary">{hit.smart_search?'平台分值':'相似度'} {hit.score.toFixed(4)}{hit.smart_search&&<><br/>{hit.smart_search.record.deviceName} · {hit.smart_search.record.timestamp}</>}</Typography.Paragraph>
           {view==='description'?<Typography.Paragraph style={{minHeight:44}}>{hit.description||'尚无描述，可打开图片编辑'}</Typography.Paragraph>:<Space wrap style={{marginBottom:16}}>{hit.labels?.length?hit.labels.map(label=><Tag key={label}>{label}</Tag>):<Tag>尚无分类</Tag>}</Space>}
           <Radio.Group aria-label={`判定 ${hit.asset_id}`} value={hit.judgment} disabled={busy} onChange={e=>judge(hit.asset_id,e.target.value)} options={Object.entries(judgments).map(([value,label])=>({value,label}))}/>
-          <Space wrap style={{marginTop:12}}>{hit.smart_search&&<Button disabled={busy||!platform||source!=='smart'} onClick={()=>setCropTarget({queryId:query.id,hit})}>用此图搜图</Button>}<Link to={`/annotate/${hit.asset_id}?from=vector&${params}`}>编辑描述 / 分类</Link>{admin&&hit.source_type==='model_crop'&&<DeleteCropButton assetId={hit.asset_id} name={hit.original_name} disabled={busy} onDeleted={()=>removeResults([hit.asset_id])}/>}</Space>
+          <Space size="small" wrap style={{marginTop:12}}>{hit.smart_search&&<Button size="small" disabled={busy||!platform||source!=='smart'} onClick={()=>setCropTarget({queryId:query.id,hit})}>用此图搜图</Button>}<Link to={`/annotate/${hit.asset_id}?from=vector&${params}`}>编辑描述 / 分类</Link>{admin&&hit.source_type==='model_crop'&&<DeleteCropButton assetId={hit.asset_id} name={hit.original_name} disabled={busy} onDeleted={()=>removeResults([hit.asset_id])}/>}</Space>
         </Card></Col>)}
-      </Row>{!query.hits.length&&<Alert type="info" title="当前查询没有可用结果，请检查索引或调整查询。"/>}</>}
+      </Row>{!query.hits.length&&<Alert type="info" showIcon title="当前查询没有可用结果，请检查索引或调整查询。"/>}</>}
     </Card>
     {cropTarget&&<SmartSearchCrop key={cropTarget.hit.asset_id} projectId={project.id} queryId={cropTarget.queryId} hit={cropTarget.hit} onCancel={()=>setCropTarget(undefined)} onSearch={chosen=>{setCropTarget(undefined);setReference(chosen);void smartSearch(chosen);}}/>}
     {query&&<Alert type="info" showIcon title={`判定自动保存 · 已判定 ${query.hits.filter(hit=>hit.judgment!=='unknown').length} / ${query.hits.length}`} description={admin?'完成正确 / 错误判定后，进入审核调用大模型；一致自动通过，分歧交人工复核。审核后从“导出与训练”继续。':'完成正确 / 错误判定后，可进入审核匹配页面人工通过或驳回。'} action={<Link to={`/annotations?project_id=${project.id}`}>下一步：审核匹配 →</Link>}/>}

@@ -3,7 +3,7 @@ import { Alert,Button,Checkbox,Select,Space,Tag,Typography } from 'antd';
 import { Link } from 'react-router-dom';
 import { getDeploymentLogs } from '../api/modelDeployments';
 import type { DeploymentLogSnapshot } from '../api/modelDeployments';
-import { deploymentError,deploymentNames } from '../utils/modelDeployment';
+import { deploymentBusy,deploymentError,deploymentNames } from '../utils/modelDeployment';
 
 export function DeploymentSshLinks({control,file}:{control:string;file?:string}){
   return <Space wrap>{[...new Set([control,file].filter((value):value is string=>!!value))].map(name=>
@@ -20,17 +20,33 @@ export default function DeploymentLogs({id,target=false}:{id:string;target?:bool
     const key=JSON.stringify([id,target,source,instance,reload]);
     if(!automatic&&lastRead.current===key){setLoading(false);return;}
     lastRead.current=key;
-    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
+    const controller=new AbortController();
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    let inFlight=false,shouldPoll=automatic;
     const read=async()=>{
+      if(controller.signal.aborted||inFlight)return;
+      inFlight=true;
+      clearTimeout(timer);
       setLoading(true);
       try{
         const value=await getDeploymentLogs(id,target,source,source==='service'?instance:undefined,controller.signal);
-        if(!controller.signal.aborted){setSnapshot(value);setError('');}
+        if(!controller.signal.aborted){
+          setSnapshot(value);setError('');
+          shouldPoll=automatic&&(source==='service'||target||deploymentBusy.includes(value.status));
+        }
       }catch(cause){if(!controller.signal.aborted)setError(deploymentError(cause));}
-      finally{if(!controller.signal.aborted){setLoading(false);if(automatic)timer=setTimeout(()=>void read(),2000);}}
+      finally{
+        inFlight=false;
+        if(!controller.signal.aborted){
+          setLoading(false);
+          if(shouldPoll&&!document.hidden)timer=setTimeout(()=>void read(),2000);
+        }
+      }
     };
+    const onVisible=()=>{if(!document.hidden&&shouldPoll)void read();};
     setError('');void read();
-    return()=>{controller.abort();clearTimeout(timer);};
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>{controller.abort();clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[id,target,source,instance,automatic,reload]);
   useEffect(()=>{if(follow&&output.current)output.current.scrollTop=output.current.scrollHeight;},[snapshot,follow]);
   return <Space orientation="vertical" style={{width:'100%',minWidth:0}} aria-label="实时更新日志">
@@ -47,7 +63,7 @@ export default function DeploymentLogs({id,target=false}:{id:string;target?:bool
       {snapshot.server}{snapshot.selected_instance?' · '+snapshot.selected_instance:''} · {new Date(snapshot.collected_at).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'})}
     </Typography.Text>{snapshot.truncated&&<Tag>仅显示最近日志（最多64KiB）</Tag>}</Space>}
     {error&&<Alert type="error" showIcon title="日志读取失败" description={error}/>}
-    <pre ref={output} aria-label="服务器日志内容" aria-live="off" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',overflow:'auto',maxHeight:420,minHeight:160,background:'#111827',color:'#e5e7eb',padding:12,borderRadius:8,margin:0}}>
+    <pre ref={output} aria-label="服务器日志内容" aria-live="off" style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',overflow:'auto',maxHeight:420,minHeight:160,border:'1px solid var(--ui-border)',background:'var(--ui-code-bg, var(--ui-background))',color:'var(--ui-text)',fontFamily:'Consolas, "SFMono-Regular", monospace',fontSize:12,lineHeight:1.7,padding:'12px 16px',borderRadius:8,margin:0}}>
       {snapshot?.content|| (loading?'正在读取日志…':error?'暂未读取到日志':'暂无日志；任务尚未开始或当前阶段没有输出。')}
     </pre>
     <Typography.Text type="secondary">仅查看日志，不会启动更新或重启服务。服务日志显示所选实例最近200行。</Typography.Text>

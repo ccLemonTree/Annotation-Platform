@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link,useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, App, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
 import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getCaptchaModel, getModelServices, getPromptDefaults, getWorkflowModel, predictModelService, saveCaptchaModel, saveWorkflowModel, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
@@ -20,7 +20,7 @@ type TrialForm = { source: 'image_id' | 'asset_id'; reference_id: string; prompt
 
 export default function ModelServicesPage() {
   const [params]=useSearchParams();
-  const [notice, noticeContext] = message.useMessage();
+  const { message: notice } = App.useApp();
   const [models, setModels] = useState<ModelService[]>([]), [admin, setAdmin] = useState(false);
   const [captchaSaved, setCaptchaSaved] = useState<string | null>();
   const [captchaDraft, setCaptchaDraft] = useState<string | null>(null);
@@ -133,20 +133,29 @@ export default function ModelServicesPage() {
     catch { setConnection({ ok: false, detail: '连接测试失败，请核对地址、模型 ID 或服务鉴权' }); }
     finally { setWorking(false); await load(); }
   };
-  const modelVersions = models.map(model => `${model.id}:${model.revision}`).join(',');
+  const autoCheckedRef = useRef<Set<string>>(new Set());
+  const modelVersions = models.map(model => `${model.id}:${model.revision}:${model.enabled}:${model.connection_check?.checked_revision ?? ''}`).join(',');
   useEffect(() => {
     if (!admin || !models.length) return;
+    const targets = models.filter(
+      model =>
+        model.enabled &&
+        model.connection_check?.checked_revision !== model.revision &&
+        !autoCheckedRef.current.has(`${model.id}:${model.revision}`),
+    );
+    if (!targets.length) return;
+    for (const model of targets) autoCheckedRef.current.add(`${model.id}:${model.revision}`);
     let active = true, next = 0;
-    setChecking(new Set(models.map(model => model.id)));
+    setChecking(previous => new Set([...previous, ...targets.map(model => model.id)]));
     const check = async () => {
-      while (active && next < models.length) {
-        const model = models[next++];
+      while (active && next < targets.length) {
+        const model = targets[next++];
         try { await testModelService(model.id); }
         catch { /* The server retains the offline result for the list. */ }
         finally { if (active) setChecking(previous => { const remaining = new Set(previous); remaining.delete(model.id); return remaining; }); }
       }
     };
-    void Promise.all(Array.from({length: Math.min(3, models.length)}, check)).then(() => { if (active) void load(); });
+    void Promise.all(Array.from({ length: Math.min(3, targets.length) }, check)).then(() => { if (active) void load(); });
     return () => { active = false; };
   }, [admin, modelVersions]);
   const clearTrialResult = () => { trialRequest.current++; trialController.current?.abort(); setTrialResult(undefined); setTrialError(''); setTrialBusy(false); };
@@ -174,8 +183,7 @@ export default function ModelServicesPage() {
   const closeTrial = () => { clearTrialResult(); setTrial(undefined); };
 
   return <>
-    {noticeContext}
-    {params.get('project_id')&&<p><Link to={`/projects/${encodeURIComponent(params.get('project_id')!)}/prepare`}>← 返回当前项目的标注准备</Link></p>}
+    {params.get('project_id')&&<div className="platform-related" style={{marginBottom:12}}><Link to={`/projects/${encodeURIComponent(params.get('project_id')!)}/prepare`}>← 返回当前项目的标注准备</Link></div>}
     <Card title="模型服务" extra={<Space wrap>
       <Link to="/model-preview">上传图片看检测效果 →</Link>
       <Button aria-label="刷新" onClick={load} loading={loading} disabled={working || loading}>刷新</Button>

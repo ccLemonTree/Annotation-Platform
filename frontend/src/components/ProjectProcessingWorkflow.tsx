@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   Alert,
+  App,
   Button,
   Card,
   Checkbox,
@@ -173,7 +174,7 @@ function HistoryConfig({ config }: { config: WorkflowHistoryConfig }) {
               ]}
             />
             {step.script_config?.code && (
-              <pre style={{ marginTop: 8, padding: 10, background: '#090e18', borderRadius: 6, fontSize: 12, overflowX: 'auto' }}>
+              <pre style={{ marginTop: 8, padding: 10, background: 'var(--ui-code-bg, var(--ui-background))', border: '1px solid var(--ui-border)', borderRadius: 6, fontSize: 12, overflowX: 'auto' }}>
                 {step.script_config.code}
               </pre>
             )}
@@ -200,6 +201,8 @@ export default function ProjectProcessingWorkflow({
   project,
   history = false,
   visible = true,
+  loadedHistory,
+  onLoadHistory,
   onConfigureAttributes,
   attributeRevision,
   onNavigate,
@@ -207,10 +210,13 @@ export default function ProjectProcessingWorkflow({
   project: Project;
   history?: boolean;
   visible?: boolean;
+  loadedHistory?: { config: WorkflowHistoryConfig; seq: number };
+  onLoadHistory?: (config: WorkflowHistoryConfig) => void;
   onConfigureAttributes: (labels?: string[]) => void;
   attributeRevision?: number;
   onNavigate: (tab: 'workflow' | 'history', sourceJobId?: string) => void;
 }) {
+  const { message } = App.useApp();
   const projectId = project.id;
   const [params] = useSearchParams();
   const selectedSource = params.get('source_job_id');
@@ -256,6 +262,81 @@ export default function ProjectProcessingWorkflow({
   const [detailPage, setDetailPage] = useState(1);
   const [dryRunOpen, setDryRunOpen] = useState(false);
   const [dryRunByNode, setDryRunByNode] = useState<Map<string, WorkflowDryRunNodeReport>>();
+  const lastLoadedSeq = useRef(0);
+  const pendingModelNames = useRef<Map<string, string>>(new Map());
+
+  const applyHistoryConfig = (config: WorkflowHistoryConfig) => {
+    const modelNameMap = new Map<string, string>();
+    let extractedSchema: AttributeSchema | undefined;
+    const mappedSteps: WorkflowStep[] = config.steps.map((s, idx) => {
+      const nodeKey = s.node_key || `step_${idx}`;
+      const matchedModelId =
+        (s as unknown as WorkflowStep).model_id ||
+        (s.model_name ? models.find(m => m.name === s.model_name)?.id : undefined) ||
+        null;
+      if (!matchedModelId && s.model_name) modelNameMap.set(nodeKey, s.model_name);
+      if (s.attribute_schema && !s.attribute_templates && !extractedSchema) extractedSchema = s.attribute_schema;
+      return {
+        node_key: nodeKey,
+        title: s.title,
+        operation: s.operation,
+        model_id: matchedModelId,
+        prompt: s.prompt,
+        attribute_prompt: s.attribute_prompt,
+        labels: s.labels ? [...s.labels] : undefined,
+        confidence: s.confidence,
+        expansion: s.expansion,
+        min_crop_long_edge: s.min_crop_long_edge,
+        save_input_boxes: s.save_input_boxes,
+        auto_approve_confidence: s.auto_approve_confidence,
+        attribute_templates: s.attribute_templates ? structuredClone(s.attribute_templates) : undefined,
+        branch_config: s.branch_config ? structuredClone(s.branch_config) : undefined,
+        img_filter_config: s.img_filter_config ? structuredClone(s.img_filter_config) : undefined,
+        box_clean_config: s.box_clean_config ? structuredClone(s.box_clean_config) : undefined,
+        img_transform_config: s.img_transform_config ? structuredClone(s.img_transform_config) : undefined,
+        script_config: s.script_config ? structuredClone(s.script_config) : undefined,
+      };
+    });
+    pendingModelNames.current = modelNameMap;
+    const norm = normalizeGraph(mappedSteps, config.edges ? structuredClone(config.edges) : undefined);
+    setWorkflowName(config.name || '批量处理');
+    setSteps(norm.steps);
+    setEdges(norm.edges);
+    if (config.source_job_id) {
+      setSource(config.source_job_id);
+      setFollowUploads(false);
+    } else if (config.image_kind) {
+      setSource(config.image_kind);
+      setFollowUploads(config.image_kind === 'uploads' ? true : !!config.follow_uploads);
+    }
+    setTemplateAttributes(extractedSchema);
+    setTemplateId(undefined);
+    setDryRunByNode(undefined);
+    setError('');
+    message.success('已载入历史工作流配置，请核对模型与输入范围后启动');
+  };
+
+  useEffect(() => {
+    if (history || !loadedHistory || loadedHistory.seq === lastLoadedSeq.current) return;
+    lastLoadedSeq.current = loadedHistory.seq;
+    applyHistoryConfig(loadedHistory.config);
+  }, [history, loadedHistory]);
+
+  useEffect(() => {
+    if (history || !models.length || !pendingModelNames.current.size) return;
+    setSteps(prev =>
+      prev.map(step => {
+        if (step.model_id || !step.node_key) return step;
+        const wantedName = pendingModelNames.current.get(step.node_key);
+        const found = wantedName ? models.find(m => m.name === wantedName) : undefined;
+        if (found) {
+          pendingModelNames.current.delete(step.node_key);
+          return { ...step, model_id: found.id };
+        }
+        return step;
+      }),
+    );
+  }, [history, models]);
 
   const partialSource = sources.find(job => job.id === source && (job.counts.failed || job.counts.cancelled));
 
@@ -447,6 +528,7 @@ export default function ProjectProcessingWorkflow({
       });
       setTemplates(rows => [...rows.filter(r => r.id !== saved.id), saved]);
       setTemplateId(saved.id);
+      message.success(`已保存工作流模板「${saved.name}」`);
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -684,12 +766,6 @@ export default function ProjectProcessingWorkflow({
         <Card
           title="工作流记录"
           size="small"
-          extra={
-            <Space>
-              <Button disabled={page === 1} onClick={() => setPage(value => value - 1)}>上一页</Button>
-              <Button disabled={runs.length < 10} onClick={() => setPage(value => value + 1)}>下一页</Button>
-            </Space>
-          }
         >
           {!runs.length && <p className="workspace-help">暂无工作流记录</p>}
           <Space orientation="vertical" style={{ width: '100%' }}>
@@ -840,15 +916,15 @@ export default function ProjectProcessingWorkflow({
                     {
                       title: '操作',
                       render: (_, job) => (
-                        <Space wrap>
-                          {!!job.total && <Button type="link" onClick={() => inspect(job.id)}>查看明细</Button>}
+                        <Space size="small" wrap>
+                          {!!job.total && <Button type="link" size="small" onClick={() => inspect(job.id)}>查看明细</Button>}
                           {resultCount(job) > 0 && <Link to={resultLink(job)}>查看结果图片</Link>}
                           {job.operation === 'quality' && resultCount(job) > 0 && (
                             <Link to={`/annotations?project_id=${projectId}&work_job_id=${job.id}`}>标注合格图片</Link>
                           )}
                           {resultCount(job) > 0 && <Link to={resultLink(job).replace('/images?', '/deliver?')}>冻结本步结果</Link>}
                           {resultCount(job) > 0 && !running(job) && !job.follow_uploads && (
-                            <Button type="link" onClick={() => onNavigate('workflow', job.id)}>作为新流程输入</Button>
+                            <Button type="link" size="small" onClick={() => onNavigate('workflow', job.id)}>作为新流程输入</Button>
                           )}
                           {running(job) && (
                             <Popconfirm
@@ -858,11 +934,11 @@ export default function ProjectProcessingWorkflow({
                               okText="取消处理"
                               cancelText="继续处理"
                             >
-                              <Button type="link" danger disabled={busy}>取消处理</Button>
+                              <Button type="link" size="small" danger disabled={busy}>取消处理</Button>
                             </Popconfirm>
                           )}
                           {needsManualRetry(job) && (
-                            <Button type="link" disabled={busy} onClick={() => void act(() => workAction(projectId, job.id, 'retry'))}>
+                            <Button type="link" size="small" disabled={busy} onClick={() => void act(() => workAction(projectId, job.id, 'retry'))}>
                               重试
                             </Button>
                           )}
@@ -874,13 +950,20 @@ export default function ProjectProcessingWorkflow({
               </Card>
             ))}
           </Space>
+          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+            <Space size="small">
+              <Button size="small" disabled={page === 1} onClick={() => setPage(value => value - 1)}>上一页</Button>
+              <Typography.Text type="secondary">第 {page} 页</Typography.Text>
+              <Button size="small" disabled={runs.length < 10} onClick={() => setPage(value => value + 1)}>下一页</Button>
+            </Space>
+          </div>
         </Card>
       )}
 
       {history && openJob && (
-        <Card size="small" title="步骤明细" extra={<Button onClick={() => { setOpenJob(undefined); setDetails(undefined); }}>关闭明细</Button>}>
+        <Card size="small" title="步骤明细" extra={<Button size="small" onClick={() => { setOpenJob(undefined); setDetails(undefined); }}>关闭明细</Button>}>
           {details?.quality_requirement && (
-            <Alert type="info" title="本步图片质量要求" description={details.quality_requirement} style={{ marginBottom: 12 }} />
+            <Alert type="info" showIcon title="本步图片质量要求" description={details.quality_requirement} style={{ marginBottom: 12 }} />
           )}
           <Table
             size="small"
@@ -964,11 +1047,28 @@ export default function ProjectProcessingWorkflow({
           open={visible && !!configRun}
           width={860}
           onCancel={() => setConfigRun(undefined)}
-          footer={<Button onClick={() => setConfigRun(undefined)}>关闭</Button>}
+          footer={
+            <Space>
+              <Button onClick={() => setConfigRun(undefined)}>关闭</Button>
+              {historyConfig && (
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    const cfg = historyConfig;
+                    setConfigRun(undefined);
+                    if (onLoadHistory) onLoadHistory(cfg);
+                    else applyHistoryConfig(cfg);
+                  }}
+                >
+                  载入到新建工作流
+                </Button>
+              )}
+            </Space>
+          }
           styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
           loading={!historyConfig && !configError}
         >
-          {configError ? <Alert type="error" title={configError} /> : historyConfig && <HistoryConfig config={historyConfig} />}
+          {configError ? <Alert type="error" showIcon title={configError} /> : historyConfig && <HistoryConfig config={historyConfig} />}
         </Modal>
       )}
     </Space>

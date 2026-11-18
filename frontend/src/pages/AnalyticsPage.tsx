@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Select, Space, Statistic, Table, Typography } from 'antd';
+import { Alert, Button, Card, Col, DatePicker, Empty, Progress, Row, Select, Space, Statistic, Table, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { getAnalytics } from '../api/analytics';
 import type { Analytics, AnalyticsFilters, EfficiencyUser } from '../api/analytics';
 import { getProjects } from '../api/projects';
@@ -55,15 +56,23 @@ export default function AnalyticsPage() {
     {project&&<ProjectWorkflow project={project} active="review"/>}
     <Card>
       <Space wrap align="end">
-        <Select aria-label="统计项目" allowClear placeholder="全部项目" style={{ minWidth: 240 }} value={projectId}
+        <Select aria-label="统计项目" allowClear placeholder="全部项目" style={{ minWidth: 220, maxWidth: '100%' }} value={projectId}
           onChange={id=>{const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');setParams(next);}} options={projects.map(p => ({ value: p.id, label: p.project_name }))} />
-        <label>开始日期 <Input aria-label="统计开始日期" type="date" style={{height:'var(--ant-control-height, 36px)'}} value={start} onChange={ev => setStart(ev.target.value)} /></label>
-        <label>结束日期 <Input aria-label="统计结束日期" type="date" style={{height:'var(--ant-control-height, 36px)'}} value={end} onChange={ev => setEnd(ev.target.value)} /></label>
+        <Space size={6}>
+          <span>开始日期</span>
+          <DatePicker aria-label="统计开始日期" placeholder="选择开始日期" allowClear value={start ? dayjs(start) : null}
+            onChange={date => setStart(date ? date.format('YYYY-MM-DD') : '')} />
+        </Space>
+        <Space size={6}>
+          <span>结束日期</span>
+          <DatePicker aria-label="统计结束日期" placeholder="选择结束日期" allowClear value={end ? dayjs(end) : null}
+            onChange={date => setEnd(date ? date.format('YYYY-MM-DD') : '')} />
+        </Space>
         <Button type="primary" loading={loading} onClick={apply}>查询统计</Button>
       </Space>
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>日期按浏览器本地时区、包含结束当天；不填为全部时间。当前状态按最新版本创建日期筛选，工作量按事件发生日期筛选。</Typography.Paragraph>
     </Card>
-    {projectError && <Alert type="warning" title={projectError} />}
+    {projectError && <Alert type="warning" showIcon title={projectError} />}
     {error && <Alert type="error" showIcon title={error} />}
     <Alert showIcon type="info" title="流程通过率不等于独立测试集准确率；这里没有独立真值评测。" />
     {!data && !loading && !error && <Empty description="暂无统计" />}
@@ -89,7 +98,7 @@ export default function AnalyticsPage() {
           ['模型自动生成（次）', w.automatic_annotation_events], ['自动审核（次）', w.automatic_review_events],
           ['人工返工（次）', w.rework_events], ['来源未知事件', w.unknown_events],
         ].map(([title, value]) => <Col key={title} xs={12} md={4}><Statistic title={title} value={value} /></Col>)}</Row>
-        {e.timing_status === 'not_collected' && <Alert style={{ marginTop: 16 }} type="warning" title="此范围内活跃时长未采集，无法计算人工效率；旧数据不会按创建时间差估算。" />}
+        {e.timing_status === 'not_collected' && <Alert style={{ marginTop: 16 }} type="warning" showIcon title="此范围内活跃时长未采集，无法计算人工效率；旧数据不会按创建时间差估算。" />}
         <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
           <Col xs={24} md={8}><Statistic title="去重人工活跃时长" value={duration(e.active_seconds)} /></Col>
           <Col xs={24} md={8}><Statistic title="标注活跃时长 / 效率" value={duration(e.annotation_seconds)} suffix={rate(e.annotation_per_hour)} /></Col>

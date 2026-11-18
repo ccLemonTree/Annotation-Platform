@@ -41,6 +41,7 @@ function TestImages({dataset,isolated,targets,refresh,onClose}:{dataset:Dataset;
     return ()=>{active=false;};
   },[dataset.id,imagesUrl,isolated,targets,page,retry,refresh]);
   return <Drawer open title={targets?'测试目标图':isolated?'测试原图':'原图'} onClose={onClose} size={640}
+    styles={{wrapper:{maxWidth:'100vw'}}}
     extra={!isolated&&<Link to={`/projects/${dataset.id}/images`}>查看全部图片</Link>}>
     {error?<Alert type="error" showIcon title={error} action={<Button size="small" onClick={()=>{
       setError('');setRetry(value=>value+1);
@@ -54,8 +55,8 @@ function TestImages({dataset,isolated,targets,refresh,onClose}:{dataset:Dataset;
           </Typography.Text>}
         </Space>)}
       </div>}
-    {total>12&&<Pagination style={{marginTop:16}} current={page} total={total} pageSize={12} showSizeChanger={false}
-      onChange={value=>{setPage(value);setImages(undefined);setError('');}}/>}
+    {total>12&&<div style={{marginTop:16,display:'flex',justifyContent:'flex-end'}}><Pagination current={page} total={total} pageSize={12} showSizeChanger={false}
+      onChange={value=>{setPage(value);setImages(undefined);setError('');}}/></div>}
   </Drawer>;
 }
 
@@ -143,24 +144,45 @@ export default function VectorSearchTestPage({embeddedProject}: {embeddedProject
   }, [embeddedProject, refresh]);
 
   useEffect(() => {
-    let active = true;
+    let active = true, inFlight = false, shouldPoll = true;
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hasActiveWork = (deploys: Model[], progress?: Indexes) =>
+      deploys.some(m => ['queued', 'pulling', 'checking', 'stopping'].includes(m.state)) ||
+      !!(progress?.detection && ((progress.detection.counts.pending ?? 0) > 0 || (progress.detection.counts.running ?? 0) > 0)) ||
+      !!(progress && progress.total > 0 && progress.items.some(it => it.complete < progress.total));
     const poll = async () => {
+      if (!active || inFlight) return;
+      inFlight = true;
+      clearTimeout(timer);
       try {
         const [deploys, progress] = await Promise.all([
-          api.get<Model[]>(root+'/models',{signal:controller.signal}),
-          datasetId ? api.get<Indexes>(datasetUrl+'/indexes'+scope,{signal:controller.signal}) : undefined,
+          api.get<Model[]>(root + '/models', { signal: controller.signal }),
+          datasetId ? api.get<Indexes>(datasetUrl + '/indexes' + scope, { signal: controller.signal }) : undefined,
         ]);
-        if (active) { setModels(deploys.data); setIndexes(progress?.data); }
+        if (active) {
+          setModels(deploys.data);
+          setIndexes(progress?.data);
+          shouldPoll = hasActiveWork(deploys.data, progress?.data);
+        }
       } catch (e) {
-        if (active) setError(previous => previous || validationError(e,'更新模型状态或索引进度失败'));
+        if (active && !controller.signal.aborted) setError(previous => previous || validationError(e, '更新模型状态或索引进度失败'));
       } finally {
-        if (active) timer = setTimeout(poll, 5000);
+        inFlight = false;
+        if (active && shouldPoll && !document.hidden) timer = setTimeout(() => void poll(), 5000);
       }
     };
+    const onVisible = () => {
+      if (!document.hidden && active && shouldPoll) void poll();
+    };
     void poll();
-    return () => { active = false; clearTimeout(timer); controller.abort(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      controller.abort();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [datasetId, datasetUrl, scope, refresh]);
 
   useEffect(() => {
@@ -380,7 +402,7 @@ export default function VectorSearchTestPage({embeddedProject}: {embeddedProject
     ]}/>
     {dataset && imageView && <TestImages key={imageView} dataset={dataset} isolated={isolated} targets={imageView==='targets'}
       refresh={refresh} onClose={()=>setImageView(undefined)}/>}
-    {isolated && dataset && <Drawer open={capture} destroyOnHidden size={1280} title="定时抓图 · 向量检索测试" onClose={()=>{
+    {isolated && dataset && <Drawer open={capture} destroyOnHidden size={1280} styles={{wrapper:{maxWidth:'100vw'}}} title="定时抓图 · 向量检索测试" onClose={()=>{
       setCapture(false);setRefresh(n=>n+1);
     }}>
       <iframe title="向量检索测试抓图" className="smarteye-frame" src={`/smarteye/index.html?project_id=${encodeURIComponent(dataset.id)}&vector_test=1`}/>
