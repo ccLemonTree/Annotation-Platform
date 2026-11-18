@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import StringConstraints
-from sqlalchemy import select, update, func, case, cast, or_, String
+from sqlalchemy import and_, select, update, func, case, cast, or_, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -24,7 +24,7 @@ from config.settings import settings
 from database import get_db_session as get_db
 from models import Asset, Project, User, Annotation, LibraryImage
 from models.image_collection import ImageCollection,ImageCollectionMember
-from services.image_library import register_image, attach_images, get_collection, assign_collection,annotation_label_condition,image_scene_condition
+from services.image_library import register_image, attach_images, get_collection, assign_collection,annotation_label_condition,image_scene_condition,id_in_condition
 from schemas.asset import AssetResponse, AssetUploadResponse
 from schemas.common import PaginatedResponse, PaginationParams
 from schemas.object_attributes import AttributeFilters
@@ -303,25 +303,29 @@ async def asset_neighbors(asset_id: UUID, response:Response,label:str|None=Query
     if review_status:response.headers['X-Annotation-Review-Filter']='1'
     if collection_id:response.headers['X-Asset-Collection-Filter']='1'
     if scene:response.headers['X-Asset-Scene-Filter']='1'
-    ranked = select(Asset.id,
-        func.row_number().over(order_by=ASSET_ORDER).label('position'),
-        func.count().over().label('total'),
-        func.lag(Asset.id, type_=Asset.id.type).over(order_by=ASSET_ORDER).label('previous_id'),
-        func.lead(Asset.id, type_=Asset.id.type).over(order_by=ASSET_ORDER).label('next_id'),
-    ).where(*conditions).subquery()
-    row = (await db.execute(select(ranked.c.position, ranked.c.total, ranked.c.previous_id, ranked.c.next_id)
-        .where(ranked.c.id == asset_id))).mappings().one_or_none()
-    if row is None:
-        if review_status or ai_pending or label or crop_label or collection_id or scene or attributes.attribute_key or work_job_id or image_kind!='all':
-            anchor_created_at=select(Asset.created_at).where(Asset.id==asset.id).correlate(None).scalar_subquery()
-            ahead=(Asset.created_at>anchor_created_at)|((Asset.created_at==anchor_created_at)&(Asset.id>asset.id))
-            behind=(Asset.created_at<anchor_created_at)|((Asset.created_at==anchor_created_at)&(Asset.id<asset.id))
-            total=await db.scalar(select(func.count()).select_from(Asset).where(*conditions))
-            previous=await db.scalar(select(Asset.id).where(*conditions,ahead).order_by(Asset.created_at.asc(),Asset.id.asc()).limit(1))
-            following=await db.scalar(select(Asset.id).where(*conditions,behind).order_by(*ASSET_ORDER).limit(1))
-            return dict(position=0,total=total,previous_id=previous,next_id=following,matched=False)
+    anchor_created = asset.created_at if asset.created_at is not None else select(Asset.created_at).where(Asset.id == asset.id).correlate(None).scalar_subquery()
+    ahead = or_(Asset.created_at > anchor_created, and_(Asset.created_at == anchor_created, Asset.id > asset.id))
+    behind = or_(Asset.created_at < anchor_created, and_(Asset.created_at == anchor_created, Asset.id < asset.id))
+    is_matched = (await db.scalar(select(Asset.id).where(*conditions, Asset.id == asset.id).limit(1))) is not None
+    has_filter = bool(review_status or ai_pending or label or crop_label or collection_id or scene or attributes.attribute_key or work_job_id or image_kind != 'all')
+    if not is_matched:
+        if has_filter:
+            total = await db.scalar(select(func.count(Asset.id)).where(*conditions)) or 0
+            previous = await db.scalar(select(Asset.id).where(*conditions, ahead).order_by(Asset.created_at.asc(), Asset.id.asc()).limit(1)) if total else None
+            following = await db.scalar(select(Asset.id).where(*conditions, behind).order_by(*ASSET_ORDER).limit(1)) if total else None
+            return dict(position=0, total=total, previous_id=previous, next_id=following, matched=False)
         raise HTTPException(404, '资产不存在')
-    return {**dict(row),**({'matched':True} if review_status or ai_pending or crop_label or collection_id or scene or attributes.attribute_key or work_job_id or image_kind!='all' else {})}
+    total = await db.scalar(select(func.count(Asset.id)).where(*conditions)) or 0
+    previous = await db.scalar(select(Asset.id).where(*conditions, ahead).order_by(Asset.created_at.asc(), Asset.id.asc()).limit(1)) if total > 1 else None
+    following = await db.scalar(select(Asset.id).where(*conditions, behind).order_by(*ASSET_ORDER).limit(1)) if total > 1 else None
+    if previous is None:
+        position = 1
+    elif following is None:
+        position = total
+    else:
+        position = (await db.scalar(select(func.count(Asset.id)).where(*conditions, ahead)) or 0) + 1
+    include_matched = bool(review_status or ai_pending or crop_label or collection_id or scene or attributes.attribute_key or work_job_id or image_kind != 'all')
+    return {**dict(position=position, total=total, previous_id=previous, next_id=following), **({'matched': True} if include_matched else {})}
 
 async def original_source(db, asset, tenant_id):
     if asset.source_type!='model_crop':return asset,None
@@ -373,15 +377,15 @@ async def asset_content(asset_id: UUID, preview: bool = False, tenant_id: int = 
     await db.rollback()
     return response
 
-def image_preview(data):
+def image_preview(data, max_edge=1280):
     with Image.open(data) as picture:
-        picture.thumbnail((1280,1280))
+        picture.thumbnail((max_edge, max_edge))
         output=BytesIO()
         picture.convert('RGB').save(output,'JPEG',quality=82)
         return output.getvalue()
 
 
-async def image_content(asset,preview=False):
+async def image_content(asset,preview=False,*,max_edge=1280):
     storage = get_storage()
     media_type = IMAGE_TYPES.get(asset.format, ("", "application/octet-stream"))[1]
     try:
@@ -396,7 +400,7 @@ async def image_content(asset,preview=False):
     if preview:
         try:
             with data:
-                return Response(await run_in_threadpool(image_preview,data),media_type='image/jpeg')
+                return Response(await run_in_threadpool(image_preview,data,max_edge),media_type='image/jpeg')
         except (OSError,ValueError,Image.DecompressionBombError) as exc:
             raise HTTPException(422,'图片预览生成失败，可加载原尺寸查看') from exc
     return StreamingResponse(iter(lambda: data.read(65536), b""), media_type=media_type,

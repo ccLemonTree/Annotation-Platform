@@ -108,10 +108,12 @@ async def export_project_data(
             raise HTTPException(400, '训练导出必须包含标注')
         selected = [label.strip() for label in labels.split(',') if label.strip()] if labels else None
         if format == 'coco' and not package:
-            rows, _ = await export_rows(db, project, approved_only)
+            rows, _ = await export_rows(db, project, approved_only, lock=False)
             names = category_labels(project, rows, selected)
             document = coco_document(rows, names, {str(a.id): a.original_name for a,_ in rows})
-            return StreamingResponse(io.BytesIO(json.dumps(document,ensure_ascii=False).encode()), media_type='application/json')
+            payload = json.dumps(document, ensure_ascii=False).encode()
+            await db.rollback()
+            return StreamingResponse(io.BytesIO(payload), media_type='application/json')
         stream, manifest = await training_package(db, project, format, selected, approved_only)
         db.add(AnnotationEvent(project_id=project.id, user_id=current_user.id, action='export', detail=manifest))
         await db.commit()
@@ -139,9 +141,13 @@ async def export_project_data(
 
     # 根据格式导出
     if format == "json":
-        return export_as_json(project, assets, annotations_dict)
+        resp = export_as_json(project, assets, annotations_dict)
+        await db.rollback()
+        return resp
     elif format == "csv":
-        return export_as_csv(project, assets, annotations_dict)
+        resp = export_as_csv(project, assets, annotations_dict)
+        await db.rollback()
+        return resp
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -279,6 +285,7 @@ async def export_single_annotation(
     }
 
     json_str = json.dumps(data, ensure_ascii=False, indent=2)
+    await db.rollback()
     return StreamingResponse(
         io.BytesIO(json_str.encode('utf-8')),
         media_type="application/json",
@@ -596,7 +603,9 @@ async def download_project_package(project_id: UUID, request: SnapshotRequest, d
     stream, _ = await training_package(db, project, request.format, request.labels, request.approved_only,
         request.splits, request.policy, request.selection.model_dump() if request.selection else None,
         scope=scope,source=request.source(),preview_token=request.preview_token)
-    return package_response(stream, f'project_{project.id}_{request.format}.zip')
+    pid = project.id
+    await db.rollback()
+    return package_response(stream, f'project_{pid}_{request.format}.zip')
 
 
 async def save_snapshot(db,user,project,format,stream,manifest,version_label='',*,job=None):
@@ -716,7 +725,10 @@ async def snapshot_archive(row):
 
 @router.get('/snapshots/{snapshot_id}/download')
 async def download_snapshot(snapshot_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    return await snapshot_archive(await snapshot_for_download(db, snapshot_id, user))
+    row = await snapshot_for_download(db, snapshot_id, user)
+    resp = await snapshot_archive(row)
+    await db.rollback()
+    return resp
 
 
 @router.post('/snapshots/{snapshot_id}/browser-download', status_code=204)
@@ -744,7 +756,10 @@ async def browser_snapshot_download(snapshot_id: UUID, request: Request, db: Asy
     user = await db.get(User, ticket['download_user_id'])
     if user is None or not user.is_active or user.role != 'admin' or user.tenant_id != ticket.get('tenant_id'):
         raise HTTPException(403, '当前账号无权下载此冻结版本')
-    return await snapshot_archive(await snapshot_for_download(db, snapshot_id, user))
+    row = await snapshot_for_download(db, snapshot_id, user)
+    resp = await snapshot_archive(row)
+    await db.rollback()
+    return resp
 
 
 @router.delete('/snapshots/{snapshot_id}', status_code=204)
@@ -760,12 +775,17 @@ async def delete_snapshot(snapshot_id: UUID, db: AsyncSession = Depends(get_db),
     if training or validation:
         raise HTTPException(409, '冻结版本已被训练任务或验证集引用，请先删除相关任务或验证集')
     key = row.blob_path
+    manifest_path = row.manifest_path
     db.add(AnnotationEvent(project_id=row.project_id, user_id=user.id, action='delete_export',
         detail={'snapshot_id':str(snapshot_id), 'content_hash':row.content_hash}))
     await db.delete(row)
     await db.commit()
     # Remove the reference first so failed file cleanup never breaks a visible snapshot.
-    try:
-        await get_storage().delete_file(key)
-    except Exception:
-        logging.getLogger(__name__).exception('Deleted snapshot %s; archive cleanup failed', snapshot_id)
+    storage = get_storage()
+    for path in (key, manifest_path):
+        if not path:
+            continue
+        try:
+            await storage.delete_file(path)
+        except Exception:
+            logging.getLogger(__name__).exception('Deleted snapshot %s; file cleanup failed for %s', snapshot_id, path)

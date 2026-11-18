@@ -5,6 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from database import get_db_session as get_db
 from api.deps import get_current_user, get_current_superuser
 from models import User
@@ -18,7 +19,7 @@ router = APIRouter()
 
 
 async def page_result(db, query, model, pagination, serialize):
-    total = await db.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
+    total = await db.scalar(select(func.count()).select_from(query.with_only_columns(model.id).order_by(None).subquery()))
     rows = (await db.scalars(query.order_by(model.created_at.desc(), model.id)
         .offset(pagination.skip).limit(pagination.limit))).all()
     return dict(items=[serialize(row) for row in rows], total=total,
@@ -34,7 +35,10 @@ async def create_set(request: ValidationSetCreate, db: AsyncSession = Depends(ge
 async def list_sets(project_id: UUID | None = None, pagination: PaginationParams = Depends(),
                     task_type: Literal['detection','caption','embedding']='detection',
                     db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    query = select(ValidationSet).where(ValidationSet.tenant_id == user.tenant_id,or_(ValidationSet.source['kind'].as_string().is_(None),ValidationSet.source['kind'].as_string()!='upload_preview'))
+    query = select(ValidationSet).options(defer(ValidationSet.samples)).where(
+        ValidationSet.tenant_id == user.tenant_id,
+        or_(ValidationSet.source['kind'].as_string().is_(None), ValidationSet.source['kind'].as_string() != 'upload_preview'),
+    )
     if project_id: query = query.where(ValidationSet.project_id == project_id)
     query=query.where(validation.multimodal.kind_filter(ValidationSet.source,task_type))
     return await page_result(db, query, ValidationSet, pagination, validation.set_dict)
@@ -153,7 +157,9 @@ async def list_items(run_id: UUID,
 @router.get('/runs/{run_id}/report')
 async def report(run_id: UUID, view: ValidationView = Depends(), db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     run = await validation.run_scope(db, run_id, user.tenant_id)
-    dataset = await validation.set_scope(db, run.set_id, user.tenant_id)
+    dataset = await validation.set_scope(
+        db, run.set_id, user.tenant_id, with_samples=(validation.multimodal.task_type(run) == 'embedding')
+    )
     items = (await db.scalars(select(ValidationItem).where(ValidationItem.run_id == run_id)
         .order_by(ValidationItem.created_at, ValidationItem.id))).all()
     metrics = await validation.calculate_metrics(db, run, items=items)
@@ -186,8 +192,11 @@ async def item_image(run_id: UUID, item_id: UUID, db: AsyncSession = Depends(get
     run = await validation.run_scope(db, run_id, user.tenant_id)
     item = await db.scalar(select(ValidationItem).where(ValidationItem.id == item_id, ValidationItem.run_id == run_id))
     if item is None: raise HTTPException(404, '验证图片不存在')
-    dataset = await validation.set_scope(db, run.set_id, user.tenant_id)
-    sample = next((sample for sample in dataset.samples if sample['asset_id'] == str(item.asset_id)), None)
+    sample = (item.evaluation or {}).get('_sample')
+    if sample is None:
+        dataset = await validation.set_scope(db, run.set_id, user.tenant_id, with_samples=True)
+        sample = next((sample for sample in dataset.samples if sample['asset_id'] == str(item.asset_id)), None)
     if sample is None: raise HTTPException(404, '冻结图片不存在')
     content, media_type = await validation.read_sample(sample)
+    await db.rollback()
     return Response(content, media_type=media_type, headers={'Cache-Control': 'private, no-store'})

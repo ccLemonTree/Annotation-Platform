@@ -1,10 +1,33 @@
 """Catalog originals and attach project-specific annotation references."""
+from itertools import batched
 from uuid import uuid4
 from copy import deepcopy
 from fastapi import HTTPException
-from sqlalchemy import select, update, func, or_, cast
+from sqlalchemy import any_, false, literal, select, update, func, or_, cast
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from models import LibraryImage, Asset, Project, ImageCollection, ImageCollectionMember, Annotation
+
+
+def id_in_condition(db, column, ids):
+    items = list(ids)
+    if not items:
+        return false()
+    if db.get_bind().dialect.name == 'postgresql':
+        return column == any_(literal(items, type_=ARRAY(column.type)))
+    if len(items) <= 500:
+        return column.in_(items)
+    return or_(*(column.in_(list(batch)) for batch in batched(items, 500)))
+
+
+def iter_id_conditions(db, column, ids, chunk_size=500):
+    items = list(ids)
+    if not items:
+        return ()
+    if db.get_bind().dialect.name == 'postgresql':
+        return (column == any_(literal(items, type_=ARRAY(column.type))),)
+    return tuple(column.in_(list(batch)) for batch in batched(items, chunk_size))
 
 IMAGE_FIELDS = ('blob_path','content_hash','original_name','file_size','width','height','format',
     'source_type','source_record_id','capture_time','device_info','location','quality_score','quality_metrics')
@@ -189,9 +212,13 @@ async def register_image(db, tenant_id, values, batch_id=None):
 
 async def attach_images(db, project_id, tenant_id, image_ids, *, image_kind='originals', source_project_id=None):
     ids=sorted(set(image_ids))
+    if not ids:
+        return [],[]
     # Lock originals first so a catalog delete cannot race with attachment.
-    images=(await db.scalars(select(LibraryImage).where(LibraryImage.id.in_(ids),
-        LibraryImage.tenant_id==tenant_id,LibraryImage.source_type!='model_crop').order_by(LibraryImage.id).with_for_update())).all()
+    images=[]
+    for cond in iter_id_conditions(db, LibraryImage.id, ids):
+        images.extend((await db.scalars(select(LibraryImage).where(cond,
+            LibraryImage.tenant_id==tenant_id,LibraryImage.source_type!='model_crop').order_by(LibraryImage.id).with_for_update())).all())
     if len(images)!=len(ids):
         raise HTTPException(404,'部分图片不存在')
     project=await db.scalar(select(Project).where(Project.id==project_id,Project.tenant_id==tenant_id)
@@ -200,28 +227,53 @@ async def attach_images(db, project_id, tenant_id, image_ids, *, image_kind='ori
         raise HTTPException(404,'项目不存在')
     crop_ids=set()
     if source_project_id is not None:
-        crop_ids=set((await db.scalars(select(Asset.image_id).join(Project)
-            .where(Asset.project_id==source_project_id,Project.tenant_id==tenant_id,
-                Asset.image_id.in_(ids),uploaded_crop()))).all())
+        for cond in iter_id_conditions(db, Asset.image_id, ids):
+            crop_ids.update((await db.scalars(select(Asset.image_id).join(Project)
+                .where(Asset.project_id==source_project_id,Project.tenant_id==tenant_id,
+                    cond,uploaded_crop()))).all())
+    hashes=sorted({image.content_hash for image in images})
+    existing={}
+    for cond in iter_id_conditions(db, Asset.content_hash, hashes):
+        for asset in (await db.scalars(select(Asset).where(Asset.project_id==project_id,cond))).all():
+            existing[asset.content_hash]=asset
+    is_pg=db.get_bind().dialect.name=='postgresql'
+    upsert=pg_insert if is_pg else sqlite_insert
+    to_insert=[]
+    pending_hashes=[]
+    seen_new=set()
+    for image in images:
+        if image.content_hash in existing or image.content_hash in seen_new:
+            continue
+        seen_new.add(image.content_hash)
+        values={name:getattr(image,name) for name in IMAGE_FIELDS}
+        if image_kind=='crops' or image.id in crop_ids:
+            values.update(source_type='model_crop',device_info={**(image.device_info or {}),'uploaded_crop':True})
+        to_insert.append(dict(id=uuid4(),project_id=project_id,image_id=image.id,annotation_status='pending',**values))
+        pending_hashes.append(image.content_hash)
+    inserted_ids=set()
+    for batch in batched(to_insert, 500):
+        stmt=upsert(Asset).values(list(batch)).on_conflict_do_nothing(index_elements=['project_id','content_hash']).returning(Asset.id)
+        inserted_ids.update((await db.scalars(stmt)).all())
+    if pending_hashes:
+        for cond in iter_id_conditions(db, Asset.content_hash, pending_hashes):
+            for asset in (await db.scalars(select(Asset).where(Asset.project_id==project_id,cond))).all():
+                existing[asset.content_hash]=asset
     created=[]
     result=[]
+    seen_created=set()
     for image in images:
-        asset=await db.scalar(select(Asset).where(Asset.project_id==project_id,Asset.content_hash==image.content_hash))
-        if asset is None:
-            values={name:getattr(image,name) for name in IMAGE_FIELDS}
-            if image_kind=='crops' or image.id in crop_ids:
-                values.update(source_type='model_crop',device_info={**(image.device_info or {}),'uploaded_crop':True})
-            asset=Asset(id=uuid4(),project_id=project_id,image_id=image.id,
-                annotation_status='pending',**values)
-            db.add(asset)
-            await db.flush()
+        asset=existing[image.content_hash]
+        if asset.id in inserted_ids and asset.id not in seen_created:
+            seen_created.add(asset.id)
             created.append(asset)
-        elif asset.image_id is None and asset.source_type!='model_crop':
+        elif asset.id not in inserted_ids and asset.image_id is None and asset.source_type!='model_crop':
             asset.image_id=image.id
         result.append(asset)
     if created:
         await db.execute(update(Project).where(Project.id==project_id).values(total_assets=Project.total_assets+len(created)))
+    await db.flush()
     return result,created
+
 async def get_collection(db,tenant_id,name):
     group=await db.scalar(select(ImageCollection).where(ImageCollection.tenant_id==tenant_id,ImageCollection.name==name))
     if group is None:
@@ -244,21 +296,29 @@ async def assign_collection(db,tenant_id,image_ids,name):
     # Keep membership and settings serialized without blocking upload receipt foreign keys.
     group=await db.scalar(select(ImageCollection).where(ImageCollection.id==group.id).with_for_update(key_share=True))
     if group is None:raise HTTPException(404,'图片集不存在')
-    images=(await db.scalars(select(LibraryImage.id).where(LibraryImage.tenant_id==tenant_id,
-        LibraryImage.id.in_(ids),LibraryImage.source_type!='model_crop').order_by(LibraryImage.id).with_for_update())).all()
+    if not ids:
+        return group,0
+    images=[]
+    for cond in iter_id_conditions(db, LibraryImage.id, ids):
+        images.extend((await db.scalars(select(LibraryImage).where(LibraryImage.tenant_id==tenant_id,
+            cond,LibraryImage.source_type!='model_crop').order_by(LibraryImage.id).with_for_update())).all())
     if len(images)!=len(ids):
         raise HTTPException(404,'部分图片不存在')
     from services.image_ingest import get_config
     config,_=await get_config(db,tenant_id,group.id)
+    upsert=pg_insert if db.get_bind().dialect.name=='postgresql' else sqlite_insert
     added=0
-    for image_id in images:
-        if await db.get(ImageCollectionMember,(group.id,image_id)) is None:
-            db.add(ImageCollectionMember(collection_id=group.id,image_id=image_id))
-            added+=1
-        image=await db.get(LibraryImage,image_id)
-        if config.classification_enabled and image.scene_status=='unclassified' and (image.scene_metadata or {}).get('basis')!='device_name':
-            image.scene_status='pending'
-            image.scene_config={'collection_id':str(group.id),'revision':group.ingest_revision,'config':config.model_dump()}
+    member_rows=[{'collection_id':group.id,'image_id':image.id} for image in images]
+    for batch in batched(member_rows, 1000):
+        stmt=upsert(ImageCollectionMember).values(list(batch)).on_conflict_do_nothing(
+            index_elements=['collection_id','image_id']).returning(ImageCollectionMember.image_id)
+        added+=len((await db.scalars(stmt)).all())
+    if config.classification_enabled:
+        scene_cfg={'collection_id':str(group.id),'revision':group.ingest_revision,'config':config.model_dump()}
+        for image in images:
+            if image.scene_status=='unclassified' and (image.scene_metadata or {}).get('basis')!='device_name':
+                image.scene_status='pending'
+                image.scene_config=scene_cfg
     await db.flush()
     return group,added
 

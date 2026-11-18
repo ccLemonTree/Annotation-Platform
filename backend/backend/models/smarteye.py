@@ -92,7 +92,6 @@ class SmarteeyeDownload(Base):
     # 索引
     __table_args__ = (
         Index('idx_smarteye_download_task', 'task_id'),
-        Index('idx_smarteye_download_blob', 'blob_path'),  # 零拷贝查询关键
         Index('idx_smarteye_download_hash', 'content_hash'),
         Index('idx_smarteye_download_platform', 'platform'),
         Index('idx_smarteye_download_created', 'created_at'),

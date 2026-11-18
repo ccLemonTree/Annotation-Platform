@@ -2,13 +2,29 @@
 项目管理API路由
 项目的增删改查和统计
 """
+import logging
+import shutil
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, func, or_
+from sqlalchemy import inspect, select, update, delete, func, or_
+from starlette.concurrency import run_in_threadpool
 from typing import List, Optional
 from uuid import UUID
 from typing import Literal
-from models import Annotation, Asset, AutomationJob, ExportSnapshot, MatchQuery, ProjectWorkJob, TrainingTask, ValidationSet
+from models import (
+    Annotation,
+    Asset,
+    AutomationJob,
+    ExportSnapshot,
+    ExportSnapshotJob,
+    ImageUpload,
+    MatchQuery,
+    ProjectWorkItem,
+    ProjectWorkJob,
+    TrainingTask,
+    ValidationRun,
+    ValidationSet,
+)
 from services.annotation_scope import eligible_assets
 
 from database import get_db_session as get_db
@@ -17,14 +33,23 @@ from models.project import ProjectStatus, TaskType
 from schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse, ProjectStats, ProjectLabelRemovalPreview, ProjectLabelRemoval
 from schemas.common import PaginatedResponse, PaginationParams
 from api.deps import get_current_user, get_tenant_id, get_current_superuser
-from services.project_labels import sync_project_labels, label_removal_state, remove_project_label, map_yolo_classes, yolo_mapping_batches
+from services.project_labels import (
+    sync_project_labels,
+    label_removal_state,
+    remove_project_label,
+    map_yolo_classes,
+    yolo_mapping_batches,
+    project_used_labels,
+)
 from services.project_access import project_condition
+from services.storage import LocalStorage, get_storage
 from api.asset_routes import scoped_project
 from models import ProjectMember, ModelService
 from schemas.project import ProjectAssignments, ProjectLabelsAdd, YoloClassMapping
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post('/{project_id}/labels',response_model=ProjectResponse)
@@ -196,6 +221,28 @@ async def list_projects(
     )
 
 
+@router.get("/{project_id}/used-labels")
+async def get_project_used_labels(
+    project_id: UUID,
+    tenant_id: int = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取项目最新标注中已使用的去重标签列表"""
+    project = await db.scalar(select(Project).where(Project.id == project_id, project_condition(db)))
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="项目不存在",
+        )
+    if project.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权访问此项目",
+        )
+    return {"labels": await project_used_labels(db, project)}
+
+
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(
     project_id: UUID,
@@ -298,8 +345,10 @@ async def delete_project(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """删除项目"""
-    project = await db.scalar(select(Project).where(Project.id==project_id,project_condition(db)))
+    """删除项目并清理项目衍生裁剪图与快照文件"""
+    project = await db.scalar(
+        select(Project).where(Project.id == project_id, project_condition(db)).with_for_update()
+    )
 
     if not project:
         raise HTTPException(
@@ -314,8 +363,96 @@ async def delete_project(
             detail="无权访问此项目"
         )
 
+    conn = await db.connection()
+    tables = await conn.run_sync(lambda sync_conn: set(inspect(sync_conn).get_table_names()))
+
+    active_checks = []
+    if {"project_work_jobs", "project_work_items"} <= tables:
+        active_checks.append(
+            select(ProjectWorkItem.id)
+            .join(ProjectWorkJob, ProjectWorkJob.id == ProjectWorkItem.job_id)
+            .where(
+                ProjectWorkJob.project_id == project_id,
+                ProjectWorkJob.options["workflow_cancelled"].as_boolean().is_not(True),
+                ProjectWorkJob.options["queue_deleted"].as_boolean().is_not(True),
+                ProjectWorkItem.status.in_(("pending", "running", "retry_wait")),
+            )
+            .exists()
+        )
+    if "automation_jobs" in tables:
+        active_checks.append(
+            select(AutomationJob.id)
+            .where(AutomationJob.project_id == project_id, AutomationJob.status.in_(("pending", "running")))
+            .exists()
+        )
+    if "export_snapshot_jobs" in tables:
+        active_checks.append(
+            select(ExportSnapshotJob.id)
+            .where(
+                ExportSnapshotJob.project_id == project_id,
+                ExportSnapshotJob.status.in_(("queued", "pending", "running", "saving")),
+            )
+            .exists()
+        )
+    if "image_uploads" in tables:
+        active_checks.append(
+            select(ImageUpload.id)
+            .where(
+                ImageUpload.project_id == project_id,
+                ImageUpload.status.in_(("uploading", "queued", "pending", "processing", "running")),
+            )
+            .exists()
+        )
+    if {"validation_sets", "validation_runs"} <= tables:
+        active_checks.append(
+            select(ValidationRun.id)
+            .join(ValidationSet, ValidationSet.id == ValidationRun.set_id)
+            .where(ValidationSet.project_id == project_id, ValidationRun.status.in_(("pending", "running")))
+            .exists()
+        )
+    if "training_tasks" in tables:
+        active_checks.append(
+            select(TrainingTask.id)
+            .where(TrainingTask.project_id == project_id, TrainingTask.status.in_(("pending", "running")))
+            .exists()
+        )
+    if active_checks and await db.scalar(select(or_(*active_checks))):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="项目仍有等待或运行中的任务，请先取消或等待完成后再删除",
+        )
+
+    snapshot_files: list[str] = []
+    if "export_snapshots" in tables:
+        rows = (
+            await db.execute(
+                select(ExportSnapshot.blob_path, ExportSnapshot.manifest_path).where(
+                    ExportSnapshot.project_id == project_id
+                )
+            )
+        ).all()
+        for blob_path, manifest_path in rows:
+            if blob_path:
+                snapshot_files.append(blob_path)
+            if manifest_path:
+                snapshot_files.append(manifest_path)
+
     await db.delete(project)
     await db.commit()
+
+    storage = get_storage()
+    for file_path in snapshot_files:
+        try:
+            await storage.delete_file(file_path)
+        except Exception:
+            logger.warning("Failed to remove project snapshot file %s", file_path, exc_info=True)
+    if isinstance(storage, LocalStorage):
+        try:
+            crop_dir = storage.resolve_path(f"project-crops/{project_id}")
+            if crop_dir.exists():
+                await run_in_threadpool(shutil.rmtree, crop_dir, True)
+        except Exception:
+            logger.warning("Failed to remove project crop directory for %s", project_id, exc_info=True)
 
     return None
 

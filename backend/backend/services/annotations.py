@@ -21,6 +21,12 @@ def overall_review(statuses):
     values=set(statuses)
     return 'pending' if 'pending' in values else 'rejected' if 'rejected' in values else 'approved'
 
+
+def _lock_project_shared(query, db):
+    if db.get_bind().dialect.name == 'postgresql':
+        return query.with_for_update(key_share=True)
+    return query.with_for_update()
+
 async def register_detection_labels(db, project, boxes):
     schema=project.label_schema or {}
     existing=schema.get('labels') or []
@@ -82,8 +88,9 @@ async def sync_state(db, asset):
 
 async def save_annotation(db, asset, data, base_version, user_id, source='manual', workflow_attribute_schema=None, kind=None,
                           allow_crop_source=False):
-    project = await db.scalar(select(Project).where(Project.id == asset.project_id,project_condition(db))
-        .with_for_update().execution_options(populate_existing=True))
+    project = await db.scalar(_lock_project_shared(
+        select(Project).where(Project.id == asset.project_id, project_condition(db)), db
+    ).execution_options(populate_existing=True))
     if project is None:raise HTTPException(404,'项目不存在或已撤销分配')
     if not (allow_crop_source and source=='auto' and kind=='detection'):
         require_annotation_asset(project,asset)
@@ -166,7 +173,8 @@ async def save_annotation(db, asset, data, base_version, user_id, source='manual
 
 async def review(db, annotation, asset, approved, comment, user_id, source='manual', kind=None):
     from models.automation import AutomationItem
-    project=await db.scalar(select(Project).where(Project.id==asset.project_id,project_condition(db)).with_for_update())
+    project=await db.scalar(_lock_project_shared(
+        select(Project).where(Project.id==asset.project_id,project_condition(db)), db))
     if project is None:raise HTTPException(404,'项目不存在或已撤销分配')
     if kind is not None and kind!=('detection' if project.task_type=='detection' else 'image'):
         raise HTTPException(400,'标注内容与项目的标注格式不匹配')

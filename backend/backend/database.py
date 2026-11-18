@@ -2,6 +2,7 @@
 数据库连接管理
 """
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from contextlib import asynccontextmanager
@@ -10,15 +11,35 @@ from typing import AsyncGenerator
 from config.settings import settings
 from models import Base
 
+PG_SERVER_SETTINGS = {
+    "idle_in_transaction_session_timeout": "60000",
+    "lock_timeout": "15000",
+}
+
+
+def build_engine_options(database_url: str) -> dict:
+    """根据数据库方言构造连接池与服务端超时保护参数"""
+    url = make_url(database_url)
+    options: dict = {
+        "echo": False,  # SQL绑定参数可能包含密码哈希及个人资料
+        "pool_pre_ping": True,  # 自动检测连接健康
+        "pool_recycle": 3600,   # 1小时回收连接
+    }
+    if url.get_backend_name() == "postgresql":
+        options.update(
+            pool_size=32,
+            max_overflow=32,
+            connect_args={"server_settings": dict(PG_SERVER_SETTINGS)},
+        )
+    elif url.get_backend_name() != "sqlite":
+        options.update(pool_size=32, max_overflow=32)
+    return options
+
 
 # 创建异步引擎
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=False,  # SQL绑定参数可能包含密码哈希及个人资料
-    pool_size=20,
-    max_overflow=10,
-    pool_pre_ping=True,  # 自动检测连接健康
-    pool_recycle=3600,   # 1小时回收连接
+    **build_engine_options(settings.DATABASE_URL),
 )
 
 # 创建会话工厂

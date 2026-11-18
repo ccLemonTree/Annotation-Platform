@@ -1,7 +1,7 @@
 """Project preprocessing and query-specific matching labels."""
 import uuid
 from datetime import datetime
-from sqlalchemy import ForeignKey, String, Integer, DateTime, func, UniqueConstraint, Index, Boolean, text
+from sqlalchemy import DDL, ForeignKey, String, Integer, DateTime, event, func, UniqueConstraint, Index, Boolean, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
@@ -59,3 +59,11 @@ class MatchQuery(Base):
     @classmethod
     def is_retrieval_query(cls):
         return cls.query['embedding_source'].as_string().is_(None)
+
+
+for _table, _ddl in (
+    (ProjectWorkJob.__table__, "CREATE INDEX IF NOT EXISTS ix_project_work_jobs_workflow ON project_work_jobs (project_id, (options->>'workflow_id'))"),
+    (ProjectWorkJob.__table__, "CREATE INDEX IF NOT EXISTS ix_project_work_jobs_parent ON project_work_jobs (project_id, (options->>'parent_job_id'))"),
+    (ProjectWorkItem.__table__, "CREATE INDEX IF NOT EXISTS ix_project_work_retry_wait ON project_work_items (((result->>'retry_at')::bigint), job_id, id) WHERE status = 'retry_wait'"),
+):
+    event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))

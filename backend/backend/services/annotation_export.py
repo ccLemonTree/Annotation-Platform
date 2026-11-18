@@ -6,6 +6,7 @@ import tempfile
 import zipfile
 import csv
 from io import StringIO
+from types import SimpleNamespace
 from uuid import UUID
 from pathlib import PurePosixPath
 from fastapi import HTTPException
@@ -13,9 +14,20 @@ from sqlalchemy import cast, func, or_, select, true
 from starlette.concurrency import run_in_threadpool
 from models import Asset, Annotation
 from models.project_work import MatchQuery
+from services.image_library import iter_id_conditions
 from services.storage import get_storage
 from services.annotation_scope import eligible_assets
 from services.swift_export import ATTRIBUTE_SOURCES,dataset,sample_texts
+
+
+def _ann_status_for_image(review_status, review_by_kind):
+    return (review_by_kind or {}).get('image', review_status)
+
+
+def _compute_preview_token(payload) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 def exportable_match(hit,approved_only):
@@ -85,21 +97,63 @@ async def training_package(db,project,approved_only=True,dataset_format='portabl
         scope=(*scope,Asset.id.in_(select(anchor).where(*negative_scope)))
     if dataset_format!='portable' and sample_source=='matches' and project.task_type!='vector':
         raise HTTPException(400,'检索匹配判定数据仅适用于向量项目')
+    lightweight_preview = preview and not with_negatives and attribute_filters is None and not single
     if attribute_filters is not None:
         from services.object_attributes import attribute_query
         rows=(await db.execute(attribute_query(project,**attribute_filters).where(Annotation.id.is_not(None),*scope))).all()
         rows=[(asset,ann) for asset,ann in rows if 'attributes' in ann.annotation_data and ann.status_for('image')!='rejected']
+    elif lightweight_preview:
+        rows = []
+        stream = await db.stream(
+            select(
+                Asset.id,
+                Asset.content_hash,
+                Annotation.version,
+                Annotation.review_status,
+                Annotation.review_by_kind,
+                Annotation.annotation_data,
+            )
+            .join(Annotation, Annotation.asset_id == Asset.id)
+            .where(Annotation.project_id == project.id, (Annotation.is_latest == true()), eligible_assets(project), *scope)
+            .execution_options(yield_per=2000)
+        )
+        async for a_id, a_hash, ann_ver, rev_st, rev_by_kind, ann_data in stream:
+            if ann_data.get('description') or ann_data.get('labels') or ann_data.get('attributes'):
+                stub_asset = SimpleNamespace(id=a_id, content_hash=a_hash)
+                stub_ann = SimpleNamespace(
+                    version=ann_ver,
+                    review_status=rev_st,
+                    review_by_kind=rev_by_kind,
+                    annotation_data=ann_data,
+                    status_for=lambda k, rs=rev_st, rbk=rev_by_kind: (rbk or {}).get(k, rs),
+                )
+                rows.append((stub_asset, stub_ann))
     else:
-        rows=(await db.execute(select(Asset,Annotation).join(Annotation,Annotation.asset_id==Asset.id).where(
-            Annotation.project_id==project.id,(Annotation.is_latest == true()),eligible_assets(project),*scope))).all()
-        rows=[(asset,ann) for asset,ann in rows if ann.annotation_data.get('description') or ann.annotation_data.get('labels') or ann.annotation_data.get('attributes')]
+        rows = []
+        stream = await db.stream(
+            select(Asset, Annotation)
+            .join(Annotation, Annotation.asset_id == Asset.id)
+            .where(Annotation.project_id == project.id, (Annotation.is_latest == true()), eligible_assets(project), *scope)
+            .execution_options(yield_per=2000)
+        )
+        async for asset, ann in stream:
+            if ann.annotation_data.get('description') or ann.annotation_data.get('labels') or ann.annotation_data.get('attributes'):
+                rows.append((asset, ann))
     allowed=('approved',) if approved_only else ('approved','pending')
     rows=[(asset,ann) for asset,ann in rows if not ann.annotation_data.get('skipped') and ann.status_for('image') in allowed]
     if dataset_format!='portable' and not single:
         rows=[(asset,ann) for asset,ann in rows if sample_texts(ann.annotation_data,dataset_format,sample_source)]
     include_queries=project.task_type=='vector' and attribute_filters is None and (dataset_format=='portable' or sample_source=='matches')
-    queries=(await db.scalars(select(MatchQuery).where(MatchQuery.project_id==project.id,
-        MatchQuery.is_retrieval_query()).order_by(MatchQuery.id))).all() if include_queries else []
+    if include_queries and preview:
+        q_rows = (await db.execute(
+            select(MatchQuery.id, MatchQuery.version, MatchQuery.hits)
+            .where(MatchQuery.project_id == project.id, MatchQuery.is_retrieval_query())
+            .order_by(MatchQuery.id)
+        )).all()
+        queries = [SimpleNamespace(id=qid, version=qver, hits=qhits) for qid, qver, qhits in q_rows]
+    else:
+        queries=(await db.scalars(select(MatchQuery).where(MatchQuery.project_id==project.id,
+            MatchQuery.is_retrieval_query()).order_by(MatchQuery.id))).all() if include_queries else []
     if explicit_negatives:
         from services.embedding_negatives import resolve
         rows,negative_assets,negatives=await resolve(db,project,rows,sample_source,negative_queries)
@@ -115,13 +169,25 @@ async def training_package(db,project,approved_only=True,dataset_format='portabl
     if query_ids:
         skipped=select(Annotation.id).where(Annotation.asset_id==Asset.id,(Annotation.is_latest == true()),
             Annotation.annotation_data['skipped'].as_boolean().is_(True)).exists()
-        assets.update({a.id:a for a in (await db.scalars(select(Asset).where(Asset.project_id==project.id,Asset.id.in_(query_ids),eligible_assets(project),~skipped,*scope))).all()})
+        for cond in iter_id_conditions(db, Asset.id, sorted(query_ids)):
+            if preview:
+                for q_aid, q_hash in (await db.execute(
+                    select(Asset.id, Asset.content_hash).where(Asset.project_id==project.id, cond, eligible_assets(project), ~skipped, *scope)
+                )).all():
+                    assets.setdefault(q_aid, SimpleNamespace(id=q_aid, content_hash=q_hash))
+            else:
+                for q_asset in (await db.scalars(select(Asset).where(Asset.project_id==project.id, cond, eligible_assets(project), ~skipped, *scope))).all():
+                    assets[q_asset.id] = q_asset
     if preview or preview_token:
         members=sorted((str(a.id),a.content_hash,ann.version,ann.status_for('image')) for a,ann in rows)
-        token=hashlib.sha256(json.dumps([source,dataset_format,sample_source,instruction,approved_only,members,
-            sorted((str(a.id),a.content_hash) for a in assets.values()),[(str(q.id),q.version) for q in queries],
-            str(automatic_negative_job_id) if automatic_negative_job_id else explicit_negatives,sorted(negatives.items()),single_attribute,pairs],
-            separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+        token_payload = [
+            source, dataset_format, sample_source, instruction, approved_only, members,
+            sorted((str(a.id), a.content_hash) for a in assets.values()),
+            [(str(q.id), q.version) for q in queries],
+            str(automatic_negative_job_id) if automatic_negative_job_id else explicit_negatives,
+            sorted(negatives.items()), single_attribute, pairs,
+        ]
+        token = await run_in_threadpool(_compute_preview_token, token_payload)
         if preview:return dict(preview_token=token,asset_count=len(assets),**(
             dict(sample_count=(len(pairs) if dataset_format=='infonce' else sum(1+len(candidates) for _,_,candidates in pairs)) if single else len(rows),
                 negative_image_count=len(negative_assets)) if with_negatives or single else {}))

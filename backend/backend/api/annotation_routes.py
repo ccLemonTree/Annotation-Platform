@@ -99,6 +99,9 @@ async def scoped_annotation(db, annotation_id, tenant_id):
 @router.get('', response_model=PaginatedResponse[AnnotationResponse])
 async def list_annotations(asset_id: UUID | None = None, project_id: UUID | None = None,
     review_status: str | None = Query(None, pattern='^(pending|approved|rejected)$'),
+    q: str | None = Query(None, max_length=255),
+    label: str | None = Query(None, min_length=1, max_length=100),
+    annotation_source: str | None = Query(None, max_length=50),
     latest_only: bool = True, pagination: PaginationParams = Depends(),
     scope:Literal['all','annotation']='all',
     kind:Literal['detection','image','all']='all',
@@ -117,24 +120,49 @@ async def list_annotations(asset_id: UUID | None = None, project_id: UUID | None
         kind='detection' if project.task_type=='detection' else 'image'
         conditions.append(Annotation.has_project_format(project.task_type))
     elif kind!='all':conditions.append(Annotation.has_kind(kind))
-    query=select(Annotation).join(Project,Annotation.project_id==Project.id)
     if work_job_id or image_kind!='all':
         if not project:raise HTTPException(422,'按批次或图片类型筛选时需要选择项目')
         from services.project_workflow import dataset_scope
         conditions.extend(await dataset_scope(db,project,work_job_id,image_kind))
-    if project and (work_job_id or image_kind!='all' or scope=='annotation' and (project.label_schema or {}).get('annotation_scope')=='crops'):
-        query=query.join(Asset,Annotation.asset_id==Asset.id)
-        if scope=='annotation':conditions.append(eligible_assets(project))
+    needs_asset_filter = bool(
+        (q and q.strip())
+        or (project and (work_job_id or image_kind!='all' or scope=='annotation' and (project.label_schema or {}).get('annotation_scope')=='crops'))
+    )
+    if project and scope=='annotation' and (work_job_id or image_kind!='all' or (project.label_schema or {}).get('annotation_scope')=='crops'):
+        conditions.append(eligible_assets(project))
+    if q and q.strip():
+        conditions.append(Asset.original_name.icontains(q.strip(), autoescape=True))
+    if label and label.strip():
+        from services.image_library import annotation_label_condition
+        conditions.append(annotation_label_condition(db, label.strip()))
+    if annotation_source and annotation_source.strip():
+        conditions.append(Annotation.annotation_source == annotation_source.strip())
     if review_status:
         state=Annotation.review_status if kind=='all' else Annotation.status_for_query(kind)
         conditions.append(state==review_status)
     if ai_pending and kind!='image':conditions.append(Annotation.ai_pending())
     if latest_only: conditions.append((Annotation.is_latest == true()))
-    query=query.where(*conditions)
-    total = await db.scalar(query.with_only_columns(func.count(Annotation.id)))
-    result = await db.execute(query
-        .order_by(Annotation.created_at.desc(), Annotation.version.desc(), Annotation.id).offset(pagination.skip).limit(pagination.limit))
-    return PaginatedResponse(items=result.scalars().all(), total=total, page=pagination.page, page_size=pagination.page_size)
+    count_query = select(func.count(Annotation.id)).join(Project, Annotation.project_id == Project.id)
+    if needs_asset_filter:
+        count_query = count_query.outerjoin(Asset, Asset.id == Annotation.asset_id)
+    total = await db.scalar(count_query.where(*conditions)) or 0
+    list_query = (
+        select(Annotation, Asset.original_name, Asset.source_type)
+        .join(Project, Annotation.project_id == Project.id)
+        .outerjoin(Asset, Asset.id == Annotation.asset_id)
+        .where(*conditions)
+        .order_by(Annotation.created_at.desc(), Annotation.version.desc(), Annotation.id)
+        .offset(pagination.skip)
+        .limit(pagination.limit)
+    )
+    rows = (await db.execute(list_query)).all()
+    items = [
+        AnnotationResponse.model_validate(ann).model_copy(
+            update={'asset_original_name': orig_name, 'asset_source_type': src_type}
+        )
+        for ann, orig_name, src_type in rows
+    ]
+    return PaginatedResponse(items=items, total=total, page=pagination.page, page_size=pagination.page_size)
 
 @router.get('/assets/{asset_id}/events')
 async def annotation_events(asset_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
