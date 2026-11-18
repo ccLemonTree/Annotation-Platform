@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { appMessage } from '../src/ui/appFeedback';
 import { redirectToLogin } from '../src/utils/authNavigation';
 export type Destination = { purpose: 'download' | 'annotation'; projectId: string; collectionId?:string; minLongEdge?: number };
 let destination: Destination = { purpose: 'download', projectId: '' };
@@ -27,7 +28,7 @@ export async function download(url: string) {
     window.open(url, '_blank', 'noopener,noreferrer'); return;
   }
   const response = await apiFetch(url);
-  if (!response.ok) { alert(`下载失败 (${response.status})`); return; }
+  if (!response.ok) { appMessage.error(`下载失败 (${response.status})`); return; }
   const objectUrl = URL.createObjectURL(await response.blob());
   const link = document.createElement('a');
   link.href = objectUrl;

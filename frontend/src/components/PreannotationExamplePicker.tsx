@@ -3,12 +3,14 @@ import {Link} from 'react-router-dom';
 import {Alert,Button,Input,Modal,Space,Table,Tag,Typography} from 'antd';
 import {isAxiosError} from 'axios';
 import {getPreannotationExamples,type PreannotationExample} from '../api/objectAttributes';
-import AssetImage from './AssetImage';
+import {useAssetImageUrl} from './AssetImage';
+import DetectionBoxOverlay from './DetectionBoxOverlay';
 
 function ExampleImage({example,width}:{example:PreannotationExample;width:number|string}){
   const w=example.width||640,h=example.height||480;
-  return <div style={{position:'relative',width,aspectRatio:`${w}/${h}`,maxWidth:'100%'}}><AssetImage assetId={example.asset_id} width="100%" height="100%" preview={false} style={{objectFit:'contain'}}/>
-    {!!example.boxes?.length&&<svg role="img" aria-label="人工正确范例检测框" viewBox={`0 0 ${w} ${h}`} style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none'}}>{example.boxes.map((box,index)=><g key={index}><rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#fadb14" strokeWidth={2} vectorEffect="non-scaling-stroke"/><text x={box.x} y={Math.max(h/25,box.y)} fontSize={h/25} fill="#fadb14">{box.label}</text></g>)}</svg>}
+  const {source,failed}=useAssetImageUrl({assetId:example.asset_id});
+  return <div style={{position:'relative',width,aspectRatio:`${w}/${h}`,maxWidth:'100%'}}>
+    {failed?<span>图片加载失败</span>:source&&<DetectionBoxOverlay src={source} width={w} height={h} boxes={example.boxes||[]} showScore={false} alt={example.original_name} svgLabel="人工正确范例检测框"/>}
   </div>;
 }
 

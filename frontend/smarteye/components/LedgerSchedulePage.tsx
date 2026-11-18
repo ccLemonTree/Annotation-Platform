@@ -1,6 +1,7 @@
 import { Modal } from 'antd';
 import { apiFetch, download } from '../network';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { appMessage, appModal } from '../../src/ui/appFeedback';
 import { API_BASE_URL } from '../constants';
 import type { PlatformOption } from '../types';
 
@@ -96,14 +97,14 @@ const TaskForm: React.FC<{
     setSelectedPlatforms(prev => {
       const exists = prev.find(s => s.value === p.value);
       if (exists) return prev.filter(s => s.value !== p.value);
-      if (prev.length >= MAX_PLATFORMS) { alert(`最多 ${MAX_PLATFORMS} 个`); return prev; }
+      if (prev.length >= MAX_PLATFORMS) { appMessage.warning(`最多 ${MAX_PLATFORMS} 个`); return prev; }
       return [...prev, p];
     });
   };
 
   const handleSubmit = () => {
-    if (!name.trim()) { alert('请输入任务名称'); return; }
-    if (selectedPlatforms.length === 0) { alert('请选择平台'); return; }
+    if (!name.trim()) { appMessage.warning('请输入任务名称'); return; }
+    if (selectedPlatforms.length === 0) { appMessage.warning('请选择平台'); return; }
     const config = {
       name: name.trim(),
       platform_ids: selectedPlatforms.map(p => p.value),
@@ -238,7 +239,7 @@ const TaskForm: React.FC<{
           {/* 操作按钮 */}
           <div className="flex gap-2 pt-2">
             <button onClick={onClose} className="flex-1 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 rounded-lg py-2 text-sm">取消</button>
-            <button onClick={handleSubmit} className="flex-1 bg-primary hover:bg-blue-600 text-white rounded-lg py-2 text-sm shadow-lg shadow-blue-500/30">
+            <button onClick={handleSubmit} className="flex-1 bg-primary text-white rounded-lg py-2 text-sm">
               {isScheduled ? '创建并启动' : '开始下载'}
             </button>
           </div>
@@ -278,12 +279,12 @@ const TaskRow: React.FC<{
   })();
 
   const statusConfig = {
-    completed: { dot: 'bg-emerald-500', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400', label: '已完成' },
-    failed: { dot: 'bg-red-500', badge: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400', label: '失败' },
-    running: { dot: 'bg-blue-500', badge: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400', label: '执行中' },
-    pending: { dot: 'bg-amber-400', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', label: '等待中' },
-    cancelling: { dot: 'bg-slate-400', badge: 'bg-slate-100 text-slate-500', label: '取消中' },
-  }[task.status] ?? { dot: 'bg-slate-300', badge: 'bg-slate-100 text-slate-500', label: task.status };
+    completed: { dot: 'bg-emerald-500', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300', label: '已完成' },
+    failed: { dot: 'bg-red-500', badge: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', label: '失败' },
+    running: { dot: 'bg-blue-500', badge: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300', label: '执行中' },
+    pending: { dot: 'bg-amber-400', badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', label: '等待中' },
+    cancelling: { dot: 'bg-slate-400', badge: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', label: '取消中' },
+  }[task.status] ?? { dot: 'bg-slate-400', badge: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', label: task.status };
 
   return (
     <div className="p-4 bg-white dark:bg-surface-dark border border-slate-100 dark:border-slate-700 rounded-xl shadow-sm">
@@ -402,14 +403,14 @@ const WatchJobForm: React.FC<{
     setSelectedPlatforms(prev => {
       const exists = prev.find(s => s.value === p.value);
       if (exists) return prev.filter(s => s.value !== p.value);
-      if (prev.length >= MAX_PLATFORMS) { alert(`最多 ${MAX_PLATFORMS} 个`); return prev; }
+      if (prev.length >= MAX_PLATFORMS) { appMessage.warning(`最多 ${MAX_PLATFORMS} 个`); return prev; }
       return [...prev, p];
     });
   };
 
   const handleSubmit = () => {
-    if (!name.trim()) { alert('请输入任务名称'); return; }
-    if (selectedPlatforms.length === 0) { alert('请选择平台'); return; }
+    if (!name.trim()) { appMessage.warning('请输入任务名称'); return; }
+    if (selectedPlatforms.length === 0) { appMessage.warning('请选择平台'); return; }
     onSubmit({
       name: name.trim(),
       platform_ids: selectedPlatforms.map(p => p.value),
@@ -545,8 +546,8 @@ const WatchJobRow: React.FC<{
   const platNames = platforms.filter(p => job.platform_ids.includes(p.value)).map(p => p.label);
 
   const statusInfo = job.is_running
-    ? { dot: 'bg-green-400', badge: 'bg-green-100 text-green-700', label: job.status === 'polling' ? '轮询中' : '运行中' }
-    : { dot: 'bg-slate-300', badge: 'bg-slate-100 text-slate-500', label: '已停止' };
+    ? { dot: 'bg-emerald-400', badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300', label: job.status === 'polling' ? '轮询中' : '运行中' }
+    : { dot: 'bg-slate-400', badge: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', label: '已停止' };
 
   return (
     <div className="p-4 bg-white dark:bg-surface-dark border border-slate-100 dark:border-slate-700 rounded-xl shadow-sm">
@@ -556,7 +557,7 @@ const WatchJobRow: React.FC<{
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-slate-800 dark:text-white text-sm">{job.name}</span>
             <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${statusInfo.badge}`}>{statusInfo.label}</span>
-            <span className="text-xs px-1.5 py-0.5 rounded-full bg-cyan-100 text-cyan-700 font-medium">监听</span>
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium">监听</span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
             {platNames.length > 0 ? platNames.slice(0, 3).join('、') + (platNames.length > 3 ? ` 等${platNames.length}个` : '') : '未绑定平台'}
@@ -589,13 +590,13 @@ const WatchJobRow: React.FC<{
           <button onClick={() => onToggle(job)}
             className={`text-xs px-2 py-1 rounded-lg transition-colors ${
               job.is_running
-                ? 'bg-amber-100 hover:bg-amber-200 text-amber-700'
-                : 'bg-green-100 hover:bg-green-200 text-green-700'
+                ? 'bg-amber-100 hover:bg-amber-200 text-amber-700 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 dark:text-amber-300'
+                : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-700 dark:bg-emerald-900/30 dark:hover:bg-emerald-900/50 dark:text-emerald-300'
             }`}>
             {job.is_running ? '停止' : '启动'}
           </button>
           <button onClick={() => onDelete(job.job_id)}
-            className="text-xs bg-red-50 hover:bg-red-100 text-red-500 px-2 py-1 rounded-lg transition-colors">
+            className="text-xs bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-900/20 dark:hover:bg-red-900/40 dark:text-red-300 px-2 py-1 rounded-lg transition-colors">
             删除
           </button>
         </div>
@@ -676,10 +677,10 @@ const LedgerSchedulePage: React.FC = () => {
         setShowForm(false);
         fetchStatus();
       } else {
-        alert(data.message || '创建失败');
+        appMessage.error(data.message || '创建失败');
       }
     } catch (e: any) {
-      alert(e.message || '请求失败');
+      appMessage.error(e.message || '请求失败');
     }
   };
 
@@ -705,8 +706,8 @@ const LedgerSchedulePage: React.FC = () => {
       });
       const data = await res.json();
       if (data.code === 0) { setShowWatchForm(false); fetchWatchJobs(); }
-      else alert(data.message || '创建失败');
-    } catch (e: any) { alert(e.message || '请求失败'); }
+      else appMessage.error(data.message || '创建失败');
+    } catch (e: any) { appMessage.error(e.message || '请求失败'); }
   };
 
   const handleToggleWatchJob = async (job: WatchJob) => {
@@ -717,10 +718,17 @@ const LedgerSchedulePage: React.FC = () => {
     fetchWatchJobs();
   };
 
-  const handleDeleteWatchJob = async (jobId: string) => {
-    if (!confirm('确认删除此监听任务？')) return;
-    await apiFetch(`${API_BASE_URL}/ledger-watch/jobs/${jobId}`, { method: 'DELETE' });
-    fetchWatchJobs();
+  const handleDeleteWatchJob = (jobId: string) => {
+    appModal.confirm({
+      title: '确认删除此监听任务？',
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await apiFetch(`${API_BASE_URL}/ledger-watch/jobs/${jobId}`, { method: 'DELETE' });
+        fetchWatchJobs();
+      },
+    });
   };
 
   const handleUpdateDevices = async (platIds: string[]) => {
@@ -760,7 +768,7 @@ const LedgerSchedulePage: React.FC = () => {
     <div className="flex-1 overflow-auto bg-background-light dark:bg-background-dark transition-colors duration-300">
       {/* Header */}
       <div className="bg-white dark:bg-surface-dark border-b border-slate-200 dark:border-slate-800 px-6 pt-5 pb-0 shadow-sm">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-7xl mx-auto">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">台账图片下载</h1>
@@ -807,19 +815,19 @@ const LedgerSchedulePage: React.FC = () => {
       </div>
 
       <div className="p-6">
-        <div className="max-w-4xl mx-auto space-y-3">
+        <div className="max-w-7xl mx-auto space-y-3">
 
           {activeTab === 'schedule' ? (
             <>
               {activeSchedulersWithoutTask.map(s => (
-                <div key={s.sched_id} className="p-4 bg-white dark:bg-surface-dark border border-blue-100 dark:border-blue-900/40 rounded-xl shadow-sm">
+                <div key={s.sched_id} className="p-4 bg-white dark:bg-surface-dark border border-blue-200 dark:border-blue-900/40 rounded-xl shadow-sm">
                   <div className="flex items-center gap-3">
                     <div className="w-2.5 h-2.5 rounded-full bg-blue-400 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-slate-800 dark:text-white text-sm">{s.name}</span>
-                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 font-medium">定时</span>
-                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">等待首次执行</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 font-medium">定时</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 font-medium">等待首次执行</span>
                       </div>
                       {s.next_run && <p className="text-xs text-blue-500 mt-0.5">下次执行：{fmtTime(s.next_run)}</p>}
                     </div>
@@ -892,7 +900,7 @@ const LedgerSchedulePage: React.FC = () => {
                 取消
               </button>
               <button onClick={() => handleUpdateDevices(deviceModalPlatIds)}
-                className="flex-1 bg-primary hover:bg-blue-600 text-white rounded-lg py-2 text-sm shadow-lg shadow-blue-500/30">
+                className="flex-1 bg-primary text-white rounded-lg py-2 text-sm">
                 {deviceModalPlatIds.length === 0 ? '更新全部平台' : `更新 ${deviceModalPlatIds.length} 个平台`}
               </button>
             </div>

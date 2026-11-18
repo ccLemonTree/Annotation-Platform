@@ -2,6 +2,7 @@ import { download } from './network';
 import IntegrationBar from './IntegrationBar';
 import { apiFetch } from './network';
 import React, { useMemo, useState } from 'react';
+import { appMessage } from '../src/ui/appFeedback';
 import Sidebar from './components/Sidebar';
 import FilterBar from './components/FilterBar';
 import ResultsTable from './components/ResultsTable';
@@ -100,12 +101,12 @@ const App: React.FC = () => {
         setTotalPages(pages);
         setCurrentPage(page);
       } else {
-        alert(`查询失败: ${res.message}`);
+        appMessage.error(`查询失败: ${res.message}`);
       }
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         console.error('Search error:', error);
-        alert('查询出错');
+        appMessage.error('查询出错');
       }
     } finally {
       setLoading(false);
@@ -127,7 +128,7 @@ const App: React.FC = () => {
 
   const handleDownload = async () => {
     if (!lastSearchParams || (!lastSearchParams.platName && (!lastSearchParams.platNames || lastSearchParams.platNames.length === 0))) {
-      alert('请先进行查询');
+      appMessage.warning('请先进行查询');
       return;
     }
     setDownloading(true);
@@ -255,7 +256,7 @@ const App: React.FC = () => {
                     <button
                       onClick={handleDownload}
                       disabled={downloading || !lastSearchParams}
-                      className={`group inline-flex items-center justify-center gap-2 bg-primary hover:bg-blue-600 text-white font-medium rounded-lg text-sm px-5 py-2.5 shadow-md shadow-blue-900/20 transition-all ${downloading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      className={`group inline-flex items-center justify-center gap-2 bg-primary text-white font-medium rounded-lg text-sm px-5 py-2.5 transition-all ${downloading ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       <span className="material-icons text-[20px] group-hover:-translate-y-0.5 transition-transform duration-200">
                         folder_zip

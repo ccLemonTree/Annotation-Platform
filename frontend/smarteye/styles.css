@@ -8,9 +8,10 @@
 .smarteye-content h1 { font-size: 22px; font-weight: 600; letter-spacing: normal; }
 .smarteye-content h2 { font-size: 16px; font-weight: 600; letter-spacing: normal; }
 .smarteye-content .tracking-wide, .smarteye-content .tracking-wider, .smarteye-content .tracking-tight { letter-spacing: normal; }
-.smarteye-content .shadow-sm, .smarteye-content button { box-shadow: none; }
+.smarteye-content :is(.shadow, .shadow-sm, .shadow-md, .shadow-lg, button) { box-shadow: none !important; }
 .smarteye-content .rounded-xl, .smarteye-content .rounded-2xl { border-radius: var(--ui-radius); }
-.smarteye-content .border-slate-300 { border-color: var(--ui-border); }
+.smarteye-app :is(.border-slate-100, .border-slate-200, .border-slate-300, .dark\:border-slate-600, .dark\:border-slate-700, .dark\:border-slate-800) { border-color: var(--ui-border); }
+.smarteye-app :is(.divide-slate-200, .dark\:divide-slate-800) > :not([hidden]) ~ :not([hidden]) { border-color: var(--ui-border); }
 .smarteye-content .text-slate-400 { color: var(--ui-muted); }
 :is(.smarteye-content, .smarteye-legacy-form) input:not(.ant-input):not(.ant-select-input):not([type='checkbox']):not([type='radio']):not([type='file']), :is(.smarteye-content, .smarteye-legacy-form) select, :is(.smarteye-content, .smarteye-legacy-form) textarea {
   color-scheme: dark; background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border); border-radius: var(--ui-radius); min-height: 36px; font-size: 14px; padding-top: 7px; padding-bottom: 7px;
@@ -21,8 +22,8 @@
 .smarteye-content button:disabled { opacity: .5; cursor: not-allowed; }
 .smarteye-content :is(button, input:not(.ant-input):not(.ant-select-input), select, textarea):focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
 .smarteye-content .ant-input-affix-wrapper input.ant-input:focus-visible { outline: none; }
-.smarteye-content button.bg-primary { min-height: 36px; background: var(--ui-action); color: white; }
-.smarteye-content button.bg-primary:hover:not(:disabled) { background: var(--ui-action-hover); }
+:is(.smarteye-content, .smarteye-legacy-form) :is(button.bg-primary, a.bg-primary) { min-height: 36px; background: var(--ui-action) !important; color: #ffffff !important; box-shadow: none !important; }
+:is(.smarteye-content, .smarteye-legacy-form) :is(button.bg-primary, a.bg-primary):hover:not(:disabled) { background: var(--ui-action-hover) !important; color: #ffffff !important; }
 .smarteye-content button.bg-white { background: var(--ui-surface-raised); color: var(--ui-text); border-color: var(--ui-border); }
 .smarteye-content button.bg-white:hover:not(:disabled) { background: var(--ui-primary-soft); }
 .smarteye-content th { font-weight: 600; text-transform: none; font-size: 13px; letter-spacing: normal; padding: 14px 16px; background: var(--ui-surface-raised); }
@@ -30,7 +31,13 @@
 .smarteye-content > * { animation: ui-enter var(--ui-motion-enter) var(--ui-motion-ease); }
 .smarteye-content td { padding: 14px 16px; font-variant-numeric: tabular-nums; }
 .smarteye-content table { white-space: nowrap; }
-.smarteye-content .max-w-7xl { max-width: none; }
+.smarteye-content .max-w-7xl, .smarteye-content .max-w-4xl { max-width: none; }
+.smarteye-page { display: flex; flex-direction: column; min-width: 0; }
+.smarteye-page-header { background: var(--ui-surface); border-bottom: 1px solid var(--ui-border); padding: 20px 24px; }
+.smarteye-page-header-row { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; }
+.smarteye-page-header h1 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.4; color: var(--ui-text); }
+.smarteye-page-header p { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--ui-muted); max-width: 960px; }
+.smarteye-page-body { padding: 24px; min-width: 0; }
 .smarteye-destination { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); flex-shrink: 0; }
 .smarteye-destination-fields { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; flex: 1; min-width: 0; }
 .smarteye-destination-fields > label { font-weight: 600; }
@@ -42,6 +49,8 @@
   .smarteye-destination { padding: 12px; }
   .smarteye-destination-fields .ant-select { width: 160px; }
   .smarteye-destination-note { flex-basis: 100%; }
+  .smarteye-page-header { padding: 16px; }
+  .smarteye-page-body { padding: 16px; }
   .smarteye-content .px-6, .smarteye-content .p-6 { padding-left: 16px; padding-right: 16px; }
   .smarteye-content .grid-cols-12 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .smarteye-content .grid-cols-12 > * { grid-column: span 2 / span 2; min-width: 0; }
@@ -53,4 +62,3 @@
   .smarteye-content > * { animation: none; }
   .smarteye-content button:not(:disabled):active { transform: none; }
 }
-

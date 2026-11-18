@@ -2,6 +2,7 @@ import { AutoComplete } from 'antd';
 import ImagePreview from './ImagePreview';
 import { apiFetch, AuthImage } from '../network';
 import React, { useState, useEffect } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import { API_BASE_URL } from '../constants';
 import type { PlatformOption } from '../types';
 
@@ -62,8 +63,8 @@ const LedgerQueryPage: React.FC = () => {
   };
 
   const handleSearch = async () => {
-    if (!platInput.trim()) { alert('请选择或输入平台'); return; }
-    if (!startTime || !endTime) { alert('请选择时间范围'); return; }
+    if (!platInput.trim()) { appMessage.warning('请选择或输入平台'); return; }
+    if (!startTime || !endTime) { appMessage.warning('请选择时间范围'); return; }
     setLoading(true);
     setError(null);
     setHasQueried(true);
@@ -131,9 +132,9 @@ const LedgerQueryPage: React.FC = () => {
       link.click();
       URL.revokeObjectURL(link.href);
       const filtered = Number(res.headers.get('X-SmartEye-Filtered-Count'));
-      if (filtered > 0) alert(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
+      if (filtered > 0) appMessage.info(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
     } catch (e: any) {
-      alert(e.message || '下载出错');
+      appMessage.error(e.message || '下载出错');
     } finally {
       setDownloading(false);
     }

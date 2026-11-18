@@ -1,5 +1,6 @@
 import { apiFetch, AuthImage } from '../network';
 import React, { useEffect, useState } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import type { AiImageAsset, DetectionRecord } from '../types';
 import { API_BASE_URL } from '../constants';
 
@@ -36,9 +37,9 @@ const LedgerPage: React.FC<LedgerPageProps> = ({ record, onBack, onSendToAiImage
       link.click();
       URL.revokeObjectURL(link.href);
       const filtered = Number(res.headers.get('X-SmartEye-Filtered-Count'));
-      if (filtered > 0) alert(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
+      if (filtered > 0) appMessage.info(`下载完成：成功 ${res.headers.get('X-SmartEye-Downloaded-Count')} 张，按长边阈值过滤 ${filtered} 张。`);
     } catch (e: any) {
-      alert(e.message || '下载出错');
+      appMessage.error(e.message || '下载出错');
     } finally {
       setDownloading(false);
     }

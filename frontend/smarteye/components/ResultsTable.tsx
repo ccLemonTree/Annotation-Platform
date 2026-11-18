@@ -98,7 +98,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
                     <div className="flex items-center gap-2">
                       <span className={`h-2 w-2 rounded-full ${
                         record.targetColor === 'red'
-                          ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'
+                          ? 'bg-red-500'
                           : record.targetColor === 'blue'
                             ? 'bg-blue-500'
                             : record.targetColor === 'yellow'
@@ -244,7 +244,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
                   />
                   <button
                     onClick={() => onSendToAiImage?.(buildAsset(previewRecord))}
-                    className="inline-flex items-center gap-2 bg-primary hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                    className="inline-flex items-center gap-2 bg-primary text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
                   >
                     <span className="material-icons text-[18px]">auto_awesome</span>
                     发送到 AI 生图

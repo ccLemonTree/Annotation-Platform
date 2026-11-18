@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
-import {Alert,Button,Form,Input,Modal,Popconfirm,Progress,Select,Space,Table,Tag,message} from 'antd';
+import {Alert,Button,Form,Input,Modal,Popconfirm,Progress,Select,Space,Table,Tag} from 'antd';
+import {appMessage} from '../../src/ui/appFeedback';
 import {managementApi,type ManagedPlatform,type PlatformCheckTask} from '../managementApi';
 
 export default function PlatformManagementPage(){
@@ -34,7 +35,7 @@ export default function PlatformManagementPage(){
     if(editing&&!values.password)delete values.password;
     if(!values.login_url)delete values.login_url;
     setBusy('save');
-    try{await managementApi(`/managed-platforms${editing?`/${encodeURIComponent(editing.plat_id)}`:''}`,editing?'PUT':'POST',values);setOpen(false);await load();message.success('平台已保存');}
+    try{await managementApi(`/managed-platforms${editing?`/${encodeURIComponent(editing.plat_id)}`:''}`,editing?'PUT':'POST',values);setOpen(false);await load();appMessage.success('平台已保存');}
     catch(error){setError(error instanceof Error?error.message:String(error));}finally{setBusy('');}
   };
   const action=async(row:ManagedPlatform,operation:'check'|'delete')=>{
@@ -44,13 +45,27 @@ export default function PlatformManagementPage(){
   };
   const term=query.trim().toLowerCase();
   const filtered=rows.filter(row=>(connectionFilter==='all'||(connectionFilter==='online'?row.connection_status==='online':row.connection_status!=='online'))&&[row.platform_name,row.base_url,row.plat_id].some(value=>String(value||'').toLowerCase().includes(term)));
-  return <section style={{padding:24,minWidth:0}}>
-    <Space wrap style={{marginBottom:16}}><h1>平台管理</h1><Button type="primary" disabled={!!busy||checking} onClick={()=>edit()}>新增平台</Button><Button onClick={load} loading={loading}>刷新平台</Button>
-      <Button onClick={()=>checkAll()} loading={checking||busy==='check-all'} disabled={!!busy||checking}>一键检测所有平台</Button>
-      <Input.Search aria-label="搜索平台" placeholder="平台名称、地址或标识" allowClear style={{width:320,maxWidth:'100%'}} value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/>
-      <Select aria-label="平台在线状态" style={{width:160}} value={connectionFilter} onChange={value=>{setConnectionFilter(value);setPage(1);}} options={[{value:'all',label:'全部平台'},{value:'online',label:'在线平台'},{value:'offline',label:'不在线平台'}]}/>
-    </Space>
-    <p>一键检测全部平台（含停用平台，不受搜索或在线筛选影响），仅验证连接及登录，不同步设备、不拉图。设备同步与定时拉图在“设备抓图”中操作。</p>
+  return <section className="smarteye-page">
+    <header className="smarteye-page-header">
+      <div className="smarteye-page-header-row">
+        <div>
+          <h1>平台管理</h1>
+          <p>一键检测全部平台（含停用平台，不受搜索或在线筛选影响），仅验证连接及登录，不同步设备、不拉图。设备同步与定时拉图在“设备抓图”中操作。</p>
+        </div>
+        <Space wrap>
+          <Button onClick={load} loading={loading}>刷新平台</Button>
+          <Button onClick={()=>checkAll()} loading={checking||busy==='check-all'} disabled={!!busy||checking}>一键检测所有平台</Button>
+          <Button type="primary" disabled={!!busy||checking} onClick={()=>edit()}>新增平台</Button>
+        </Space>
+      </div>
+    </header>
+    <div className="smarteye-page-body">
+    <div className="page-toolbar">
+      <div className="page-toolbar-fields">
+        <Input.Search aria-label="搜索平台" placeholder="平台名称、地址或标识" allowClear style={{width:320,maxWidth:'100%'}} value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/>
+        <Select aria-label="平台在线状态" style={{width:160,maxWidth:'100%'}} value={connectionFilter} onChange={value=>{setConnectionFilter(value);setPage(1);}} options={[{value:'all',label:'全部平台'},{value:'online',label:'在线平台'},{value:'offline',label:'不在线平台'}]}/>
+      </div>
+    </div>
     {batch&&<Alert style={{marginBottom:16}} showIcon type={batch.status==='failed'?'error':checking?'info':batch.status==='completed'&&!batch.error_count?'success':'warning'}
       title={checking?'正在检测所有平台':({completed:'检测完成',cancelled:'检测已停止',interrupted:'检测已中断',failed:'检测任务失败'} as Record<string,string>)[batch.status]||batch.status}
       description={<div><div>已检测 {batch.processed_count}/{batch.total_count} 个平台；在线 {batch.online_count} 个，连接失败 {batch.error_count} 个，未配置 {batch.unconfigured_count} 个</div>
@@ -78,5 +93,6 @@ export default function PlatformManagementPage(){
         <Form.Item name="state" label="启用状态"><Select options={[{value:'1',label:'启用'},{value:'0',label:'停用'}]}/></Form.Item>
       </Form>
     </Modal>
+    </div>
   </section>;
 }

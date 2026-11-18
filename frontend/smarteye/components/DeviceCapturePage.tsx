@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
-import {Alert,Button,Checkbox,Drawer,Form,Input,InputNumber,Modal,Popconfirm,Progress,Select,Space,Table,Tag,TreeSelect,message} from 'antd';
+import {Alert,Button,Checkbox,Drawer,Form,Input,InputNumber,Modal,Popconfirm,Progress,Select,Space,Table,Tag,TreeSelect} from 'antd';
+import {appMessage} from '../../src/ui/appFeedback';
 import {getImageCollections,type ImageCollection,type SceneGroup} from '../../src/api/images';
 import {configSceneGroups,sceneLabel,sceneTree,sceneResultStatus} from '../../src/components/SceneCategories';
 import {type Project} from '../../src/api/projects';
@@ -69,7 +70,7 @@ export default function DeviceCapturePage(){
   },[filters]);
   const execute=async(path:string,method='POST',body?:unknown)=>{
     setBusy(true);setError('');
-    try{await managementApi(path,method,body);await Promise.all([loadTasks(),loadDevices(),loadPlatforms()]);message.success('操作已提交');return true;}catch(error){report(error);return false;}finally{setBusy(false);}
+    try{await managementApi(path,method,body);await Promise.all([loadTasks(),loadDevices(),loadPlatforms()]);appMessage.success('操作已提交');return true;}catch(error){report(error);return false;}finally{setBusy(false);}
   };
   const references=selected.map(({plat_id,device_id})=>({plat_id,device_id}));
   const scheduleCount=Math.ceil(references.length/1000);
@@ -92,7 +93,7 @@ export default function DeviceCapturePage(){
         if(matches.size===expected)break;
         if(!data.items.length)throw Error('设备分页提前结束，未更新选择；请稍后重试');
       }
-      setSelected([...matches.values()]);message.success(`已选择全部筛选结果 ${matches.size} 台设备`);
+      setSelected([...matches.values()]);appMessage.success(`已选择全部筛选结果 ${matches.size} 台设备`);
     }catch(error){if(version===selectionVersion.current)report(error);}
     finally{if(version===selectionVersion.current)setSelectingAll(false);}
   };
@@ -108,7 +109,7 @@ export default function DeviceCapturePage(){
       const createdIds=new Set(items.map(item=>item.sched_id));
       setSchedules(previous=>[...items,...previous.filter(schedule=>!createdIds.has(schedule.sched_id))]);
       setOpen(false);
-      message.success(`已创建 ${items.length} 个定时拉图计划`);
+      appMessage.success(`已创建 ${items.length} 个定时拉图计划`);
     }catch(error){setCreateError(error instanceof Error?error.message:String(error));}
     finally{setBusy(false);}
   };
@@ -135,9 +136,20 @@ export default function DeviceCapturePage(){
     const imageSummary=results.some(item=>item.image_count!==undefined)?`；代表图 ${results.reduce((sum,item)=>sum+(item.image_count||0),0)} 台（复用 ${results.reduce((sum,item)=>sum+(item.image_reused_count||0),0)}），无图 ${results.reduce((sum,item)=>sum+(item.image_missing_count||0),0)}，取图失败 ${results.reduce((sum,item)=>sum+(item.image_failed_count||0),0)}`:'';
     return task.kind==='device-sync'?`完成 ${success} 个平台，失败 ${failed} 个；同步 ${results.reduce((sum,item)=>sum+(item.count||0),0)} 台设备${imageSummary}`:`完成 ${success} 台设备，失败 ${failed} 台；入库 / 复用 ${results.reduce((sum,item)=>sum+(item.downloaded??item.downloaded_count??0),0)} 张图片`;
   };
-  return <section style={{padding:24,minWidth:0}}>
-    <h1>{vectorTest?'选择抓图设备':'设备抓图与场景'}</h1>
-    <p>{vectorTest?'每轮拉取所选设备最新成功的抓图，供当前项目的向量检索测试使用。':'同步设备时自动补取最近一张成功抓图，已有本地代表图则复用；取图后按图片分类，取不到则按设备名称分类，可人工修正。设备后续图片继承场景；定时拉图每轮仅取设备最新成功的一张入库并关联项目，沿用已有场景，不更新设备代表图或自动重新分类。'}</p>
+  return <section className="smarteye-page">
+    <header className="smarteye-page-header">
+      <div className="smarteye-page-header-row">
+        <div>
+          <h1>{vectorTest?'选择抓图设备':'设备抓图与场景'}</h1>
+          <p>{vectorTest?'每轮拉取所选设备最新成功的抓图，供当前项目的向量检索测试使用。':'同步设备时自动补取最近一张成功抓图，已有本地代表图则复用；取图后按图片分类，取不到则按设备名称分类，可人工修正。设备后续图片继承场景；定时拉图每轮仅取设备最新成功的一张入库并关联项目，沿用已有场景，不更新设备代表图或自动重新分类。'}</p>
+        </div>
+        <Space wrap>
+          {!vectorTest&&<Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':'同步在线平台设备'}</Button>}
+          <Button loading={loading} onClick={()=>{void Promise.all([loadDevices(),loadPlatforms()]).catch(report);}}>刷新设备</Button>
+        </Space>
+      </div>
+    </header>
+    <div className="smarteye-page-body">
     {error&&<Alert type="error" showIcon title={error} closable onClose={()=>setError('')} style={{marginBottom:16}}/>}
     <Space wrap style={{marginBottom:16}}>
       <Checkbox checked={onlineOnly} onChange={event=>{setOnlineOnly(event.target.checked);if(event.target.checked&&!onlinePlatforms.some(platform=>platform.plat_id===filters.platform_id))updateFilter('platform_id','');}}>仅在线平台</Checkbox>
@@ -149,8 +161,6 @@ export default function DeviceCapturePage(){
       <Select aria-label="场景匹配方式" value={filters.scene_match} style={{width:160}} onChange={value=>{setSelected([]);updateFilter('scene_match',value);}} options={[{value:'any',label:'任一场景匹配'},{value:'all',label:'全部场景匹配'}]}/>
       <Select aria-label="设备分类状态" placeholder="全部分类状态" allowClear style={{width:160}} value={filters.scene_status||undefined} onChange={value=>updateFilter('scene_status',value||'')} options={Object.entries(sceneStatuses).map(([value,label])=>({value,label}))}/>
       <Select aria-label="设备图片筛选" value={filters.has_image} style={{width:140}} onChange={value=>updateFilter('has_image',value)} options={[{value:'',label:'全部图片状态'},{value:'yes',label:'有图片'},{value:'no',label:'无图片'}]}/>
-      {!vectorTest&&<Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':'同步在线平台设备'}</Button>}
-      <Button loading={loading} onClick={()=>{void Promise.all([loadDevices(),loadPlatforms()]).catch(report);}}>刷新设备</Button>
     </Space>
     <Space wrap style={{marginBottom:16}}>
       <span>已选 {selected.length} 台设备</span><Button loading={selectingAll} disabled={!total||loading||busy} onClick={()=>void selectAllFiltered()}>全选筛选结果</Button><Button disabled={!selected.length&&!selectingAll} onClick={clearSelection}>清空选择</Button>
@@ -191,7 +201,7 @@ export default function DeviceCapturePage(){
       <div><small>分类总进度按当前平台范围内已同步设备统计，不受设备搜索和场景筛选影响；同步新增设备时，总数会随之更新。</small></div>
     </section>
     </Drawer>
-    {sceneSettingsOpen&&<DeviceSceneSettings onClose={()=>setSceneSettingsOpen(false)} onSaved={config=>{setScenes(config.scenes);setSceneGroups(configSceneGroups(config));setClassificationEnabled(config.classification_enabled);setSceneSettingsOpen(false);message.success('分类设置已保存；已有设备可点击全部设备分类重新处理');}}/>}
+    {sceneSettingsOpen&&<DeviceSceneSettings onClose={()=>setSceneSettingsOpen(false)} onSaved={config=>{setScenes(config.scenes);setSceneGroups(configSceneGroups(config));setClassificationEnabled(config.classification_enabled);setSceneSettingsOpen(false);appMessage.success('分类设置已保存；已有设备可点击全部设备分类重新处理');}}/>}
     <Table<Device> id="device-list" rowKey={deviceKey} loading={loading} dataSource={rows} scroll={{x:1050}} rowSelection={{selectedRowKeys:selected.map(deviceKey),preserveSelectedRowKeys:true,getCheckboxProps:()=>({disabled:selectingAll}),onChange:keys=>{const records=new Map([...selected,...rows].map(device=>[deviceKey(device),device]));setSelected(keys.map(key=>records.get(String(key))).filter((device):device is Device=>!!device));}}}
       pagination={{current:filters.page,pageSize:filters.page_size,total,showSizeChanger:true,onChange:(page,page_size)=>setFilters({...filters,page,page_size}),showTotal:total=>`共 ${total} 台设备`}} columns={[
         {title:'平台',dataIndex:'platform_name'}, {title:'设备',render:(_,row)=><div>{row.device_name}<div style={{fontSize:12}}>{row.device_id}</div></div>},
@@ -269,5 +279,6 @@ export default function DeviceCapturePage(){
       {editingScene?.representative_url&&<AuthImage src={editingScene.representative_url} alt={`${editingScene.device_name} 代表图`} style={{display:'block',width:'100%',maxHeight:'60vh',objectFit:'contain',marginBottom:16}} />}
       <TreeSelect aria-label="人工设备场景" multiple treeDefaultExpandAll treeNodeLabelProp="label" treeNodeFilterProp="label" showSearch style={{width:'100%'}} value={manualScenes} onChange={setManualScenes} treeData={sceneTree(sceneGroups,[...scenes,...manualScenes],false)}/>
     </Modal>
+    </div>
   </section>;
 }

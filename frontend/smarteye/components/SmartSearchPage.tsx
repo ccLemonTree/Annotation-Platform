@@ -1,6 +1,7 @@
 import { download } from '../network';
 import { apiFetch } from '../network';
 import React, { useEffect, useState, useCallback } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import type { SmartSearchPlatform, SmartSearchPlatformResult } from '../types';
 import { API_BASE_URL } from '../constants';
 
@@ -73,10 +74,10 @@ const SmartSearchPage: React.FC = () => {
                 await fetchPlatforms();
                 setSelectedIds(new Set());
             } else {
-                alert('同步失败: ' + (result.message || '未知错误'));
+                appMessage.error('同步失败: ' + (result.message || '未知错误'));
             }
-        } catch (e) {
-            alert('同步请求出错');
+        } catch {
+            appMessage.error('同步请求出错');
         } finally {
             setSyncing(false);
         }
@@ -92,7 +93,7 @@ const SmartSearchPage: React.FC = () => {
                 next.delete(platId);
             } else {
                 if (next.size >= MAX_PLATFORMS) {
-                    alert(`最多只能选择 ${MAX_PLATFORMS} 个平台`);
+                    appMessage.warning(`最多只能选择 ${MAX_PLATFORMS} 个平台`);
                     return prev;
                 }
                 next.add(platId);
@@ -128,8 +129,8 @@ const SmartSearchPage: React.FC = () => {
 
     // 启动搜索
     const handleSearch = async () => {
-        if (selectedIds.size === 0) { alert('请选择至少一个平台'); return; }
-        if (!searchText.trim()) { alert('请输入搜索内容'); return; }
+        if (selectedIds.size === 0) { appMessage.warning('请选择至少一个平台'); return; }
+        if (!searchText.trim()) { appMessage.warning('请输入搜索内容'); return; }
 
         setIsSearching(true);
         setTaskMessage('正在启动搜索任务...');
@@ -351,7 +352,7 @@ const SmartSearchPage: React.FC = () => {
                             <button
                                 onClick={handleSearch}
                                 disabled={isSearching || selectedIds.size === 0}
-                                className={`w-full text-white bg-primary hover:bg-blue-600 font-medium rounded-lg text-sm px-5 py-3 text-center inline-flex items-center justify-center gap-2 transition-all shadow-lg shadow-blue-500/30 ${isSearching || selectedIds.size === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                className={`w-full text-white bg-primary font-medium rounded-lg text-sm px-5 py-3 text-center inline-flex items-center justify-center gap-2 transition-all ${isSearching || selectedIds.size === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
                                 <span className="material-icons text-[20px]">{isSearching ? 'hourglass_empty' : 'travel_explore'}</span>
                                 {isSearching ? '搜索中...' : `开始搜索（${selectedIds.size} 个平台）`}

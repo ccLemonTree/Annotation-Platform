@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Modal, Select, Space, Table, Typography } from 'antd';
-import AssetImage from './AssetImage';
+import { useAssetImageUrl } from './AssetImage';
+import DetectionBoxOverlay from './DetectionBoxOverlay';
 import JsonView from './JsonView';
 import { labelColor } from './detectionEditor';
 import type { Box } from './detectionEditor';
@@ -11,19 +12,26 @@ import { addProjectLabels, type Project } from '../api/projects';
 
 export function PredictionResultView({ result, assetId, imageId, labels }: { result: PredictionResult; assetId?: string; imageId?: string; labels?: string[] }) {
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const { source: imageSrc, failed: imageFailed } = useAssetImageUrl({ assetId, imageId, fullSize: true });
+  useEffect(() => { setSize({ width: 0, height: 0 }); }, [assetId, imageId]);
   return <Space orientation="vertical" style={{ width: '100%' }} size="middle">
     <Typography.Text type="secondary">配置版本 {result.config_revision} · 模型 {result.model_service_id}</Typography.Text>
     {result.warnings?.map((warning, i) => <Alert key={i} type="warning" showIcon title={warning} />)}
     {(assetId || imageId) && <div style={{ position: 'relative', width: '100%', maxWidth: size.width || 640, lineHeight: 0 }}>
-      <AssetImage key={assetId || imageId} assetId={assetId} imageId={imageId} width="100%" preview={false} alt="预测原图"
-        onLoad={event => { const image = event.target as HTMLImageElement; setSize({ width: image.naturalWidth, height: image.naturalHeight }); }} />
-      {!!size.width && !!result.boxes.length && <svg aria-label="预测框预览" viewBox={`0 0 ${size.width} ${size.height}`}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
-        {result.boxes.map((box, i) => <g key={i}><rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#000" strokeWidth={6} vectorEffect="non-scaling-stroke" />
-          <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke="#fff" strokeWidth={4} vectorEffect="non-scaling-stroke" />
-          <rect x={box.x} y={box.y} width={box.width} height={box.height} fill="none" stroke={labelColor(box.label, labels)} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-          <text x={box.x} y={Math.max(14, box.y - 4)} fill="#fff" stroke="#000" strokeWidth={Math.max(14, size.width / 48) / 5} paintOrder="stroke" strokeLinejoin="round" fontSize={Math.max(14, size.width / 48)}>{box.label}</text></g>)}
-      </svg>}
+      {imageFailed ? <span>图片加载失败</span> : imageSrc && (
+        <DetectionBoxOverlay
+          key={assetId || imageId}
+          src={imageSrc}
+          width={size.width}
+          height={size.height}
+          boxes={result.boxes}
+          labels={labels}
+          showScore={false}
+          alt="预测原图"
+          svgLabel="预测框预览"
+          onImageLoad={setSize}
+        />
+      )}
     </div>}
     {result.kind === 'detection' && <>
       {!result.boxes.length && <Alert type="info" showIcon title="未检测到目标；不能自动认定为负样本，请人工核对。" />}

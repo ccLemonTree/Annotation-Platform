@@ -2,6 +2,7 @@ import { Drawer } from 'antd';
 import ImagePreview from './ImagePreview';
 import { apiFetch, AuthImage, download } from '../network';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { appMessage } from '../../src/ui/appFeedback';
 import { API_BASE_URL, getBackendBaseUrl } from '../constants';
 import type { AiImageAsset, AiImageHistoryRecord, AiImageTaskRuntime } from '../types';
 
@@ -186,7 +187,7 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
   const handleImportUrls = async () => {
     const urls = urlText.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
     if (!urls.length) {
-      alert('请输入至少一个图片 URL');
+      appMessage.warning('请输入至少一个图片 URL');
       return;
     }
     setImporting(true);
@@ -216,11 +217,11 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
 
   const handleStartTask = async () => {
     if (!prompt.trim()) {
-      alert('请输入提示词');
+      appMessage.warning('请输入提示词');
       return;
     }
     if (mode === 'image_to_image' && assets.length === 0) {
-      alert('图生图至少需要一张参考图');
+      appMessage.warning('图生图至少需要一张参考图');
       return;
     }
     setSubmitting(true);
