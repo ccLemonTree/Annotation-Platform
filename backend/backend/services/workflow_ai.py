@@ -1,5 +1,6 @@
 """AI-assisted workflow DAG orchestration and sandboxed Python script generation."""
 import json
+import re
 from uuid import UUID
 import httpx
 from fastapi import HTTPException
@@ -135,6 +136,29 @@ SCRIPT_SYSTEM_PROMPT = '''你是图像数据管理平台的 Python 脚本专家�
    - `"crops"`: 子图列表 `[{"image": PIL_Image, "label": "标签"}]`（可选，最多 50 张）'''
 
 
+def _extract_llm_json(text: str) -> dict:
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', text or '', flags=re.IGNORECASE).strip()
+    try:
+        return json_object(cleaned)
+    except Exception:
+        start = cleaned.find('{')
+        if start < 0:
+            raise ValueError('AI 未输出有效的 JSON 对象') from None
+        obj, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+        if not isinstance(obj, dict):
+            raise ValueError('AI 输出须为 JSON 对象')
+        return obj
+
+
+_NON_MODEL_CONFIG_KEYS = {
+    'branch': 'branch_config',
+    'img_filter': 'img_filter_config',
+    'box_clean': 'box_clean_config',
+    'img_transform': 'img_transform_config',
+    'script': 'script_config',
+}
+
+
 def _sanitize_generated_workflow(raw: dict, valid_model_ids: set[str]) -> dict:
     name = str(raw.get('name') or 'AI 编排工作流').strip()[:100] or 'AI 编排工作流'
     raw_steps = raw.get('steps')
@@ -148,32 +172,47 @@ def _sanitize_generated_workflow(raw: dict, valid_model_ids: set[str]) -> dict:
         'box_clean_config', 'img_transform_config', 'script_config',
     }
     cleaned_steps = []
+    step_keys: set[str] = set()
     for idx, step in enumerate(raw_steps):
         if not isinstance(step, dict):
             raise ValueError(f'第 {idx + 1} 个节点格式无效')
         item = {k: v for k, v in step.items() if k in allowed_step_keys and v is not None}
         item['node_key'] = str(item.get('node_key') or f'step_{idx + 1}').strip()
+        step_keys.add(item['node_key'])
         op = item.get('operation')
+        if op != 'attributes':
+            item.pop('attribute_prompt', None)
+            item.pop('attribute_templates', None)
         if op in MODEL_WORKFLOW_OPERATIONS:
             mid = str(item.get('model_id') or '').strip()
             if mid not in valid_model_ids:
                 raise ValueError(f'节点「{item.get("title") or op}」引用了不可用或不存在的 model_id: {mid}')
             item['model_id'] = mid
+            for cfg_key in _NON_MODEL_CONFIG_KEYS.values():
+                item.pop(cfg_key, None)
         else:
             item.pop('model_id', None)
+            keep_cfg = _NON_MODEL_CONFIG_KEYS.get(str(op))
+            for cfg_key in _NON_MODEL_CONFIG_KEYS.values():
+                if cfg_key != keep_cfg:
+                    item.pop(cfg_key, None)
         cleaned_steps.append(item)
 
     raw_edges = raw.get('edges')
     cleaned_edges = None
     if isinstance(raw_edges, list):
-        cleaned_edges = [
-            {
-                'source': str(e.get('source') or '').strip(),
-                'target': str(e.get('target') or '').strip(),
+        cleaned_edges = []
+        for e in raw_edges:
+            if not isinstance(e, dict) or not e.get('source') or not e.get('target'):
+                continue
+            src = str(e.get('source')).strip()
+            if src in ('input', 'start', 'root') and src not in step_keys:
+                src = '__input__'
+            cleaned_edges.append({
+                'source': src,
+                'target': str(e.get('target')).strip(),
                 'source_handle': str(e.get('source_handle') or 'default').strip() or 'default',
-            }
-            for e in raw_edges if isinstance(e, dict) and e.get('source') and e.get('target')
-        ]
+            })
 
     validated = WorkflowTemplateCreate.model_validate({
         'name': name,
@@ -220,14 +259,22 @@ async def generate_workflow(db, project, request: WorkflowAiGenerateRequest) -> 
     user_payload += f"【管理员编排需求】\n{request.prompt}"
 
     last_error = ''
-    async with httpx.AsyncClient(timeout=min(max(llm_config.timeout_seconds, 90), 180), follow_redirects=False) as client:
+    llm_timeout = min(max(llm_config.timeout_seconds, 120), 180)
+    async with httpx.AsyncClient(timeout=llm_timeout, follow_redirects=False) as client:
         for attempt in range(2):
             prompt_text = user_payload if attempt == 0 else (
                 f"{user_payload}\n\n【上一次生成的 JSON 未通过平台静态校验，请修正后重新输出完整 JSON】\n错误信息：{last_error}"
             )
-            reply = await infer_text(llm_config, prompt=prompt_text, system_prompt=WORKFLOW_SYSTEM_PROMPT, max_tokens=4096, client=client)
+            reply = await infer_text(
+                llm_config,
+                prompt=prompt_text,
+                system_prompt=WORKFLOW_SYSTEM_PROMPT,
+                max_tokens=2400,
+                client=client,
+                timeout=llm_timeout,
+            )
             try:
-                parsed = json_object(reply['caption'])
+                parsed = _extract_llm_json(reply['caption'])
                 result = _sanitize_generated_workflow(parsed, valid_model_ids)
                 result['orchestrator_model_id'] = str(orchestrator_id)
                 result['orchestrator_model_name'] = llm_config.name
@@ -253,14 +300,22 @@ async def generate_script(db, project, request: WorkflowAiScriptRequest) -> dict
     user_payload += f"【脚本需求】\n{request.prompt}"
 
     last_error = ''
-    async with httpx.AsyncClient(timeout=min(max(llm_config.timeout_seconds, 90), 180), follow_redirects=False) as client:
+    llm_timeout = min(max(llm_config.timeout_seconds, 120), 180)
+    async with httpx.AsyncClient(timeout=llm_timeout, follow_redirects=False) as client:
         for attempt in range(2):
             prompt_text = user_payload if attempt == 0 else (
                 f"{user_payload}\n\n【上次代码未通过沙箱 AST 安全检查，请修正】\n错误原因：{last_error}"
             )
-            reply = await infer_text(llm_config, prompt=prompt_text, system_prompt=SCRIPT_SYSTEM_PROMPT, max_tokens=2400, client=client)
+            reply = await infer_text(
+                llm_config,
+                prompt=prompt_text,
+                system_prompt=SCRIPT_SYSTEM_PROMPT,
+                max_tokens=2400,
+                client=client,
+                timeout=llm_timeout,
+            )
             try:
-                parsed = json_object(reply['caption'])
+                parsed = _extract_llm_json(reply['caption'])
                 code = str(parsed.get('code') or '').strip()
                 validate_script(code)
                 return {

@@ -164,17 +164,31 @@ async def infer(config, content, width, height, prompt='', client=None):
     return dict(kind=config.kind, boxes=[], caption=caption, warnings=[])
 
 
-async def infer_text(config, prompt='', system_prompt='', max_tokens=1024, client=None):
+async def infer_text(config, prompt='', system_prompt='', max_tokens=1024, client=None, timeout=None):
     if config.protocol != 'openai_chat':
         raise HTTPException(400, '请选择 OpenAI 对话格式模型')
+    effective_timeout = timeout if timeout is not None else config.timeout_seconds
     if client is None:
-        async with httpx.AsyncClient(timeout=config.timeout_seconds, follow_redirects=False) as session:
-            return await infer_text(config, prompt, system_prompt, max_tokens, session)
+        async with httpx.AsyncClient(timeout=effective_timeout, follow_redirects=False) as session:
+            return await infer_text(config, prompt, system_prompt, max_tokens, session, effective_timeout)
     messages = ([{'role': 'system', 'content': system_prompt}] if system_prompt else []) + [
         {'role': 'user', 'content': prompt or '请用一句话简要说明你的工作流编排与脚本生成能力。'}]
-    body = {'model': config.model_name, 'messages': messages, 'temperature': 0, 'max_tokens': max_tokens}
-    data = await response_json(client, 'POST', config.base_url + config.endpoint, headers=headers(config),
-                               timeout=config.timeout_seconds, json=body)
+    url = config.base_url + config.endpoint
+    auth = headers(config)
+    body = {
+        'model': config.model_name,
+        'messages': messages,
+        'temperature': 0,
+        'max_tokens': max_tokens,
+        'chat_template_kwargs': {'enable_thinking': False},
+    }
+    try:
+        data = await response_json(client, 'POST', url, headers=auth, timeout=effective_timeout, json=body)
+    except HTTPException as exc:
+        if exc.status_code != 502 or 'HTTP 400' not in str(exc.detail):
+            raise
+        fallback_body = {k: v for k, v in body.items() if k != 'chat_template_kwargs'}
+        data = await response_json(client, 'POST', url, headers=auth, timeout=effective_timeout, json=fallback_body)
     try:
         content = data['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError):

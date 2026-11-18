@@ -321,9 +321,11 @@ async def test_dag_workflow_execution_dry_run_zero_writes_and_ai_orchestration(c
         assert created_llm.status_code == 201, created_llm.text
 
         attempts = []
+        observed_timeouts = []
 
-        async def fake_ai_infer(config, prompt='', system_prompt='', max_tokens=4096, client=None):
+        async def fake_ai_infer(config, prompt='', system_prompt='', max_tokens=2400, client=None, timeout=None):
             attempts.append(prompt)
+            observed_timeouts.append(timeout)
             if len(attempts) == 1:
                 bad = {
                     'name': '不安全草稿',
@@ -336,21 +338,27 @@ async def test_dag_workflow_execution_dry_run_zero_writes_and_ai_orchestration(c
                 'summary': '先检测预标注，再用安全脚本过滤小框',
                 'warnings': [],
                 'steps': [
-                    {'node_key': 'a1', 'title': '预标注', 'operation': 'preannotate', 'model_id': model_0_id},
+                    {'node_key': 'a1', 'title': '预标注', 'operation': 'preannotate', 'model_id': model_0_id, 'attribute_prompt': '多余字段应被自动忽略'},
                     {'node_key': 'a2', 'title': '脚本清洗', 'operation': 'script', 'script_config': {'code': 'def process(ctx):\n    return {"passed": True, "boxes": ctx["boxes"]}\n'}},
                 ],
-                'edges': [{'source': 'a1', 'target': 'a2', 'source_handle': 'default'}],
+                'edges': [
+                    {'source': 'input', 'target': 'a1', 'source_handle': 'default'},
+                    {'source': 'a1', 'target': 'a2', 'source_handle': 'default'},
+                ],
             }
-            return {'kind': 'llm', 'boxes': [], 'caption': json.dumps(good, ensure_ascii=False), 'warnings': []}
+            wrapped = f"<think>先思考一下节点拓扑...</think>\n好的，生成的配置如下：\n```json\n{json.dumps(good, ensure_ascii=False)}\n```"
+            return {'kind': 'llm', 'boxes': [], 'caption': wrapped, 'warnings': []}
 
         monkeypatch.setattr(workflow_ai, 'infer_text', fake_ai_infer)
         ai_res = client.post(f'{wf_url}/ai-generate', headers=auth_headers, json={'prompt': '预标注后用脚本清洗框'})
         assert ai_res.status_code == 200, ai_res.text
         assert len(attempts) == 2
+        assert all(t >= 120 for t in observed_timeouts)
         assert ai_res.json()['name'] == 'AI生成清洗流'
         assert len(ai_res.json()['steps']) == 2
 
-        async def fake_script_infer(config, prompt='', system_prompt='', max_tokens=2400, client=None):
+        async def fake_script_infer(config, prompt='', system_prompt='', max_tokens=2400, client=None, timeout=None):
+            assert timeout is not None and timeout >= 120
             payload = {
                 'code': 'def process(ctx):\n    return {"passed": len(ctx["boxes"]) > 0, "reason": "有检测框即通过"}\n',
                 'explanation': '检查是否存在目标框',
@@ -363,3 +371,38 @@ async def test_dag_workflow_execution_dry_run_zero_writes_and_ai_orchestration(c
         assert 'def process(ctx):' in script_res.json()['code']
     finally:
         await shutdown_sandbox()
+
+
+@pytest.mark.asyncio
+async def test_infer_text_disables_thinking_and_falls_back_on_strict_openai(monkeypatch):
+    from fastapi import HTTPException
+    from schemas.model_service import ModelServiceConfig
+    from services import model_inference
+
+    cfg = ModelServiceConfig(
+        key='qwen-test',
+        name='Qwen Test',
+        kind='caption',
+        protocol='openai_chat',
+        base_url='http://llm.local/v1',
+        endpoint='/chat/completions',
+        model_name='Qwen3.8-27B',
+        timeout_seconds=60,
+    )
+    calls = []
+
+    async def fake_response_json(client, method, url, **kwargs):
+        calls.append({'timeout': kwargs.get('timeout'), 'json': kwargs.get('json')})
+        if len(calls) == 1:
+            raise HTTPException(502, '模型服务返回 HTTP 400：请检查服务配置和请求参数')
+        return {'choices': [{'message': {'content': '{"ok": true}'}}]}
+
+    monkeypatch.setattr(model_inference, 'response_json', fake_response_json)
+    async with httpx.AsyncClient() as http_client:
+        res = await model_inference.infer_text(cfg, prompt='hi', max_tokens=512, client=http_client, timeout=150)
+
+    assert res['caption'] == '{"ok": true}'
+    assert len(calls) == 2
+    assert calls[0]['timeout'] == 150
+    assert calls[0]['json']['chat_template_kwargs'] == {'enable_thinking': False}
+    assert 'chat_template_kwargs' not in calls[1]['json']
