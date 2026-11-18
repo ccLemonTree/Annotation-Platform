@@ -128,6 +128,8 @@ async def startup_event():
         await start_semantic_worker()
         from services.project_work import start_worker as start_project_work
         await start_project_work()
+        from services.vector_test import start_worker as start_vector_test
+        await start_vector_test()
         from services.validation import start_worker as start_validation_worker
         await start_validation_worker()
         from services.training_runs import start_worker as start_training_worker
@@ -162,6 +164,8 @@ async def shutdown_event():
         await stop_semantic_worker()
         from services.project_work import stop_worker as stop_project_work
         await stop_project_work()
+        from services.vector_test import stop_worker as stop_vector_test
+        await stop_vector_test()
         from services.validation import stop_worker as stop_validation_worker
         await stop_validation_worker()
         from services.training_runs import stop_worker as stop_training_worker

@@ -26,6 +26,21 @@ def test_captcha_uses_qwen_without_thinking(monkeypatch):
     assert base64.b64decode(image.split(",", 1)[1]) == b"captcha-image"
 
 
+def test_captcha_uses_selected_model_address_and_bearer(monkeypatch):
+    model = SimpleNamespace(base_url='http://vision.test/v1', endpoint='/chat/completions',
+                            model_name='selected-vision', api_key_env='MODEL_API_KEY_CAPTCHA_TEST', timeout_seconds=9)
+    monkeypatch.setenv(model.api_key_env, 'fixture-only')
+    monkeypatch.setattr(login_utils, 'selected_captcha_model', lambda: model, raising=False)
+    response = Mock()
+    response.json.return_value = {'choices':[{'message':{'content':'4'}}]}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(login_utils.requests, 'post', post)
+    assert login_utils.recognize_captcha(b'fixture') == '4'
+    assert post.call_args.args == ('http://vision.test/v1/chat/completions',)
+    assert post.call_args.kwargs['headers'] == {'Authorization':'Bearer fixture-only'}
+    assert post.call_args.kwargs['json']['model'] == model.model_name
+
+
 def _response(status, payload):
     response = requests.Response()
     response.status_code = status

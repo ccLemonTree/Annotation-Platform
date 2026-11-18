@@ -1,9 +1,14 @@
 """Device capture uses temporary state and never a real upstream."""
+import threading
+import time
+from collections import Counter
+
 import pytest
 from flask import Flask
 from integrations.smarteye import device_capture as capture
 from integrations.smarteye import runtime
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, update
+from integrations.smarteye.management_schema import devices
 
 
 @pytest.fixture
@@ -12,9 +17,12 @@ def capture_client(tmp_path, monkeypatch):
     monkeypatch.setattr(capture, '_platform_token_locks', {})
     engine = create_engine(f"sqlite:///{tmp_path / 'capture.db'}")
     runtime.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(devices.insert().values(tenant_id=1, plat_id='p', device_id='d', payload={}))
     monkeypatch.setattr(runtime, '_runtime', runtime.Runtime(engine, tmp_path / 'storage'))
     monkeypatch.setattr(capture, 'get_platform', lambda key: {'plat_id': key, 'platform_name': 'test', 'base_url': 'http://fixture', 'state': '1'})
     monkeypatch.setattr(capture, 'get_device', lambda *args: {'device_id': args[-1]})
+    monkeypatch.setattr(capture, 'list_platforms_internal', lambda: [capture.get_platform('p')])
     app = Flask(__name__)
     capture.register_routes(app)
     token = runtime.actor.set({'tenant_id': 1, 'user_id': 1, 'role': 'admin'})
@@ -41,6 +49,46 @@ def test_schedule_crud_and_validation(capture_client):
     assert capture_client.get('/device-capture/schedules').json['data'] == []
 
 
+def test_schedule_validates_large_device_selection_in_one_query(capture_client):
+    selection = [{'plat_id': 'p', 'device_id': str(index)} for index in range(679)]
+    engine = runtime.get_runtime().engine
+    with engine.begin() as conn:
+        conn.execute(devices.insert(), [dict(device, tenant_id=1, payload={}) for device in selection])
+        conn.execute(devices.insert().values(plat_id='p', device_id='elsewhere', tenant_id=2, payload={}))
+    device_reads = []
+
+    @event.listens_for(engine, 'before_cursor_execute')
+    def record_device_reads(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith('SELECT') and devices.name in statement:
+            device_reads.append(statement)
+
+    response = schedule(capture_client, devices=selection + [selection[0]])
+    assert response.status_code == 201
+    assert response.json['data']['devices'] == selection
+    assert len(device_reads) == 1
+    assert schedule(capture_client, devices=selection + [{'plat_id': 'p', 'device_id': 'elsewhere'}]).status_code == 400
+
+
+def test_schedule_splits_large_selection_atomically(capture_client):
+    selection = [{'plat_id': 'p', 'device_id': str(index)} for index in range(2653)]
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert(), [dict(device, tenant_id=1, payload={}) for device in selection])
+
+    assert schedule(capture_client, devices=selection).status_code == 400
+    invalid_selection = selection[:-1] + [{'plat_id': 'p', 'device_id': 'missing'}]
+    assert schedule(capture_client, devices=invalid_selection, split_devices=True).status_code == 400
+    assert capture_client.get('/device-capture/schedules').json['data'] == []
+
+    response = schedule(capture_client, devices=selection + [selection[-1]], split_devices=True, enabled=True)
+    assert response.status_code == 201
+    items = response.json['data']
+    assert [len(item['devices']) for item in items] == [1000, 1000, 653]
+    assert [device for item in items for device in item['devices']] == selection
+    assert [item['name'] for item in items] == [f'定时拉图 ({index}/3)' for index in range(1, 4)]
+    assert all(item['enabled'] and item['interval_seconds'] == 60 for item in items)
+    assert len(capture_client.get('/device-capture/schedules').json['data']) == 3
+
+
 @pytest.mark.parametrize('state', ['0', 'deleted', None])
 def test_schedule_rejects_disabled_platform(capture_client, monkeypatch, state):
     monkeypatch.setattr(capture, 'get_platform', lambda key: {'plat_id': key, 'state': state})
@@ -49,8 +97,9 @@ def test_schedule_rejects_disabled_platform(capture_client, monkeypatch, state):
     assert capture_client.get('/device-capture/schedules').json['data'] == []
 
 
-def test_schedule_rejects_name_only_identity(capture_client,monkeypatch):
-    monkeypatch.setattr(capture,'get_device',lambda *args:{'identity_kind':'name'})
+def test_schedule_rejects_name_only_identity(capture_client):
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(update(devices).where(devices.c.tenant_id==1, devices.c.plat_id=='p', devices.c.device_id=='d').values(payload={'identity_kind':'name'}))
     assert schedule(capture_client,enabled=True).status_code==400
 
 
@@ -92,6 +141,51 @@ def test_success_advances_cursor_only_after_full_device(capture_client, monkeypa
     assert result['cursors']['["p","d"]'] == result['last_run']
     assert result['device_results'][0]['downloaded'] == 2
     assert runtime.get_runtime().get(result['last_task_id'])['status'] == 'completed'
+
+
+def test_three_plans_share_platform_limit(capture_client, monkeypatch):
+    by_platform = {platform: [dict(plat_id=platform, device_id=str(i)) for i in range(5)] for platform in ('p', 'q')}
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert(), [dict(device, tenant_id=1, payload={})
+            for group in by_platform.values() for device in group])
+    monkeypatch.setattr(capture, 'list_platforms_internal', lambda: [capture.get_platform(p) for p in by_platform])
+    plan_ids = [schedule(capture_client, devices=by_platform[p]).json['data']['sched_id'] for p in ('p', 'p', 'q', 'q')]
+    current, peak = Counter(), Counter()
+    lock, release, platforms_running = threading.Lock(), threading.Event(), threading.Event()
+
+    def fetch(task, owner, device, start, end):
+        assert runtime.execution.get()[0] == task
+        platform = device['plat_id']
+        with lock:
+            current[platform] += 1
+            peak[platform] = max(peak[platform], current[platform])
+            if current['q'] >= 2 and current['p'] >= 2:
+                platforms_running.set()
+        try:
+            assert release.wait(5)
+            return {'downloaded': 1}
+        finally:
+            with lock:
+                current[platform] -= 1
+
+    monkeypatch.setattr(capture, '_capture_device', fetch)
+    try:
+        assert all(capture._submit(sched_id) for sched_id in plan_ids[:3])
+        assert not capture._submit(plan_ids[3])
+        assert platforms_running.wait(5)
+        release.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(capture._get(s)['running'] for s in plan_ids[:3]):
+            time.sleep(.01)
+        assert peak == {'p': 2, 'q': 2}
+        for sched_id in plan_ids[:3]:
+            plan = capture._get(sched_id)
+            assert not plan['running']
+            assert len(plan['cursors']) == len(plan['device_results']) == 5
+            assert runtime.get_runtime().get(plan['last_task_id'])['status'] == 'completed'
+    finally:
+        release.set()
+        capture.shutdown_worker()
 
 
 def test_restart_disables_schedule_and_active_platform_reference(capture_client):
@@ -165,8 +259,40 @@ def test_stop_cancels_active_task_and_prevents_late_cursor(capture_client, monke
     assert runtime.get_runtime().get(result['last_task_id'])['status'] == 'cancelled'
 
 
+def test_stop_leaves_waiting_devices_unstarted(capture_client, monkeypatch):
+    selection = [dict(plat_id='p', device_id=str(i)) for i in range(5)]
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert(), [dict(device, tenant_id=1, payload={}) for device in selection])
+    sched_id = schedule(capture_client, devices=selection).json['data']['sched_id']
+    started, running, release = [], threading.Event(), threading.Event()
+    lock = threading.Lock()
+
+    def fetch(task, owner, device, start, end):
+        with lock:
+            started.append(device)
+            if len(started) == 2:
+                running.set()
+        assert release.wait(5)
+        return {'downloaded': 1}
+
+    monkeypatch.setattr(capture, '_capture_device', fetch)
+    try:
+        assert capture._submit(sched_id)
+        assert running.wait(5)
+        assert capture_client.post(f'/device-capture/schedules/{sched_id}/stop').status_code == 200
+    finally:
+        release.set()
+        capture.shutdown_worker()
+    assert len(started) == 2
+    assert not capture._get(sched_id)['cursors']
+
+
 def test_compound_device_cursor_keys_do_not_collide(capture_client, monkeypatch):
-    item = schedule(capture_client, devices=[{'plat_id': 'a:b', 'device_id': 'c'}, {'plat_id': 'a', 'device_id': 'b:c'}]).json['data']
+    selection = [{'plat_id': 'a:b', 'device_id': 'c'}, {'plat_id': 'a', 'device_id': 'b:c'}]
+    monkeypatch.setattr(capture, 'list_platforms_internal', lambda: [capture.get_platform(key) for key in ('a:b', 'a')])
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert(), [dict(device, tenant_id=1, payload={}) for device in selection])
+    item = schedule(capture_client, devices=selection).json['data']
     monkeypatch.setattr(capture, '_capture_device', lambda *args: {'downloaded': 1})
     capture._run_schedule(item['sched_id'])
     assert len(capture._get(item['sched_id'])['cursors']) == 2

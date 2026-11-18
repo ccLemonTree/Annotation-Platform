@@ -7,6 +7,7 @@ from sqlalchemy import String, Integer, DateTime, func, BigInteger, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional, List
+from uuid import UUID
 
 from .base import Base
 
@@ -21,6 +22,7 @@ class Tenant(Base):
     contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="联系邮箱")
     is_active: Mapped[bool] = mapped_column(default=True, comment="是否激活")
     training_defaults: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'"))
+    captcha_model_service_id: Mapped[UUID | None]
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")

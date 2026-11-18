@@ -38,7 +38,7 @@ export default function ProjectWorkflowPage({stage}:{stage:'deliver'|'test'|'cap
   if(!project||project.id!==projectId)return <Spin/>;
   if(stage==='test')return <>
     <ProjectWorkflow project={project} active="test"/>
-    <Suspense fallback={<div role="status"><Spin /> 正在加载测试与评估…</div>}>{['detection','caption','vector'].includes(project.task_type)?<ModelPreviewPage key={project.id} embeddedProject={project}/>:<Alert type="info" showIcon title="当前项目类型暂不支持模型测试与评估" description="目前支持目标检测、图片描述和向量检索项目。"/>}</Suspense>
+    <Suspense fallback={<div role="status"><Spin /> 正在加载测试与评估…</div>}><ModelPreviewPage key={project.id} embeddedProject={project}/></Suspense>
   </>;
   return <>
     <ProjectWorkflow project={project} active={stage==='capture'?'images':stage==='deliver'?'deliver':stage==='review'?'review':'prepare'}/>

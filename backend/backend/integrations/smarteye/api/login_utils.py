@@ -3,20 +3,54 @@ from integrations.smarteye.configuration import get_env
 import os
 import time
 import base64
+import logging
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from integrations.smarteye.api.config import CAPTCHA_MODEL_NAME, CAPTCHA_MODEL_API, API_BASE_URL
 import re
+from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
+
+
+def selected_captcha_model():
+    from integrations.smarteye.runtime import actor, execution, get_runtime
+    from models import ModelService, Tenant
+    from schemas.model_service import ModelServiceConfig
+    from services.model_inference import supports_captcha
+
+    owner = actor.get()
+    task = execution.get()
+    if owner is None and task:
+        owner = get_runtime().get(task[0])
+    if owner is None:
+        return None
+    tenant = Tenant.__table__
+    service = ModelService.__table__
+    with get_runtime().engine.connect() as conn:
+        model_id = conn.scalar(select(tenant.c.captcha_model_service_id).where(tenant.c.id == owner['tenant_id']))
+        if model_id is None:
+            return None
+        row = conn.execute(select(service).where(service.c.id == model_id,
+                           service.c.tenant_id == owner['tenant_id'])).mappings().one_or_none()
+    if row is None:
+        raise ValueError('验证码识别模型已移除')
+    config = ModelServiceConfig.model_validate({name: row[name] for name in ModelServiceConfig.model_fields})
+    if not supports_captcha(config):
+        raise ValueError('验证码识别模型已停用或不支持图像对话')
+    return config
 
 
 def recognize_captcha(captcha_binary: bytes) -> str:
     """调用大模型识别验证码二进制流"""
     CAPTCHA_PROMPT = "请精准识别这张验证码图片中的数字，并帮我计算结果。要求：只返回计算的结果，不要添加任何解释。"
     try:
+        from services.model_inference import headers
+        model = selected_captcha_model()
         base64_captcha = base64.b64encode(captcha_binary).decode('utf-8')
         payload = {
-            "model": CAPTCHA_MODEL_NAME,
+            "model": model.model_name if model else CAPTCHA_MODEL_NAME,
             "messages": [
                 {
                     "role": "user",
@@ -26,16 +60,21 @@ def recognize_captcha(captcha_binary: bytes) -> str:
                     ]
                 }
             ],
-            "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": 20,
             "temperature": 0.0
         }
-        response = requests.post(CAPTCHA_MODEL_API, json=payload, timeout=60)
+        if model is None or 'qwen' in model.model_name.casefold():
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if model:
+            response = requests.post(model.base_url + model.endpoint, json=payload, timeout=model.timeout_seconds,
+                                     headers=headers(model), allow_redirects=False)
+        else:
+            response = requests.post(CAPTCHA_MODEL_API, json=payload, timeout=60)
         response.raise_for_status()
         code = response.json()["choices"][0]["message"]["content"].strip()
         return code if re.fullmatch(r"-?\d+", code) else ""
     except Exception as e:
-        print(f"验证码识别异常: {e}")
+        logger.warning('验证码识别异常: %s', type(e).__name__)
         return ""
 
 # def recognize_captcha(captcha_binary: bytes) -> str:

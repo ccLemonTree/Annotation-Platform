@@ -156,6 +156,8 @@ class Runtime:
             if kind in ('device-sync','device-scenes','device-capture','platform-check'):
                 payload.update(created_at=datetime.now(timezone.utc).isoformat(),updated_at=datetime.now(timezone.utc).isoformat())
             if owner.get('min_long_edge') is not None:payload['min_long_edge']=owner['min_long_edge']
+            if kind == 'device-capture' and owner.get('vector_test'):
+                payload['vector_test'] = True
             if owner.get('collection_id'):
                 from services.image_ingest import sync_collection
                 group,config=sync_collection(conn,owner['tenant_id'],collection_id=uuid.UUID(owner['collection_id']))
@@ -263,6 +265,25 @@ class Runtime:
             row = conn.execute(select(jobs).where(jobs.c.task_id == task_id).with_for_update()).mappings().one()
             if row['status'] in TERMINAL or row['attempt'] != attempt:
                 raise RuntimeError('任务已取消、中断或被重试')
+            if row['kind'] == 'device-capture' and row['payload'].get('vector_test'):
+                import asyncio
+                from models import Project
+                from models.vector_test import VectorTestSample
+                from services.storage import LocalStorage
+                from services.vector_test_data import original_values
+                if max(width, height) < row['payload'].get('min_long_edge', 0):
+                    return None
+                project_id = uuid.UUID(row['project_id'])
+                if conn.scalar(select(Project.id).where(Project.id == project_id,
+                    Project.tenant_id == row['tenant_id']).with_for_update()) is None:
+                    raise ValueError('检索测试所属项目不存在')
+                values = original_values(project_id, digest, IMAGE_TYPES[fmt][0], 'smarteye',
+                    device_name=(source or {}).get('device_name'), **info)
+                if conn.scalar(select(VectorTestSample.id).where(VectorTestSample.project_id == project_id,
+                    VectorTestSample.blob_path == values['blob_path'])) is None:
+                    asyncio.run(LocalStorage(str(self.root)).save_file(BytesIO(content), values['blob_path']))
+                    conn.execute(insert(VectorTestSample).values(**values))
+                return values['blob_path']
             follow=following=None
             if associate and row['project_id'] and row['kind']=='device-capture':
                 from models.project_work import ProjectWorkJob

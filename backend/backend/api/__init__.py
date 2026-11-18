@@ -26,6 +26,8 @@ from api.model_preview_routes import router as model_preview_router
 api_router.include_router(model_preview_router,prefix='/model-previews',tags=['模型效果预览'])
 from api.project_work_routes import router as project_work_router
 api_router.include_router(project_work_router,prefix='/projects',tags=['项目标注处理'])
+from api.vector_test_routes import router as vector_test_router
+api_router.include_router(vector_test_router,prefix='/vector-test',tags=['向量检索测试'])
 from api.project_ingest_routes import router as project_ingest_router
 api_router.include_router(project_ingest_router,prefix='/projects',tags=['外部图片接入'])
 from api.gpu_terminal_routes import router as gpu_terminal_router

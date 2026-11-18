@@ -3,6 +3,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text, inspect
 from models.training_run import TrainingGpuHold
 from models.validation import ValidationRun
+from models.vector_test import VectorTestModel
 
 
 async def assert_free(db, devices, exclude_validation=None):
@@ -15,6 +16,9 @@ async def assert_free(db, devices, exclude_validation=None):
     if await connection.run_sync(lambda c:inspect(c).has_table('training_gpu_holds')):
         if await db.scalar(select(TrainingGpuHold.gpu_uuid).where(TrainingGpuHold.gpu_uuid.in_(devices)).limit(1)):
             raise HTTPException(409,'所选GPU已被平台训练任务占用')
+    if await connection.run_sync(lambda c:inspect(c).has_table('vector_test_models')):
+        if await db.scalar(select(VectorTestModel.id).where(VectorTestModel.gpu.in_(devices)).limit(1)):
+            raise HTTPException(409,'所选GPU已被向量检索测试模型占用')
     if await connection.run_sync(lambda c:inspect(c).has_table('validation_runs')):
         query=select(ValidationRun.id).where(ValidationRun.model_snapshot['source'].as_string()=='checkpoint',
             ValidationRun.model_snapshot['execution']['active'].as_boolean().is_(True),

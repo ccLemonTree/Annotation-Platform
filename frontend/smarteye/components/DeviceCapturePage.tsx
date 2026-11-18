@@ -11,7 +11,9 @@ import {openProjectAutomation,withCreatedProjects} from '../projectActions';
 import {allProjects,deviceKey,managementApi,sceneStatuses,taskKinds,taskStatuses,type CaptureSchedule,type Device,type ManagedPlatform,type ManagementTask} from '../managementApi';
 
 export default function DeviceCapturePage(){
-  const initialProject=new URLSearchParams(location.search).get('project_id')||undefined;
+  const params=new URLSearchParams(location.search);
+  const initialProject=params.get('project_id')||undefined;
+  const vectorTest=!!initialProject&&params.get('vector_test')==='1';
   const [platforms,setPlatforms]=useState<ManagedPlatform[]>([]),[projects,setProjects]=useState<Project[]>([]),[collections,setCollections]=useState<ImageCollection[]>([]);
   const [rows,setRows]=useState<Device[]>([]),[total,setTotal]=useState(0),[selected,setSelected]=useState<Device[]>([]);
   const [filters,setFilters]=useState({platform_id:'',q:'',scene:[] as string[],camera_position:[] as string[],scene_match:'any',scene_status:'',has_image:'',page:1,page_size:20});
@@ -26,6 +28,7 @@ export default function DeviceCapturePage(){
   const [selectingAll,setSelectingAll]=useState(false),[selectionProgress,setSelectionProgress]=useState({loaded:0,total:0});
   const selectionVersion=useRef(0);
   const [open,setOpen]=useState(false),[editingScene,setEditingScene]=useState<Device>(),[manualScenes,setManualScenes]=useState<string[]>([]);
+  const [createError,setCreateError]=useState('');
   const [creatingProject,setCreatingProject]=useState(false);
   const [previewUrl,setPreviewUrl]=useState<string|null>(null);
   const [onlineOnly,setOnlineOnly]=useState(false),[sceneSettingsOpen,setSceneSettingsOpen]=useState(false);
@@ -41,9 +44,12 @@ export default function DeviceCapturePage(){
   useEffect(()=>{if(onlineOnly&&filters.platform_id&&!platforms.some(platform=>platform.plat_id===filters.platform_id&&platform.state==='1'&&platform.connection_status==='online'))setFilters(previous=>({...previous,platform_id:'',page:1}));},[onlineOnly,platforms,filters.platform_id]);
   const loadDevices=async()=>{setLoading(true);try{const data=await managementApi<{items:Device[];total:number}>(`/devices?${deviceQuery()}`);setRows(data.items);setTotal(data.total);}catch(error){report(error);}finally{setLoading(false);}};
   const loadTasks=async()=>{
-    const [nextSchedules,nextTasks]=await Promise.all([managementApi<CaptureSchedule[]>('/device-capture/schedules'),managementApi<ManagementTask[]>('/tasks')]);
-    setSchedules(nextSchedules);setTasks(nextTasks.filter(task=>task.kind in taskKinds));
-    return nextTasks;
+    const path='/device-capture/schedules'+(vectorTest?`?vector_test=1&project_id=${encodeURIComponent(initialProject)}`:'');
+    const [nextSchedules,nextTasks]=await Promise.all([managementApi<CaptureSchedule[]>(path),managementApi<ManagementTask[]>('/tasks')]);
+    const visible=nextTasks.filter(task=>task.kind in taskKinds&&(vectorTest?
+      task.kind==='device-capture'&&task.vector_test&&task.project_id===initialProject:!task.vector_test));
+    setSchedules(nextSchedules);setTasks(visible);
+    return visible;
   };
   useEffect(()=>{
     void Promise.all([managementApi<ManagedPlatform[]>('/managed-platforms'),allProjects(),getImageCollections(),managementApi<{scenes:string[];scene_groups?:SceneGroup[];classification_enabled:boolean}>('/device-scenes/config')]).then(([platforms,projects,collections,config])=>{setPlatforms(platforms);setProjects(withCreatedProjects(projects,createdProjects.current));setCollections(collections);setScenes(config.scenes);setSceneGroups(configSceneGroups(config));setClassificationEnabled(config.classification_enabled);}).catch(report);
@@ -66,6 +72,7 @@ export default function DeviceCapturePage(){
     try{await managementApi(path,method,body);await Promise.all([loadTasks(),loadDevices(),loadPlatforms()]);message.success('操作已提交');return true;}catch(error){report(error);return false;}finally{setBusy(false);}
   };
   const references=selected.map(({plat_id,device_id})=>({plat_id,device_id}));
+  const scheduleCount=Math.ceil(references.length/1000);
   const clearSelection=()=>{selectionVersion.current++;setSelectingAll(false);setSelected([]);};
   const selectAllFiltered=async()=>{
     const version=++selectionVersion.current,query=deviceQuery(),matches=new Map<string,Device>();
@@ -90,9 +97,20 @@ export default function DeviceCapturePage(){
     finally{if(version===selectionVersion.current)setSelectingAll(false);}
   };
   const create=async()=>{
-    const values=await form.validateFields();
-    if(!references.length||references.length>1000){setError('请选择1至1000台设备');return;}
-    if(await execute('/device-capture/schedules','POST',{...values,devices:references}))setOpen(false);
+    const values=await form.validateFields().catch(()=>undefined);
+    if(!values)return;
+    if(!references.length){setCreateError('请选择设备');return;}
+    setBusy(true);setCreateError('');
+    try{
+      const destination=vectorTest?{project_id:initialProject,vector_test:true}:{};
+      const result=await managementApi<CaptureSchedule|CaptureSchedule[]>('/device-capture/schedules','POST',{...values,...destination,devices:references,split_devices:scheduleCount>1});
+      const items=Array.isArray(result)?result:[result];
+      const createdIds=new Set(items.map(item=>item.sched_id));
+      setSchedules(previous=>[...items,...previous.filter(schedule=>!createdIds.has(schedule.sched_id))]);
+      setOpen(false);
+      message.success(`已创建 ${items.length} 个定时拉图计划`);
+    }catch(error){setCreateError(error instanceof Error?error.message:String(error));}
+    finally{setBusy(false);}
   };
   const updateFilter=(key:keyof typeof filters,value:string)=>{setFilters(previous=>({...previous,[key]:value,page:1}));};
   const projectName=(id?:string)=>id?projects.find(project=>project.id===id)?.project_name||id:'仅入图片库';
@@ -118,8 +136,8 @@ export default function DeviceCapturePage(){
     return task.kind==='device-sync'?`完成 ${success} 个平台，失败 ${failed} 个；同步 ${results.reduce((sum,item)=>sum+(item.count||0),0)} 台设备${imageSummary}`:`完成 ${success} 台设备，失败 ${failed} 台；入库 / 复用 ${results.reduce((sum,item)=>sum+(item.downloaded??item.downloaded_count??0),0)} 张图片`;
   };
   return <section style={{padding:24,minWidth:0}}>
-    <h1>设备抓图与场景</h1>
-    <p>同步设备时自动补取最近一张成功抓图，已有本地代表图则复用；取图后按图片分类，取不到则按设备名称分类，可人工修正。设备后续图片继承场景；定时拉图每轮仅取设备最新成功的一张入库并关联项目，沿用已有场景，不更新设备代表图或自动重新分类。</p>
+    <h1>{vectorTest?'选择抓图设备':'设备抓图与场景'}</h1>
+    <p>{vectorTest?'每轮拉取所选设备最新成功的抓图，供当前项目的向量检索测试使用。':'同步设备时自动补取最近一张成功抓图，已有本地代表图则复用；取图后按图片分类，取不到则按设备名称分类，可人工修正。设备后续图片继承场景；定时拉图每轮仅取设备最新成功的一张入库并关联项目，沿用已有场景，不更新设备代表图或自动重新分类。'}</p>
     {error&&<Alert type="error" showIcon title={error} closable onClose={()=>setError('')} style={{marginBottom:16}}/>}
     <Space wrap style={{marginBottom:16}}>
       <Checkbox checked={onlineOnly} onChange={event=>{setOnlineOnly(event.target.checked);if(event.target.checked&&!onlinePlatforms.some(platform=>platform.plat_id===filters.platform_id))updateFilter('platform_id','');}}>仅在线平台</Checkbox>
@@ -131,22 +149,22 @@ export default function DeviceCapturePage(){
       <Select aria-label="场景匹配方式" value={filters.scene_match} style={{width:160}} onChange={value=>{setSelected([]);updateFilter('scene_match',value);}} options={[{value:'any',label:'任一场景匹配'},{value:'all',label:'全部场景匹配'}]}/>
       <Select aria-label="设备分类状态" placeholder="全部分类状态" allowClear style={{width:160}} value={filters.scene_status||undefined} onChange={value=>updateFilter('scene_status',value||'')} options={Object.entries(sceneStatuses).map(([value,label])=>({value,label}))}/>
       <Select aria-label="设备图片筛选" value={filters.has_image} style={{width:140}} onChange={value=>updateFilter('has_image',value)} options={[{value:'',label:'全部图片状态'},{value:'yes',label:'有图片'},{value:'no',label:'无图片'}]}/>
-      <Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':'同步在线平台设备'}</Button>
+      {!vectorTest&&<Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':'同步在线平台设备'}</Button>}
       <Button loading={loading} onClick={()=>{void Promise.all([loadDevices(),loadPlatforms()]).catch(report);}}>刷新设备</Button>
     </Space>
     <Space wrap style={{marginBottom:16}}>
       <span>已选 {selected.length} 台设备</span><Button loading={selectingAll} disabled={!total||loading||busy} onClick={()=>void selectAllFiltered()}>全选筛选结果</Button><Button disabled={!selected.length&&!selectingAll} onClick={clearSelection}>清空选择</Button>
       {selectingAll&&<span>正在选择 {selectionProgress.loaded} / {selectionProgress.total} 台</span>}
-      <Button onClick={()=>setSceneSettingsOpen(true)}>场景分类设置</Button>
+      {!vectorTest&&<><Button onClick={()=>setSceneSettingsOpen(true)}>场景分类设置</Button>
       <Button disabled={!selected.length||selected.length>1000||!classificationEnabled||busy||selectingAll} onClick={()=>execute('/devices/classify','POST',{devices:references})}>分类所选设备</Button>
       <Popconfirm title={`重新分类：${platformScope}？`} description="处理此范围所有分页的设备，包含已成功设备；保留人工修正。" onConfirm={()=>execute('/devices/classify','POST',{platform_ids:syncPlatformIds})}><Button disabled={!classificationEnabled||busy||emptyPlatformScope}>全部设备分类</Button></Popconfirm>
       <Popconfirm title={`重跑失败分类：${platformScope}？`} description="仅重跑此范围所有分页中当前分类失败的设备，保留成功、未匹配及人工结果。" onConfirm={()=>execute('/devices/classify','POST',{platform_ids:syncPlatformIds,only_failed:true})}><Button disabled={!classificationEnabled||busy||emptyPlatformScope}>重跑失败分类</Button></Popconfirm>
-      <Button onClick={()=>setProgressOpen(true)}>同步与分类进度{activeSync.length+activeClassification.length?`（${activeSync.length+activeClassification.length} 项进行中）`:''}</Button>
-      <Button type="primary" disabled={!selected.length||selected.length>1000||busy||selectingAll} onClick={()=>{form.resetFields();form.setFieldsValue({project_id:projectFilter,interval_seconds:3600,enabled:true});setOpen(true);}}>创建定时拉图</Button>
-      {selected.length>1000&&<span>全选不限数量；分类所选设备和单个定时拉图任务最多绑定1000台。</span>}
-      {!classificationEnabled&&<span>自动场景分类未启用，请先配置分类模型与候选场景。</span>}
+      <Button onClick={()=>setProgressOpen(true)}>同步与分类进度{activeSync.length+activeClassification.length?`（${activeSync.length+activeClassification.length} 项进行中）`:''}</Button></>}
+      <Button type="primary" disabled={!selected.length||busy||selectingAll} onClick={()=>{form.resetFields();form.setFieldsValue({project_id:projectFilter,interval_seconds:3600,enabled:true});setCreateError('');setOpen(true);}}>创建定时拉图</Button>
+      {scheduleCount>1&&<span>定时拉图将自动拆成 {scheduleCount} 条计划，每条最多 1,000 台。{!vectorTest&&'所选设备分类每次仍最多 1,000 台。'}</span>}
+      {!vectorTest&&!classificationEnabled&&<span>自动场景分类未启用，请先配置分类模型与候选场景。</span>}
     </Space>
-    <p>同步与批量分类的平台范围：{platformScope}。设备搜索、场景、分类状态和图片筛选仅影响列表；业务场景按所选方式匹配，与摄像机位筛选取交集。启用自动分类后，新设备自动入队；已完成结果保留；定时抓图不触发分类，重新分类请手动操作。</p>
+    {!vectorTest&&<p>同步与批量分类的平台范围：{platformScope}。设备搜索、场景、分类状态和图片筛选仅影响列表；业务场景按所选方式匹配，与摄像机位筛选取交集。启用自动分类后，新设备自动入队；已完成结果保留；定时抓图不触发分类，重新分类请手动操作。</p>}
     <Drawer title="同步与分类进度" open={progressOpen} size={560} onClose={()=>setProgressOpen(false)}>
     <section aria-label="同步与分类进度" style={{minWidth:0,overflowWrap:'anywhere'}}>
 
@@ -180,22 +198,22 @@ export default function DeviceCapturePage(){
         {title:'代表图',render:(_,row)=><Space direction="vertical" size={0}>{row.representative_url?<Button type="text" aria-label={`放大查看${row.device_name}代表图`} title="点击放大代表图" style={{padding:0,height:'auto',cursor:'zoom-in'}} onClick={()=>setPreviewUrl(representativeUrl(row))}><AuthImage src={representativeUrl(row)} alt={`${row.device_name}代表图`} style={{width:96,height:64,objectFit:'contain'}}/></Button>:row.representative_status==='fetching'?'正在获取代表图':'暂无抓图'}{row.representative_error&&<small style={{color:row.representative_status==='failed'?'var(--ant-color-error)':undefined}}>{row.representative_error}</small>}</Space>},
         {title:'场景',render:(_,row)=>row.scene_labels?.length?<Space wrap>{row.scene_labels.map(scene=><Tag key={scene}>{sceneLabel(scene,sceneGroups)}</Tag>)}</Space>:<span>{sceneResultStatus(row.scene_status,row.scene_labels)==='unmatched'?'暂无匹配场景':'—'}</span>},
         {title:'分类状态',render:(_,row)=>{const status=sceneResultStatus(row.scene_status,row.scene_labels);return <Space direction="vertical" size={0}><Tag color={status==='failed'?'error':status==='completed'?'success':status==='unmatched'?'warning':'default'}>{sceneStatuses[status]||status}</Tag>{row.scene_source==='manual'?'人工修正':row.scene_source==='auto'?(row.scene_basis==='image'?'按抓图':'按设备名'):'—'}{status==='unmatched'&&<small>已处理，但未命中候选场景；可重新分类或人工修正。</small>}{row.scene_error&&<span>{row.scene_error}</span>}</Space>;}},
-        {title:'操作',render:(_,row)=><Space wrap><Button size="small" onClick={()=>{setEditingScene(row);setManualScenes(row.scene_labels||[]);}}>修正场景</Button>{row.scene_status==='failed'&&row.scene_source!=='manual'&&<Button size="small" disabled={!classificationEnabled||busy} onClick={()=>execute('/devices/classify','POST',{devices:[{plat_id:row.plat_id,device_id:row.device_id}],only_failed:true})}>重跑分类</Button>}</Space>},
+        ...(!vectorTest?[{title:'操作',render:(_:unknown,row:Device)=><Space wrap><Button size="small" onClick={()=>{setEditingScene(row);setManualScenes(row.scene_labels||[]);}}>修正场景</Button>{row.scene_status==='failed'&&row.scene_source!=='manual'&&<Button size="small" disabled={!classificationEnabled||busy} onClick={()=>execute('/devices/classify','POST',{devices:[{plat_id:row.plat_id,device_id:row.device_id}],only_failed:true})}>重跑分类</Button>}</Space>}]:[]),
       ]}/>
-    <Space wrap style={{margin:'24px 0 12px'}}><h2>定时拉图任务</h2><Select aria-label="按项目筛选拉图任务" placeholder="全部项目" allowClear showSearch optionFilterProp="label" style={{width:240}} value={projectFilter} onChange={setProjectFilter} options={projects.map(project=>({value:project.id,label:project.project_name}))}/>
+    <Space wrap style={{margin:'24px 0 12px'}}><h2>定时拉图任务</h2>{!vectorTest&&<><Select aria-label="按项目筛选拉图任务" placeholder="全部项目" allowClear showSearch optionFilterProp="label" style={{width:240}} value={projectFilter} onChange={setProjectFilter} options={projects.map(project=>({value:project.id,label:project.project_name}))}/>
       <Button onClick={()=>setCreatingProject(true)}>新建项目</Button>
-      <Button disabled={projects.find(project=>project.id===projectFilter)?.task_type!=='detection'} title="请选择检测项目后进行预标注与AI审核" onClick={()=>{if(projectFilter&&projects.find(project=>project.id===projectFilter)?.task_type==='detection')openProjectAutomation(projectFilter);}}>预标注与AI审核</Button>
+      <Button disabled={projects.find(project=>project.id===projectFilter)?.task_type!=='detection'} title="请选择检测项目后进行预标注与AI审核" onClick={()=>{if(projectFilter&&projects.find(project=>project.id===projectFilter)?.task_type==='detection')openProjectAutomation(projectFilter);}}>预标注与AI审核</Button></>}
     </Space>
     {creatingProject&&<CreateProjectDialog onClose={()=>setCreatingProject(false)} onCreated={project=>{createdProjects.current=[project,...createdProjects.current];setProjects(previous=>[project,...previous.filter(item=>item.id!==project.id)]);setProjectFilter(project.id);setCreatingProject(false);window.dispatchEvent(new CustomEvent('smarteye:projects-updated',{detail:project}));}}/>}
     <Table<CaptureSchedule> rowKey="sched_id" dataSource={schedules.filter(schedule=>!projectFilter||schedule.project_id===projectFilter)} scroll={{x:1200}} columns={[
       {title:'名称',dataIndex:'name'}, {title:'设备数',render:(_,row)=>row.devices.length},
       {title:'关联项目',render:(_,row)=>projectName(row.project_id)},
-      {title:'图片集',render:(_,row)=>collections.find(group=>group.id===row.collection_id)?.name||row.collection_id||'按平台归类'},
+      {title:'入库位置',render:(_,row)=>vectorTest?'向量检索测试':collections.find(group=>group.id===row.collection_id)?.name||row.collection_id||'按平台归类'},
       {title:'间隔',render:(_,row)=>`${row.interval_seconds??row.interval_minutes*60} 秒`},
       {title:'状态',render:(_,row)=><Space direction="vertical" size={0}><Tag color={row.running?'processing':row.enabled?'success':'default'}>{row.running?'拉取中':row.enabled?'已启用':'已暂停'}</Tag>{row.enabled&&!row.running&&row.next_run&&<small>下次：{new Date(row.next_run*1000).toLocaleString('zh-CN')}</small>}{row.last_run&&<small>上次：{new Date(row.last_run*1000).toLocaleString('zh-CN')}</small>}{row.last_error&&<span>{[...new Set(row.last_error.split('; '))].join('；')}</span>}</Space>},
       {title:'操作',render:(_,row)=><Space><Button size="small" disabled={busy||row.running} onClick={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}/run`)}>立即拉取</Button><Button size="small" disabled={busy} onClick={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}/${row.enabled?'stop':'start'}`)}>{row.enabled?'暂停':'启用'}</Button><Popconfirm title="删除此定时任务？" onConfirm={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}`,'DELETE')}><Button danger size="small" disabled={busy||row.running}>删除任务</Button></Popconfirm></Space>},
     ]}/>
-    <h2 style={{marginTop:24}}>平台设备与分类概况</h2>
+    {!vectorTest&&<><h2 style={{marginTop:24}}>平台设备与分类概况</h2>
     <p>已处理 = 分类成功 + 未匹配场景 + 分类失败；分类成功需有场景标签，空结果单独统计。下方执行记录保留各次任务的处理结果。</p>
     <Table<ManagedPlatform> rowKey="plat_id" dataSource={visiblePlatforms.filter(platform=>!filters.platform_id||platform.plat_id===filters.platform_id)} scroll={{x:950}} pagination={{pageSize:10,showSizeChanger:false}} columns={[
       {title:'平台',dataIndex:'platform_name'},
@@ -208,9 +226,9 @@ export default function DeviceCapturePage(){
       {title:'排队 / 分类中',render:(_,row)=>row.scene_pending_count??'—'},
       {title:'未分类',render:(_,row)=>row.classified_count===undefined?'—':Math.max(0,(row.device_count||0)-row.classified_count-(row.scene_failed_count||0)-(row.scene_pending_count||0)-(row.scene_unmatched_count||0))},
       {title:'操作',render:(_,row)=><Button size="small" disabled={!row.scene_failed_count} onClick={()=>{setFilters(previous=>({...previous,platform_id:row.plat_id,q:'',scene:[],scene_status:'failed',has_image:'',page:1}));document.getElementById('device-list')?.scrollIntoView({behavior:'smooth'});}}>查看失败设备</Button>},
-    ]}/>
+    ]}/></>}
     <h2 style={{marginTop:24}}>执行记录（按平台查看明细）</h2>
-    <p>先看处理摘要；点击“查看明细”查看平台、设备及失败原因。设备同步和分类作用于共享设备，项目筛选仅作用于抓图记录。</p>
+    <p>{vectorTest?'点击“查看明细”查看本次拉图的设备和失败原因。':'先看处理摘要；点击“查看明细”查看平台、设备及失败原因。设备同步和分类作用于共享设备，项目筛选仅作用于抓图记录。'}</p>
     <Table<ManagementTask> rowKey="task_id" dataSource={tasks.filter(task=>task.kind!=='device-capture'||!projectFilter||task.project_id===projectFilter).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''))} scroll={{x:1100}}
       expandable={{expandRowByClick:true,expandIcon:({expanded,onExpand,record})=><Button type="link" size="small" onClick={event=>{event.stopPropagation();onExpand(record,event);}}>{expanded?'收起明细':'查看明细'}</Button>,columnWidth:100,expandedRowRender:row=><div>
         <p>任务编号：{row.task_id}；最近更新：{row.updated_at?new Date(row.updated_at).toLocaleString('zh-CN'):'旧记录未记录时间'}</p>
@@ -232,15 +250,18 @@ export default function DeviceCapturePage(){
       {title:'操作',render:(_,row)=>['pending','running','processing'].includes(row.status)?<Button disabled={busy} size="small" onClick={event=>{event.stopPropagation();void execute(`/tasks/${encodeURIComponent(row.task_id)}/cancel`);}}>停止执行</Button>:'—'},
     ]}/>
     {previewUrl&&<ImagePreview url={previewUrl} onClose={()=>setPreviewUrl(null)}/>}
-    <Modal title="创建定时拉图" open={open} okText="创建任务" cancelText="取消" onOk={create} onCancel={()=>setOpen(false)} confirmLoading={busy}>
+    <Modal title="创建定时拉图" open={open} okText={scheduleCount>1?`创建 ${scheduleCount} 条计划`:'创建任务'} cancelText="取消" onOk={create} onCancel={()=>{if(!busy)setOpen(false);}} confirmLoading={busy}>
+      {createError&&<Alert type="error" showIcon title={createError} />}
       <p>每轮仅拉取已选 {selected.length} 台设备各自最新成功的一张抓图，不补拉历史；相同图片复用已有记录。不会主动触发摄像头拍摄。</p>
       <Form form={form} layout="vertical">
         <Form.Item name="name" label="任务名称" rules={[{required:true,whitespace:true,max:160}]}><Input maxLength={160}/></Form.Item>
         <Form.Item name="interval_seconds" label="拉取间隔（秒）" extra="每轮完成后等待此间隔再拉取，同一计划不重叠执行。" rules={[{required:true,type:'number',min:1,max:31536000}]}><InputNumber min={1} max={31536000} precision={0}/></Form.Item>
-        <Form.Item name="project_id" label="关联标注项目" extra="选择项目后默认使用项目同名图片集，新增图片自动关联此项目。"><Select aria-label="关联标注项目" allowClear showSearch optionFilterProp="label" options={projects.map(project=>({value:project.id,label:project.project_name}))}/></Form.Item>
-        <Form.Item name="collection_id" label="目标图片集"><Select aria-label="定时拉图图片集" allowClear showSearch optionFilterProp="label" placeholder="默认使用关联项目名" options={collections.map(group=>({value:group.id,label:group.name}))}/></Form.Item>
-        <Form.Item name="min_long_edge" label="最小图片长边（像素）" extra="留空使用默认入库规则，0 不限制图片尺寸。"><InputNumber min={0} max={32768} precision={0}/></Form.Item>
-        <Form.Item name="enabled" valuePropName="checked"><Checkbox>创建后启用</Checkbox></Form.Item>
+        {vectorTest?<p>入库位置为当前项目的向量检索测试区。</p>:<>
+          <Form.Item name="project_id" label="关联标注项目" extra="选择项目后默认使用项目同名图片集，新增图片自动关联此项目。"><Select aria-label="关联标注项目" allowClear showSearch optionFilterProp="label" options={projects.map(project=>({value:project.id,label:project.project_name}))}/></Form.Item>
+          <Form.Item name="collection_id" label="目标图片集"><Select aria-label="定时拉图图片集" allowClear showSearch optionFilterProp="label" placeholder="默认使用关联项目名" options={collections.map(group=>({value:group.id,label:group.name}))}/></Form.Item>
+        </>}
+        <Form.Item name="min_long_edge" label="最小图片长边（像素）" extra={vectorTest?'留空或填 0 时不限制图片尺寸。':'留空使用默认入库规则，0 不限制图片尺寸。'}><InputNumber min={0} max={32768} precision={0}/></Form.Item>
+        <Form.Item name="enabled" valuePropName="checked" extra={vectorTest?'启用后立即执行首轮拉图。':'启用后立即执行首轮拉图。图片沿用设备已有场景标签，拉图不会触发场景分类。'}><Checkbox>创建后自动定时拉图</Checkbox></Form.Item>
       </Form>
     </Modal>
     <Modal title="人工修正设备场景" width={960} open={!!editingScene} okText="保存场景" cancelText="取消" confirmLoading={busy} onCancel={()=>setEditingScene(undefined)} onOk={async()=>{if(editingScene&&await execute(`/devices/${encodeURIComponent(editingScene.plat_id)}/${encodeURIComponent(editingScene.device_id)}/scene`,'PUT',{scene_labels:manualScenes}))setEditingScene(undefined);}}>

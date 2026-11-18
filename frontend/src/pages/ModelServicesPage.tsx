@@ -3,7 +3,7 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
-import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getModelServices, getPromptDefaults, predictModelService, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
+import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getCaptchaModel, getModelServices, getPromptDefaults, predictModelService, saveCaptchaModel, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
 import type { ModelKind, ModelProtocol, ModelService, ModelServiceConfig, PredictionResult, PromptDefaults } from '../api/modelServices';
 import { PredictionResultView } from '../components/ModelPrediction';
 import JsonInput from '../components/JsonInput';
@@ -22,6 +22,9 @@ export default function ModelServicesPage() {
   const [params]=useSearchParams();
   const [notice, noticeContext] = message.useMessage();
   const [models, setModels] = useState<ModelService[]>([]), [admin, setAdmin] = useState(false);
+  const [captchaSaved, setCaptchaSaved] = useState<string | null>();
+  const [captchaDraft, setCaptchaDraft] = useState<string | null>(null);
+  const [captchaBusy, setCaptchaBusy] = useState(false);
   const [loading, setLoading] = useState(false), [working, setWorking] = useState(false), [error, setError] = useState('');
   const [editing, setEditing] = useState<ModelService | null>(), [editorOpen, setEditorOpen] = useState(false), [editorError, setEditorError] = useState('');
   const [defaultsOpen, setDefaultsOpen] = useState(false);
@@ -46,6 +49,23 @@ export default function ModelServicesPage() {
     getPromptDefaults().then(setPromptDefaults).catch(() => setPromptDefaults(undefined));
     return () => { trialRequest.current++; trialController.current?.abort(); };
   }, []);
+  useEffect(() => {
+    if (!admin) return;
+    let active = true;
+    getCaptchaModel().then(value => {
+      if (active) { setCaptchaSaved(value); setCaptchaDraft(value); }
+    }).catch(() => { if (active) setError('读取验证码识别模型失败'); });
+    return () => { active = false; };
+  }, [admin]);
+  const saveCaptcha = async () => {
+    setCaptchaBusy(true);
+    try {
+      setCaptchaSaved(await saveCaptchaModel(captchaDraft));
+      notice.success('验证码识别模型已更新');
+    } finally {
+      setCaptchaBusy(false);
+    }
+  };
   const edit = (model?: ModelService) => {
     setEditing(model || null); setEditorError(''); form.resetFields();
     form.setFieldsValue({ ...defaults, ...model, label_mapping_text: JSON.stringify(model?.label_mapping || {}, null, 2),
@@ -145,10 +165,26 @@ export default function ModelServicesPage() {
       {admin && <><Button onClick={() => setDefaultsOpen(true)} disabled={working}>添加默认模型</Button><Button aria-label="添加模型" type="primary" icon={<PlusOutlined />} onClick={() => edit()} disabled={working}>添加模型</Button></>}
     </Space>}>
       <Typography.Paragraph type="secondary">统一配置模型接口，试运行只预览结果。普通用户可查看和预测；管理员可修改、启停和连接测试。</Typography.Paragraph>
+      {admin && <Form layout="vertical" style={{marginBottom:16}}>
+        <Form.Item label="验证码识别模型" extra="抓图和数据拉取共用此配置，选择已启用的 OpenAI 图像对话模型。留空时沿用原配置。">
+          <Space wrap>
+            <Select aria-label="验证码识别模型" allowClear showSearch optionFilterProp="label"
+              style={{width:240,maxWidth:'100%'}} placeholder="选择后保存"
+              value={captchaDraft ?? undefined} onChange={value=>setCaptchaDraft(value ?? null)}
+              disabled={captchaSaved === undefined || captchaBusy}
+              options={models.filter(row=>row.enabled&&row.kind==='caption'&&row.protocol==='openai_chat')
+                .map(row=>({value:row.id,label:row.name}))}/>
+            <Button loading={captchaBusy} disabled={captchaSaved===undefined||captchaSaved===captchaDraft}
+              onClick={()=>void saveCaptcha().catch(()=>{})}>保存识别模型</Button>
+          </Space>
+        </Form.Item>
+        {captchaSaved && !loading && !models.some(row=>row.id===captchaSaved&&row.enabled&&row.kind==='caption'&&row.protocol==='openai_chat') &&
+          <Alert type="warning" showIcon title="当前验证码识别模型不可用，请重新选择"/>}
+      </Form>}
       {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
       <Table<ModelService> rowKey="id" loading={loading} dataSource={models} pagination={{ pageSize: 10, showSizeChanger: true }} scroll={{ x: 1085 }} columns={[
         { title: 'ID', dataIndex: 'id', width: 80, render: value => <Typography.Text title={value} copyable={{ text: value }} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{value.slice(0, 5)}</Typography.Text> },
-        { title: 'KEY', dataIndex: 'key', width: 130, ellipsis: true }, { title: '名称', dataIndex: 'name', width: 140 },
+        { title: '模型标识', dataIndex: 'key', width: 130, ellipsis: true }, { title: '名称', dataIndex: 'name', width: 140 },
         { title: 'URL', dataIndex: 'base_url', width: 190, ellipsis: true }, { title: 'ENDPOINT', dataIndex: 'endpoint', width: 175, ellipsis: true },
         { title: '类型', dataIndex: 'kind', width: 110, render: (value: ModelKind, record) => <><Tag>{kinds[value]}</Tag><Typography.Text type="secondary" style={{ fontSize: 12 }}>{record.protocol}</Typography.Text></> },
         { title: '启用状态', dataIndex: 'enabled', width: 90, render: value => <Tag color={value ? 'success' : 'default'}>{value ? '已启用' : '已停用'}</Tag> },
@@ -175,7 +211,7 @@ export default function ModelServicesPage() {
       onOk={save} onCancel={() => { if (!working) setEditorOpen(false); }} okButtonProps={{ disabled: !admin || working, 'aria-label': '保存模型' }} styles={{ body: { maxHeight: '65vh', overflowY: 'auto' } }}>
       {editorError && <Alert type="error" showIcon title={editorError} style={{ marginBottom: 16 }} />}
       <Form form={form} layout="vertical" disabled={working}>
-        <Form.Item label="KEY" name="key" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: '使用字母、数字、下划线或连字符' }]}><Input aria-label="KEY" maxLength={80} /></Form.Item>
+        <Form.Item label="模型标识" name="key" extra="如 qwen-vision；API 密钥请使用下方的环境变量配置。" rules={[{ required: true, pattern: /^[a-zA-Z0-9_-]+$/, message: '使用字母、数字、下划线或连字符' }]}><Input aria-label="模型标识" maxLength={80} /></Form.Item>
         <Form.Item label="名称" name="name" rules={[{ required: true, whitespace: true }]}><Input aria-label="名称" maxLength={200} /></Form.Item>
         <Form.Item label="URL" name="base_url" rules={[{ required: true }, { validator: (_, value) => {
           try { const url = new URL(value); if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash) return Promise.resolve(); } catch { /* invalid URL */ }
@@ -215,7 +251,7 @@ export default function ModelServicesPage() {
           <DefaultPromptPreview value={promptDefaults?.training_analysis} label="查看平台默认训练分析提示词" expanded={false}/>
           <Button disabled={!promptDefaults} onClick={()=>form.setFieldValue(['chat_prompts','training_analysis'],promptDefaults!.training_analysis)} style={{marginBottom:16}}>恢复默认训练分析提示词</Button>
         </>}
-        <Form.Item label="密钥环境变量名（可选）" name="api_key_env" extra="只引用服务器环境变量名，不填写或保存密钥。" rules={[{ validator: (_, value) => !value || /^(QWEN_API_KEY|EMBEDDING_API_KEY|RERANKER_API_KEY|MODEL_API_KEY_[A-Z0-9_]+)$/.test(value) ? Promise.resolve() : Promise.reject(new Error('只允许指定环境变量或 MODEL_API_KEY_ 开头的名称')) }]}>
+        <Form.Item label="密钥环境变量名（可选）" name="api_key_env" extra="只填写名称，例如 QWEN_API_KEY。密钥值在 115 后端配置。" rules={[{ validator: (_, value) => !value || /^(QWEN_API_KEY|EMBEDDING_API_KEY|RERANKER_API_KEY|MODEL_API_KEY_[A-Z0-9_]+)$/.test(value) ? Promise.resolve() : Promise.reject(new Error('只允许指定环境变量或 MODEL_API_KEY_ 开头的名称')) }]}>
           <Input aria-label="密钥环境变量名" maxLength={100} placeholder="QWEN_API_KEY / EMBEDDING_API_KEY / MODEL_API_KEY_…" />
         </Form.Item>
         <Space wrap align="start">

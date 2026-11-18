@@ -52,6 +52,14 @@ export type PredictionInput = ({ asset_id: string; image_id?: never } | { image_
 export async function getModelServices(params?: { kind?: ModelKind; enabled?: boolean }): Promise<ModelService[]> {
   return (await apiClient.get('/api/model-services', { params })).data;
 }
+
+export async function getCaptchaModel(): Promise<string | null> {
+  return (await apiClient.get('/api/model-services/captcha-model')).data.model_id;
+}
+
+export async function saveCaptchaModel(model_id: string | null): Promise<string | null> {
+  return (await apiClient.put('/api/model-services/captcha-model', {model_id})).data.model_id;
+}
 export async function getPromptDefaults(): Promise<PromptDefaults> {
   return (await apiClient.get('/api/model-services/prompt-defaults')).data;
 }

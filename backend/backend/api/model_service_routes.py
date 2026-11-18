@@ -2,20 +2,45 @@
 from uuid import UUID
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user, get_current_superuser
 from api.asset_routes import scoped_asset
 from database import get_db_session
-from models import ModelService, LibraryImage, User
+from models import ModelService, LibraryImage, Tenant, User
 from schemas.model_service import ModelServiceConfig, ModelServiceResponse, PredictionRequest
-from services.model_inference import infer, test_connection
+from services.model_inference import headers, infer, supports_captcha, test_connection
 from services.storage import get_storage
 from config.settings import settings
 from schemas.prompts import ChatPrompts, SCENE_PROMPT, ATTRIBUTES_PROMPT, DETECTION_PREANNOTATION_PROMPT
 
 router = APIRouter()
+
+
+class CaptchaModelSelection(BaseModel):
+    model_id: UUID | None
+
+
+@router.get('/captcha-model', response_model=CaptchaModelSelection)
+async def captcha_model(db: AsyncSession = Depends(get_db_session), user: User = Depends(get_current_superuser)):
+    value = await db.scalar(select(Tenant.captcha_model_service_id).where(Tenant.id == user.tenant_id))
+    return CaptchaModelSelection(model_id=value)
+
+
+@router.put('/captcha-model', response_model=CaptchaModelSelection)
+async def set_captcha_model(request: CaptchaModelSelection, db: AsyncSession = Depends(get_db_session),
+                            user: User = Depends(get_current_superuser)):
+    if request.model_id:
+        row = await scoped(db, request.model_id, user.tenant_id)
+        if not supports_captcha(row):
+            raise HTTPException(400, '请选择已启用的 OpenAI 图像对话模型')
+        headers(row)
+    await db.execute(update(Tenant).where(Tenant.id == user.tenant_id)
+                     .values(captcha_model_service_id=request.model_id))
+    await db.commit()
+    return request
 
 
 @router.get('/prompt-defaults')

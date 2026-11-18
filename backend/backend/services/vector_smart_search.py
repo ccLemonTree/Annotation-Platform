@@ -107,7 +107,12 @@ async def search(db,project,request,client):
         params.update(picUrl=info['image_url'],**region.model_dump())
     # Do not hold database transactions during platform login/search/download.
     await db.rollback()
-    login=await asyncio.to_thread(remote.login_platform,platform)
+    from integrations.smarteye.runtime import actor
+    context=actor.set({'tenant_id':tenant_id})
+    try:
+        login=await asyncio.to_thread(remote.login_platform,platform)
+    finally:
+        actor.reset(context)
     if not login.get('success'):raise HTTPException(502,login.get('msg') or '智搜平台登录失败')
     result=await asyncio.to_thread(remote.search_platform,platform,login,params)
     if not result.get('success'):raise HTTPException(502,result.get('msg') or '智搜平台搜索失败')

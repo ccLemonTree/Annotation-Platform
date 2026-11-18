@@ -402,6 +402,29 @@ async def test_milvus_requests_are_scoped_and_do_not_create_on_search():
 
 
 @pytest.mark.asyncio
+async def test_milvus_validates_collection_created_by_another_worker(monkeypatch):
+    from services.milvus import Milvus
+
+    answers = iter([{'has': False}, None, {'has': True}, {
+        'fields': [{'name':'vector','params':{'dim':2048}}], 'indexes':[{'metricType':'COSINE'}],
+    }])
+    ops = []
+
+    async def call(operation, **body):
+        from fastapi import HTTPException
+        ops.append(operation)
+        result = next(answers)
+        if result is None:
+            raise HTTPException(502, 'collection already exists')
+        return result
+
+    milvus = Milvus(None, 'image_platform_test_owned')
+    monkeypatch.setattr(milvus, 'call', call)
+    await milvus.ensure()
+    assert ops == ['collections/has', 'collections/create', 'collections/has', 'collections/describe']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change',['cancel','model','delete','review'])
 async def test_late_project_results_are_fenced(work_env,change):
     from services import project_work as service

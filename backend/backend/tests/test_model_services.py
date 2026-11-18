@@ -39,6 +39,18 @@ def test_model_config_crud_and_validation(client, auth_headers):
     assert client.get('/api/model-services').status_code==401
 
 
+def test_captcha_model_selection_requires_enabled_visual_chat(client, auth_headers):
+    route = '/api/model-services/captcha-model'
+    detector = client.post('/api/model-services', headers=auth_headers, json=config()).json()
+    assert client.put(route, headers=auth_headers, json={'model_id': detector['id']}).status_code == 400
+    data = dict(key='captcha-vision', name='OCR', kind='caption', protocol='openai_chat',
+                base_url='http://vision.test/v1', endpoint='/chat/completions', model_name='vision')
+    model = client.post('/api/model-services', headers=auth_headers, json=data).json()
+    assert client.put(route, headers=auth_headers, json={'model_id':model['id']}).json() == {'model_id':model['id']}
+    assert client.get(route, headers=auth_headers).json() == {'model_id':model['id']}
+    assert client.put(route, headers=auth_headers, json={'model_id':None}).json() == {'model_id':None}
+
+
 def test_model_connection_state_is_separate_from_enabled_and_survives_refresh(client, auth_headers, monkeypatch):
     from fastapi import HTTPException
     from api import model_service_routes as routes

@@ -173,7 +173,11 @@ export default function AssetsPage() {
     {title:'文件名',dataIndex:'original_name',width:230,ellipsis:true},
     ...(!projectId?[{title:'图片集',width:160,render:(_:unknown,row:Row)=><Space wrap>{('collection_names' in row ? row.collection_names||[] : []).map(name=><Tag key={name}>{name}</Tag>)}</Space>}]:[]),
       {title:'场景',width:180,render:(_:unknown,row:Row)=><Space wrap>{'scene_labels' in row&&row.scene_labels?.map(label=><Tag key={label}>{sceneLabel(label,sceneGroups)}</Tag>)}</Space>},
-      {title:'分类状态',width:150,render:(_:unknown,row:Row)=><Space orientation="vertical" size={0}><Tag title={row.scene_error||undefined} color={sceneStatus(row)==='failed'?'error':sceneStatus(row)==='completed'?'success':'default'}>{sceneStatusLabel(row)||sceneStatus(row)}</Tag>{row.scene_metadata?.basis==='device_name'&&<small title="同一原图的多个设备来源共享场景标签并集">{row.scene_metadata.device_scene_basis==='image'?'按设备抓图':'按设备名'}</small>}</Space>},
+      {title:'分类状态',width:150,render:(_:unknown,row:Row)=>{
+        const status=sceneStatus(row);
+        const fromDevice=row.scene_metadata?.basis==='device_name';
+        return <Space orientation="vertical" size={0}><Tag title={row.scene_error||undefined} color={status==='failed'?'error':status==='completed'?'success':'default'}>{fromDevice&&status==='completed'?'继承设备标签':sceneStatusLabel(row)||status}</Tag>{fromDevice&&<small title="同一原图的多个设备来源共享场景标签并集">{row.scene_metadata?.device_scene_basis==='image'?'设备标签来自抓图':'设备标签来自设备名'}</small>}</Space>;
+      }},
       {title:'来源设备',width:180,ellipsis:true,render:(_:unknown,row:Row)=>{
         const info=row.device_info;
         const sources=Array.isArray(info?.sources)?info.sources:[info];

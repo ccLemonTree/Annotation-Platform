@@ -1,6 +1,6 @@
-import { useEffect,useRef,useState } from 'react';
+import { lazy,Suspense,useEffect,useRef,useState } from 'react';
 import { Link,useSearchParams } from 'react-router-dom';
-import { Alert,Button,Card,Checkbox,Empty,Form,InputNumber,Pagination,Popconfirm,Progress,Select,Space,Tag,Tabs } from 'antd';
+import { Alert,Button,Card,Checkbox,Empty,Form,InputNumber,Pagination,Popconfirm,Progress,Select,Space,Spin,Tag,Tabs } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
 import type { Project } from '../api/projects';
@@ -17,13 +17,19 @@ import useImageNavigation from '../components/useImageNavigation';
 import './ModelPreviewPage.css';
 import MultimodalWorkspace from '../components/validation/MultimodalWorkspace';
 import ValidationPage from './ValidationPage';
+const VectorSearchTestPage = lazy(() => import('./VectorSearchTestPage'));
 
 export default function ModelPreviewPage({embeddedProject}:{embeddedProject?:Project}){
   const [params,setParams]=useSearchParams();
-  const view=params.get('view')==='validation'?'validation':'preview';
-  return <Tabs activeKey={view} onChange={value=>setParams(previous=>{const next=new URLSearchParams(previous);next.set('view',value);next.delete('run_id');next.delete('semantic_run_id');next.delete('page');return next;},{preventScrollReset:true})} items={[
+  const view=params.get('view');
+  const supportsEvaluation=!embeddedProject||['detection','caption','vector'].includes(embeddedProject.task_type);
+  const active=view==='vector-test'||!supportsEvaluation?'vector-test':view==='validation'?'validation':'preview';
+  return <Tabs activeKey={active} onChange={value=>setParams(previous=>{const next=new URLSearchParams(previous);next.set('view',value);next.delete('run_id');next.delete('semantic_run_id');next.delete('page');return next;},{preventScrollReset:true})} items={[
+    ...(supportsEvaluation?[
     {key:'preview',label:'快速测试',children:<ModelPreviewWorkspace embeddedProject={embeddedProject}/>},
     {key:'validation',label:'数据集评估',children:<ValidationPage embeddedProject={embeddedProject}/>},
+    ]:[]),
+    {key:'vector-test',label:'向量检索测试',children:<Suspense fallback={<Spin/>}><VectorSearchTestPage embeddedProject={embeddedProject}/></Suspense>},
   ]} destroyOnHidden/>;
 }
 

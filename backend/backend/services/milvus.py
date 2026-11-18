@@ -31,8 +31,12 @@ class Milvus:
 
     async def ensure(self):
         if not (await self.call('collections/has')).get('has'):
-            await self.call('collections/create',dimension=2048,metricType='COSINE',idType='VarChar',autoID=False,
-                primaryFieldName='id',vectorFieldName='vector',params={'max_length':'96','enableDynamicField':True})
+            try:
+                await self.call('collections/create',dimension=2048,metricType='COSINE',idType='VarChar',autoID=False,
+                    primaryFieldName='id',vectorFieldName='vector',params={'max_length':'96','enableDynamicField':True})
+            except HTTPException:
+                if not (await self.call('collections/has')).get('has'):
+                    raise
         description=await self.call('collections/describe')
         field=next((f for f in description.get('fields',[]) if f.get('name')=='vector'),{})
         params=field.get('params',field.get('elementTypeParams',{}))

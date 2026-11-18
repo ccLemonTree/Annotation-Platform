@@ -3,8 +3,13 @@
 
 def test_schedule_actions_are_not_mistaken_for_download_task_ids(client, auth_headers, monkeypatch):
     from integrations.smarteye import device_capture
+    from integrations.smarteye.management_schema import devices
+    from integrations.smarteye.runtime import get_runtime
     monkeypatch.setattr(device_capture, 'get_platform', lambda key: {'plat_id': key, 'state': '1'})
     monkeypatch.setattr(device_capture, 'get_device', lambda *args: {'device_id': 'camera'})
+    monkeypatch.setattr(device_capture, 'list_platforms_internal', lambda: [device_capture.get_platform('platform')])
+    with get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert().values(tenant_id=1, plat_id='platform', device_id='camera', payload={}))
     response = client.post('/api/smarteye/device-capture/schedules', headers=auth_headers,
         json={'name': '设备抓图', 'devices': [{'plat_id': 'platform', 'device_id': 'camera'}], 'interval_minutes': 10})
     assert response.status_code == 201, response.text

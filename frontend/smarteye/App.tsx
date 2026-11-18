@@ -198,6 +198,11 @@ const App: React.FC = () => {
     setActivePage('alarm-log');
   };
 
+  const params = new URLSearchParams(location.search);
+  if (params.get('vector_test') === '1' && params.get('project_id')) {
+    return <div className="smarteye-app"><main className="smarteye-content"><DeviceCapturePage /></main></div>;
+  }
+
   return (
     <div className="smarteye-app">{!['platform-management','device-capture'].includes(activePage)&&<IntegrationBar />}<div className="smarteye-body">
     <div className="smarteye-layout">

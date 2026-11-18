@@ -6,17 +6,18 @@ import threading
 import time
 import uuid
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import wraps
+from itertools import islice
 from urllib.parse import urljoin
 
 import requests
 from flask import jsonify, request
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, tuple_, update
 
-from integrations.smarteye.management import get_device, get_platform, ERRORS
-from integrations.smarteye.management_schema import capture_schedules
-from integrations.smarteye.runtime import actor, execution, get_runtime, response_bytes, tracked_run, device_source
+from integrations.smarteye.management import get_device, get_platform, list_platforms_internal, ERRORS
+from integrations.smarteye.management_schema import capture_schedules, devices as device_registry
+from integrations.smarteye.runtime import ContextExecutor, actor, execution, get_runtime, response_bytes, tracked_run, device_source
 
 _lock = threading.RLock()
 _active = set()
@@ -26,6 +27,11 @@ _pool = None
 _platform_tokens = {}
 _platform_token_locks = {}
 _token_guard = threading.Lock()
+_DEVICES_PER_SCHEDULE = 1000
+_MAX_RUNNING_SCHEDULES = 3
+_DEVICES_IN_FLIGHT_PER_SCHEDULE = 4
+_DEVICES_IN_FLIGHT_PER_PLATFORM = 2
+_platform_slots = {}
 
 
 
@@ -119,6 +125,12 @@ def _destination(body, owner):
     result = {**owner}
     for key in ('project_id', 'collection_id', 'min_long_edge'):
         result.pop(key, None)
+    if type(body.get('vector_test', False)) is not bool:
+        raise ValueError('测试用途无效')
+    if body.get('vector_test'):
+        if not body.get('project_id') or body.get('collection_id'):
+            raise ValueError('检索测试拉图需要关联项目，并使用项目的测试数据')
+        result['vector_test'] = True
     with get_runtime().engine.connect() as conn:
         for key, model in (('project_id', Project), ('collection_id', ImageCollection)):
             value = body.get(key)
@@ -144,7 +156,10 @@ def register_routes(app):
     def device_capture_schedules():
         owner = actor.get()
         if request.method == 'GET':
-            return jsonify(code=0, data=[_public(item) for item in _items(owner['tenant_id'])])
+            vector_test = request.args.get('vector_test') == '1'
+            project_id = request.args.get('project_id')
+            return jsonify(code=0, data=[_public(item) for item in _items(owner['tenant_id'])
+                if bool(item.get('vector_test')) == vector_test and (not vector_test or item['project_id'] == project_id)])
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             raise ValueError('请求须为JSON对象')
@@ -158,34 +173,52 @@ def register_routes(app):
             interval = minutes * 60
         if type(interval) is not int or not 1 <= interval <= 31536000:
             raise ValueError('执行间隔须为1至31536000秒')
-        if not isinstance(devices, list) or not 1 <= len(devices) <= 1000:
+        split_devices = body.get('split_devices', False)
+        if type(split_devices) is not bool:
+            raise ValueError('是否拆分计划须为布尔值')
+        if not isinstance(devices, list) or not devices or (not split_devices and len(devices) > _DEVICES_PER_SCHEDULE):
             raise ValueError('请选择1至1000台设备')
-        selected = []
+        selected = {}
         for device in devices:
             if not isinstance(device, dict) or not isinstance(device.get('plat_id'), str) or not isinstance(device.get('device_id'), str):
                 raise ValueError('设备参数无效')
-            platform = get_platform(device['plat_id'])
-            registered = get_device(owner['tenant_id'], device['plat_id'], device['device_id'])
-            if not platform or not registered:
-                raise ValueError('平台或设备不存在')
-            if registered.get('identity_kind') == 'name':
-                raise ValueError('名称分组没有真实设备ID，不能创建定时抓图')
-            if str(platform.get('state')) != '1':
-                raise ValueError('平台未启用')
-            value = {'plat_id': device['plat_id'], 'device_id': device['device_id']}
-            if value not in selected:
-                selected.append(value)
+            key = (device['plat_id'], device['device_id'])
+            selected[key] = {'plat_id': key[0], 'device_id': key[1]}
+        platforms = {row['plat_id']: row for row in reversed(list_platforms_internal())}
+        keys = list(selected)
+        batches = [keys[start:start + _DEVICES_PER_SCHEDULE] for start in range(0, len(keys), _DEVICES_PER_SCHEDULE)]
         if type(body.get('enabled', False)) is not bool:
             raise ValueError('启用状态无效')
         destination = _destination(body, owner)
-        item = dict(sched_id=str(uuid.uuid4()), tenant_id=owner['tenant_id'], name=name.strip(),
-                    devices=selected, interval_seconds=interval, owner=destination,
-                    project_id=destination.get('project_id'), collection_id=destination.get('collection_id'),
-                    min_long_edge=destination.get('min_long_edge'), enabled=body.get('enabled', False),
-                    running=False, last_task_id=None, last_run=None, created_at=time.time(), next_run=time.time(), last_error='', cursors={}, device_results=[])
+        items = []
+        now = time.time()
+        with get_runtime().engine.connect() as conn:
+            for index, batch in enumerate(batches, 1):
+                registered = {(plat_id, device_id): payload for plat_id, device_id, payload in conn.execute(
+                    select(device_registry.c.plat_id, device_registry.c.device_id, device_registry.c.payload).where(
+                        device_registry.c.tenant_id == owner['tenant_id'],
+                        tuple_(device_registry.c.plat_id, device_registry.c.device_id).in_(batch)))}
+                for key in batch:
+                    platform = platforms.get(key[0])
+                    if not platform or key not in registered:
+                        raise ValueError('平台或设备不存在')
+                    if registered[key].get('identity_kind') == 'name':
+                        raise ValueError('名称分组没有真实设备ID，不能创建定时抓图')
+                    if str(platform.get('state')) != '1':
+                        raise ValueError('平台未启用')
+                suffix = f' ({index}/{len(batches)})' if len(batches) > 1 else ''
+                item = dict(sched_id=str(uuid.uuid4()), tenant_id=owner['tenant_id'], name=name.strip()[:160-len(suffix)] + suffix,
+                            devices=[selected[key] for key in batch], interval_seconds=interval, owner=destination,
+                            project_id=destination.get('project_id'), collection_id=destination.get('collection_id'),
+                            min_long_edge=destination.get('min_long_edge'), enabled=body.get('enabled', False),
+                            running=False, last_task_id=None, last_run=None, created_at=now, next_run=now, last_error='', cursors={}, device_results=[])
+                if destination.get('vector_test'):
+                    item['vector_test'] = True
+                items.append(item)
         with get_runtime().engine.begin() as conn:
-            conn.execute(insert(capture_schedules).values(sched_id=item['sched_id'], tenant_id=owner['tenant_id'], payload=item))
-        return jsonify(code=0, data=_public(item)), 201
+            conn.execute(insert(capture_schedules), [
+                dict(sched_id=item['sched_id'], tenant_id=owner['tenant_id'], payload=item) for item in items])
+        return jsonify(code=0, data=[_public(item) for item in items] if split_devices else _public(items[0])), 201
 
     @app.route('/device-capture/schedules/<sched_id>', methods=['DELETE'])
     @app.route('/device-capture/schedules/<sched_id>/<action>', methods=['POST'])
@@ -293,31 +326,61 @@ def _run_schedule(sched_id):
         _save(item)
     def run(task):
         errors = []
-        for index, device in enumerate(item['devices']):
-            if get_runtime().get(task)['status'] in ('cancelled', 'interrupted'):
-                break
+        runtime = get_runtime()
+        attempt = execution.get()[1]
+
+        def stopped():
+            job = runtime.get(task)
+            return not job or job['status'] in ('cancelled', 'interrupted') or job['attempt'] != attempt
+
+        def fetch(device):
+            with _lock:
+                slots = _platform_slots.get(device['plat_id'])
+                if slots is None:
+                    slots = _platform_slots[device['plat_id']] = threading.BoundedSemaphore(_DEVICES_IN_FLIGHT_PER_PLATFORM)
             key = json.dumps([device['plat_id'], device['device_id']], separators=(',', ':'))
             try:
-                result = _capture_device(task, owner, device, item.get('cursors', {}).get(key, item['created_at'] - _interval_seconds(item)), end)
-                if get_runtime().get(task)['status'] in ('cancelled', 'interrupted'):
-                    break
-                item.setdefault('cursors', {})[key] = end
+                with slots:
+                    if stopped():
+                        return None
+                    result = _capture_device(task, owner, device, cursors.get(key, default_start), end)
                 result.update(status='completed', **device)
             except Exception as exc:
-                error = _safe_error(exc)
-                errors.append(error)
-                result = {**device, 'status': 'failed', 'error': error}
+                result = {**device, 'status': 'failed', 'error': _safe_error(exc)}
             registered=get_device(owner['tenant_id'],device['plat_id'],device['device_id']) or {}
             platform=get_platform(device['plat_id']) or {}
             result.update(device_name=registered.get('device_name'),platform_name=platform.get('platform_name'))
-            item['device_results'].append(result)
-            with _lock:
-                current = _get(sched_id)
-                if current:
-                    current.update(cursors=item.get('cursors', {}), device_results=item['device_results'])
-                    _save(current)
-            get_runtime().patch(task, {'progress': int((index + 1) * 100 / len(item['devices'])), 'device_results': item['device_results']}, execution.get()[1])
-        get_runtime().patch(task, {'status': 'failed' if errors else 'completed', 'message': f'设备抓图结束：已处理 {len(item["device_results"])} 台，失败 {len(errors)} 台；具体原因见设备明细。' if errors else '设备抓图完成'}, execution.get()[1])
+            return key, result
+
+        cursors = item.get('cursors', {}).copy()
+        default_start = item['created_at'] - _interval_seconds(item)
+        results = item['device_results']
+        devices = iter(item['devices'])
+        with ContextExecutor(max_workers=_DEVICES_IN_FLIGHT_PER_SCHEDULE, thread_name_prefix='capture-device') as pool:
+            pending = {pool.submit(fetch, device) for device in islice(devices, _DEVICES_IN_FLIGHT_PER_SCHEDULE)}
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                with _lock:
+                    if stopped():
+                        break
+                    for future in done:
+                        captured = future.result()
+                        if captured is None:
+                            continue
+                        key, result = captured
+                        if result['status'] == 'completed':
+                            item.setdefault('cursors', {})[key] = end
+                        else:
+                            errors.append(result['error'])
+                        results.append(result)
+                        if (device := next(devices, None)) is not None:
+                            pending.add(pool.submit(fetch, device))
+                    current = _get(sched_id)
+                    if current:
+                        current.update(cursors=item.get('cursors', {}), device_results=results)
+                        _save(current)
+                runtime.patch(task, {'progress': int(len(results) * 100 / len(item['devices'])), 'device_results': results}, attempt)
+        runtime.patch(task, {'status': 'failed' if errors else 'completed', 'message': f'设备抓图结束：已处理 {len(results)} 台，失败 {len(errors)} 台；具体原因见设备明细。' if errors else '设备抓图完成'}, attempt)
         return errors
     def safe_run(task):
         try:
@@ -339,7 +402,7 @@ def _run_schedule(sched_id):
 def _submit(sched_id):
     global _pool
     with _lock:
-        if sched_id in _active or len(_active) >= 2:
+        if sched_id in _active or len(_active) >= _MAX_RUNNING_SCHEDULES:
             return False
         item = _get(sched_id)
         if not item or item['running']:
@@ -348,7 +411,7 @@ def _submit(sched_id):
         _save(item)
         _active.add(sched_id)
         if _pool is None:
-            _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='device-capture')
+            _pool = ThreadPoolExecutor(max_workers=_MAX_RUNNING_SCHEDULES, thread_name_prefix='device-capture')
         def work():
             try:
                 _run_schedule(sched_id)
@@ -390,6 +453,7 @@ def shutdown_worker():
     if _pool:
         _pool.shutdown(wait=True, cancel_futures=True)
     _pool = _thread = None
+    _platform_slots.clear()
     with _token_guard:
         _platform_tokens.clear()
         _platform_token_locks.clear()

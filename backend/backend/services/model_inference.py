@@ -23,6 +23,10 @@ def supports_prompt(config):
         config.kind=='detection' and config.endpoint=='/detect/grounding')
 
 
+def supports_captcha(config):
+    return config.enabled and config.kind == 'caption' and config.protocol == 'openai_chat'
+
+
 def headers(config):
     key = config.api_key_env
     value = (getattr(settings, key, '') or os.environ.get(key, '')) if key else ''

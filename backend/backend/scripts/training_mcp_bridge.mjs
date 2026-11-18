@@ -45,8 +45,12 @@ try {
       process.stdout.write(JSON.stringify({ success: true }));
     } else {
       phase = 'ssh_execute';
-      const executor = input.executor === 'k8s_training' ? 'k8s_training_executor.py' : monitoring ? 'deployment_logs_executor.py' : input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
+      const executor = input.executor === 'vector_test' ? 'vector_test_executor.py' : input.executor === 'k8s_training' ? 'k8s_training_executor.py' : monitoring ? 'deployment_logs_executor.py' : input.executor === 'image_preload' ? 'image_preload_executor.py' : input.executor === 'image_update' ? 'image_update_executor.py' : input.executor === 'model_deployment' ? 'model_deployment_executor.py' : input.executor === 'training_metrics' ? 'training_metrics.py' : input.executor === 'gpu_release' ? 'gpu_release_executor.py' : input.executor === 'validation' ? 'checkpoint_executor.py' : 'training_executor.py';
       let source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/' + executor), 'utf8');
+      if (input.executor === 'vector_test') {
+        const bundle = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/model_deployment_executor.py'), 'utf8');
+        source = bundle.slice(0,bundle.lastIndexOf("\nif __name__")) + '\n' + source;
+      }
       if (input.executor === 'k8s_training' && ['merge_cache_probe','merge_cache_publish'].includes(input.payload.action)) {
         const cacheCode = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../services/training_executor.py'), 'utf8');
         const marker = "if __name__ == '__main__':";

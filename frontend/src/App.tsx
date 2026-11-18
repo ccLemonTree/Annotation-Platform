@@ -107,6 +107,7 @@ const router = createBrowserRouter(createRoutesFromElements(
             <Route path="annotate/project/:projectId" element={<VectorAnnotationWorkspace />} />
             <Route path="models" element={<ModelServicesPage />} />
             <Route path="model-preview" element={<ModelPreviewPage />} />
+            <Route path="vector-test" element={<Navigate replace to="/model-preview?view=vector-test" />} />
             <Route path="automation" element={<AutomationPage />} />
             <Route path="review-queue" element={<ReviewQueuePage />} />
             <Route path="image-semantics" element={<Navigate to="/annotations" replace />} />

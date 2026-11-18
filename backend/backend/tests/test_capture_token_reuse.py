@@ -25,10 +25,14 @@ def collect(task,owner=None,platform='p'):
     return runtime.tracked_run(lambda current:capture._capture_device(current,owner,{'plat_id':platform,'device_id':'d'},0,60),task)
 
 
-def test_reuses_platform_tokens_across_devices_and_batches_without_persisting_secrets(capture_client,tokens):
+def test_reuses_platform_tokens_across_devices_and_batches_without_persisting_secrets(capture_client,tokens,monkeypatch):
+    from integrations.smarteye.management_schema import devices
     login,query=tokens
-    item=schedule(capture_client,devices=[{'plat_id':'p','device_id':'one'},
-        {'plat_id':'p','device_id':'two'},{'plat_id':'other','device_id':'three'}]).json['data']
+    selection=[{'plat_id':'p','device_id':'one'}, {'plat_id':'p','device_id':'two'}, {'plat_id':'other','device_id':'three'}]
+    monkeypatch.setattr(capture,'list_platforms_internal',lambda:[capture.get_platform(key) for key in ('p','other')])
+    with runtime.get_runtime().engine.begin() as conn:
+        conn.execute(devices.insert(),[dict(device,tenant_id=1,payload={}) for device in selection])
+    item=schedule(capture_client,devices=selection).json['data']
     for _ in range(2):capture._run_schedule(item['sched_id'])
     assert login.call_count==2 and query.call_count==6
     saved=capture._get(item['sched_id']);job=runtime.get_runtime().get(saved['last_task_id'])
