@@ -3,9 +3,9 @@
 """
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, func, BigInteger, ForeignKey, Text, Index, Boolean, text, or_
+from sqlalchemy import DDL, String, Integer, DateTime, event, func, BigInteger, ForeignKey, Text, Index, Boolean, text, or_
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from typing import Optional
 import uuid
 
@@ -13,9 +13,18 @@ from .base import Base
 
 
 def _asset_project_id(context):
+    if context is None:
+        return None
+    params = context.get_current_parameters() or {}
+    if params.get("project_id") is not None:
+        return params["project_id"]
+    asset_id = params.get("asset_id")
+    conn = getattr(context, "connection", None)
+    if asset_id is None or conn is None:
+        return None
     from sqlalchemy import select
     from .asset import Asset
-    return context.connection.scalar(select(Asset.project_id).where(Asset.id==context.get_current_parameters()['asset_id']))
+    return conn.scalar(select(Asset.project_id).where(Asset.id == asset_id))
 
 
 class Annotation(Base):
@@ -54,17 +63,23 @@ class Annotation(Base):
 
     # 关联关系
     asset: Mapped["Asset"] = relationship("Asset", back_populates="annotations")
+    _asset_project_id = staticmethod(_asset_project_id)
+
+    @validates("asset")
+    def _sync_asset_project_id(self, _key, asset):
+        if asset is not None and getattr(asset, "project_id", None) is not None and self.project_id is None:
+            self.project_id = asset.project_id
+        return asset
 
     # 索引
     __table_args__ = (
         Index('uq_annotation_asset_version', 'asset_id', 'version', unique=True),
         Index('uq_annotation_latest', 'asset_id', unique=True,
               postgresql_where=text('is_latest = true'), sqlite_where=text('is_latest = 1')),
-        Index('idx_annotation_asset', 'asset_id'),
+        Index('ix_annotations_project_id', 'project_id'),
         Index('idx_annotation_annotator', 'annotator_id'),
         Index('idx_annotation_reviewer', 'reviewer_id'),
         Index('idx_annotation_status', 'review_status'),
-        Index('idx_annotation_latest', 'is_latest'),
         Index('idx_annotation_created', 'created_at'),
         Index('ix_annotations_project_latest', 'project_id', text('created_at DESC'), text('version DESC'), 'id',
               postgresql_where=text('is_latest = true'), sqlite_where=text('is_latest = 1')),
@@ -107,3 +122,11 @@ class Annotation(Base):
                 AnnotationEvent.asset_id==cls.asset_id,AnnotationEvent.action=='ai_review',
                 AnnotationEvent.detail['version'].as_integer()==cls.version,
                 AnnotationEvent.detail['decision'].as_string()=='needs_review').exists())
+
+
+for _ddl in (
+    "CREATE INDEX IF NOT EXISTS ix_annotations_project_review_detection ON annotations (project_id, COALESCE(review_by_kind->>'detection', review_status), created_at DESC, version DESC, id) WHERE is_latest = true",
+    "CREATE INDEX IF NOT EXISTS ix_annotations_project_review_image ON annotations (project_id, COALESCE(review_by_kind->>'image', review_status), created_at DESC, version DESC, id) WHERE is_latest = true",
+    "CREATE INDEX IF NOT EXISTS ix_annotations_data_gin ON annotations USING gin (annotation_data jsonb_path_ops) WHERE is_latest = true",
+):
+    event.listen(Annotation.__table__, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))

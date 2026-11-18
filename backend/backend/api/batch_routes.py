@@ -19,6 +19,7 @@ from models.annotation import Annotation
 from api.deps import get_current_user, get_tenant_id
 from pydantic import BaseModel
 from services.annotations import locked_annotation, review, remove
+from services.image_library import iter_id_conditions
 from services.project_access import project_condition
 
 
@@ -26,15 +27,19 @@ router = APIRouter()
 
 
 async def scoped_annotation_ids(db, annotation_ids, tenant_id):
-    result = await db.execute(select(Annotation.id).join(Asset).join(Project).where(
-        Annotation.id.in_(annotation_ids), Project.tenant_id == tenant_id,project_condition(db)))
-    ids = list(result.scalars().all())
-    if len(ids)!=len(set(annotation_ids)):
+    unique_ids = sorted(set(annotation_ids))
+    ids = []
+    for cond in iter_id_conditions(db, Annotation.id, unique_ids):
+        result = await db.execute(select(Annotation.id).join(Asset).join(Project).where(
+            cond, Project.tenant_id == tenant_id, project_condition(db)))
+        ids.extend(result.scalars().all())
+    if len(ids) != len(unique_ids):
         raise HTTPException(status_code=404, detail="未找到可操作的标注")
     # Acquire every asset before counter updates, matching single-write lock order.
-    await db.execute(select(Asset).join(Project).join(Annotation,Annotation.asset_id==Asset.id).where(
-        Annotation.id.in_(ids), Project.tenant_id == tenant_id)
-        .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset))
+    for cond in iter_id_conditions(db, Annotation.id, sorted(ids)):
+        await db.execute(select(Asset).join(Project).join(Annotation, Annotation.asset_id == Asset.id).where(
+            cond, Project.tenant_id == tenant_id)
+            .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset))
     return ids
 
 
@@ -74,16 +79,10 @@ async def batch_update_asset_status(
         )
 
     # 验证资产属于当前租户
-    stmt = (
-        select(Asset.id)
-        .join(Project)
-        .where(
-            Asset.id.in_(asset_ids),
-            Project.tenant_id == tenant_id
-        )
-    )
-    result = await db.execute(stmt)
-    valid_asset_ids = [row[0] for row in result.all()]
+    valid_asset_ids = []
+    for cond in iter_id_conditions(db, Asset.id, sorted(set(asset_ids))):
+        result = await db.execute(select(Asset.id).join(Project).where(cond, Project.tenant_id == tenant_id))
+        valid_asset_ids.extend(row[0] for row in result.all())
 
     if not valid_asset_ids:
         raise HTTPException(
@@ -91,21 +90,23 @@ async def batch_update_asset_status(
             detail="未找到属于当前租户的资产"
         )
 
-    assets = (await db.execute(select(Asset).where(Asset.id.in_(valid_asset_ids))
-        .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset))).scalars().all()
+    assets = []
+    for cond in iter_id_conditions(db, Asset.id, sorted(valid_asset_ids)):
+        assets.extend((await db.execute(select(Asset).where(cond)
+            .order_by(Asset.project_id, Asset.id).with_for_update(of=Asset))).scalars().all())
+    latest_by_asset = {}
+    for cond in iter_id_conditions(db, Annotation.asset_id, [a.id for a in assets]):
+        for ann in (await db.scalars(select(Annotation).where(cond, Annotation.is_latest.is_(True)))).all():
+            latest_by_asset[ann.asset_id] = ann
     for asset in assets:
-        latest = await db.scalar(select(Annotation).where(Annotation.asset_id == asset.id, Annotation.is_latest.is_(True)))
+        latest = latest_by_asset.get(asset.id)
         expected = ('reviewed' if latest.review_status == 'approved' else 'completed') if latest else None
         if (latest and new_status != expected) or (not latest and new_status in ('completed','reviewed')):
             raise HTTPException(409, '资产状态由最新标注和审核决定，请从标注工作台操作')
 
     # 批量更新状态
-    stmt = (
-        update(Asset)
-        .where(Asset.id.in_(valid_asset_ids))
-        .values(annotation_status=new_status)
-    )
-    result = await db.execute(stmt)
+    for cond in iter_id_conditions(db, Asset.id, valid_asset_ids):
+        await db.execute(update(Asset).where(cond).values(annotation_status=new_status))
     await db.commit()
 
     return BatchOperationResponse(
@@ -192,8 +193,6 @@ async def batch_approve_annotations(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="标注ID列表不能为空"
         )
-
-    annotation_ids = await scoped_annotation_ids(db, annotation_ids, tenant_id)
 
     annotation_ids = await scoped_annotation_ids(db, annotation_ids, tenant_id)
     for annotation_id in sorted(annotation_ids):

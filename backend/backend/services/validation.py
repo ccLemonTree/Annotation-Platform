@@ -4,6 +4,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 from io import BytesIO
+import json
 import logging
 import math
 from uuid import UUID, uuid4
@@ -11,6 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from PIL import Image
 from sqlalchemy import select, func, exists, update, delete
+from sqlalchemy.orm import defer
 from models import Asset, Annotation, Project, User
 from models.annotation_event import ExportSnapshot
 from models.image import LibraryImage
@@ -33,8 +35,10 @@ _worker = None
 TERMINAL = ('completed', 'failed', 'canceled')
 
 
-async def set_scope(db, id, tenant_id, lock=False):
+async def set_scope(db, id, tenant_id, lock=False, *, with_samples=False):
     query = select(ValidationSet).where(ValidationSet.id == id, ValidationSet.tenant_id == tenant_id)
+    if not with_samples:
+        query = query.options(defer(ValidationSet.samples))
     if lock: query = query.with_for_update()
     row = await db.scalar(query)
     if row is None: raise HTTPException(404, '验证集不存在')
@@ -80,7 +84,7 @@ def run_dict(row):
 
 def item_dict(row):
     result=public_columns(row, 'id asset_id original_name width height status truth predictions evaluation error')
-    if row.evaluation:result['evaluation']={k:v for k,v in row.evaluation.items() if k not in ('vector','queries')}
+    if row.evaluation:result['evaluation']={k:v for k,v in row.evaluation.items() if k not in ('vector','queries','_sample')}
     return result
 
 
@@ -214,7 +218,7 @@ async def create_set(db, request, user):
 
 
 async def create_run(db, request, user):
-    dataset = await set_scope(db, request.set_id, user.tenant_id, lock=True)
+    dataset = await set_scope(db, request.set_id, user.tenant_id, lock=True, with_samples=True)
     if dataset.source.get('kind')=='upload_preview':raise HTTPException(400,'上传图片请从模型效果预览启动')
     kind=dataset.source.get('task_type','detection')
     if request.checkpoint:
@@ -237,9 +241,25 @@ async def create_run(db, request, user):
         name=request.name or dataset.name, model_snapshot=snapshot, config=policy, total=dataset.total)
     db.add(run)
     await db.flush()
-    for sample in dataset.samples:
-        db.add(ValidationItem(run_id=run.id, asset_id=UUID(sample['asset_id']),
-            original_name=sample['original_name'], width=sample['width'], height=sample['height'], truth=deepcopy(sample['truth'])))
+    for sample_idx, sample in enumerate(dataset.samples):
+        sample_meta = {
+            'sample_index': sample_idx,
+            'asset_id': sample['asset_id'],
+            'blob_path': sample['blob_path'],
+            'content_hash': sample['content_hash'],
+            'width': sample['width'],
+            'height': sample['height'],
+            **({'query_texts': deepcopy(sample['query_texts'])} if 'query_texts' in sample else {}),
+        }
+        db.add(ValidationItem(
+            run_id=run.id,
+            asset_id=UUID(sample['asset_id']),
+            original_name=sample['original_name'],
+            width=sample['width'],
+            height=sample['height'],
+            truth=deepcopy(sample['truth']),
+            evaluation={'_sample': sample_meta},
+        ))
     await recount(db, run)
     await db.commit()
     await db.refresh(run)
@@ -248,7 +268,7 @@ async def create_run(db, request, user):
 
 async def refresh_set(db, id, user):
     from schemas.validation import ValidationSetCreate
-    original=await set_scope(db,id,user.tenant_id)
+    original=await set_scope(db,id,user.tenant_id,with_samples=True)
     if original.source.get('kind')=='upload_preview' or not original.project_id:
         raise HTTPException(409,'此验证集没有可更新的项目来源')
     request=ValidationSetCreate(name=original.name[:185]+' · 更新标注',project_id=original.project_id,
@@ -380,11 +400,12 @@ async def retry_run(db, run):
         ValidationItem.status.in_(('failed', 'canceled'))).with_for_update())).all()
     if not rows: raise HTTPException(400, '没有失败或取消的图片可重试')
     for item in rows:
+        sample_meta = (item.evaluation or {}).get('_sample')
         item.status = 'pending'
         item.attempt += 1
         item.error = None
         item.predictions = []
-        item.evaluation = {}
+        item.evaluation = {'_sample': sample_meta} if sample_meta else {}
     run.status = 'pending'
     await recount(db, run)
     await db.commit()
@@ -416,9 +437,40 @@ async def process_one(sessions):
         run_id, item_id, attempt = run.id, item.id, item.attempt
         try:
             await validate_context(db, run)
-            dataset = await set_scope(db, run.set_id, run.tenant_id)
-            sample = next(sample for sample in dataset.samples if sample['asset_id'] == str(item.asset_id))
-            labels, truth = deepcopy(dataset.labels), deepcopy(item.truth)
+            sample_meta = (item.evaluation or {}).get('_sample')
+            sample_idx = sample_meta.get('sample_index') if isinstance(sample_meta, dict) else None
+            if isinstance(sample_idx, int):
+                row = (
+                    await db.execute(
+                        select(ValidationSet.labels, ValidationSet.samples[sample_idx])
+                        .where(ValidationSet.id == run.set_id, ValidationSet.tenant_id == run.tenant_id)
+                    )
+                ).first()
+                if row is None:
+                    raise HTTPException(404, '验证集不存在')
+                raw_labels, indexed_sample = row
+                if isinstance(indexed_sample, str):
+                    indexed_sample = json.loads(indexed_sample)
+                if isinstance(indexed_sample, dict) and indexed_sample.get('asset_id') == str(item.asset_id):
+                    sample = deepcopy(indexed_sample)
+                else:
+                    sample = deepcopy(sample_meta)
+                labels = deepcopy(raw_labels)
+            else:
+                dataset = await db.scalar(
+                    select(ValidationSet)
+                    .options(defer(ValidationSet.samples))
+                    .where(ValidationSet.id == run.set_id, ValidationSet.tenant_id == run.tenant_id)
+                )
+                if dataset is None:
+                    raise HTTPException(404, '验证集不存在')
+                if isinstance(sample_meta, dict):
+                    sample = deepcopy(sample_meta)
+                else:
+                    samples_list = await db.scalar(select(ValidationSet.samples).where(ValidationSet.id == dataset.id))
+                    sample = next(s for s in (samples_list or []) if s['asset_id'] == str(item.asset_id))
+                labels = deepcopy(dataset.labels)
+            truth = deepcopy(item.truth)
             policy = ValidationConfig.model_validate(run.config)
             config = None if run.model_snapshot.get('source')=='checkpoint' else ModelServiceConfig.model_validate(run.model_snapshot['config']).model_copy(update=dict(
                 confidence=policy.inference_confidence, iou=policy.nms_iou, labels=policy.labels, label_mapping=policy.label_mapping))
@@ -502,9 +554,10 @@ async def process_one(sessions):
             if current_run.model_snapshot.get('source')=='checkpoint' and (batch_failure or not current_run.model_snapshot['execution']['prepared']):
                 await db.execute(update(ValidationItem).where(ValidationItem.run_id==run_id,ValidationItem.status=='pending').values(status='failed',error=failure))
         else:
+            sample_meta = (current.evaluation or {}).get('_sample')
             current.status = 'completed'
             current.predictions = predictions
-            current.evaluation = evaluation
+            current.evaluation = {**({'_sample': sample_meta} if sample_meta else {}), **evaluation}
             current.error = None
         await recount(db, current_run)
         if batch_failure and failure:current_run.error=failure

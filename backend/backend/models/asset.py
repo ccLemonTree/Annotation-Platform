@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, func, ForeignKey, Text, Index, UniqueConstraint
+from sqlalchemy import String, Integer, DateTime, func, ForeignKey, Text, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import Optional
@@ -79,7 +79,10 @@ class Asset(Base):
     # 索引
     __table_args__ = (
         UniqueConstraint("project_id", "content_hash", name="uq_asset_project_content"),
-        Index('idx_asset_project', 'project_id'),
+        Index('ix_assets_project_created', 'project_id', text('created_at DESC'), text('id DESC')),
+        Index('ix_assets_project_status_created', 'project_id', 'annotation_status', text('created_at DESC'), text('id DESC')),
+        Index('ix_assets_project_source_created', 'project_id', 'source_type', text('created_at DESC'), text('id DESC')),
+        Index('ix_assets_project_lower_name', 'project_id', text('lower(original_name)')),
         Index('idx_asset_blob_path', 'blob_path'),  # 零拷贝查询关键
         Index('idx_asset_content_hash', 'content_hash'),  # 去重关键
         Index('idx_asset_source', 'source_type', 'source_record_id'),  # 零拷贝关联

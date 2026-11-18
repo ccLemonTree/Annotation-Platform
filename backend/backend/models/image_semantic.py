@@ -24,7 +24,7 @@ class ImageSemanticItem(Base):
     __tablename__ = 'image_semantic_items'
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('image_semantic_jobs.id', ondelete='CASCADE'), nullable=False, index=True)
-    image_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('images.id', ondelete='SET NULL'))
+    image_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey('images.id', ondelete='SET NULL'), index=True)
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default='pending')

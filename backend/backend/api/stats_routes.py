@@ -4,7 +4,8 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import String, case, cast, select, func, and_, true
+from sqlalchemy.dialects.postgresql import JSONB
 from typing import Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime, timedelta
@@ -17,7 +18,6 @@ from models.image import LibraryImage
 from models.annotation import Annotation
 from api.deps import get_current_user, get_tenant_id
 from pydantic import BaseModel
-from collections import Counter
 from api.asset_routes import scoped_project
 
 
@@ -26,15 +26,70 @@ router = APIRouter()
 @router.get('/projects/{project_id}/distribution')
 async def project_distribution(project_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     await scoped_project(db, project_id, user.tenant_id)
-    assets = (await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all()
-    annotations = (await db.execute(select(Annotation).join(Asset).where(
-        Asset.project_id == project_id, Annotation.is_latest.is_(True)))).scalars().all()
-    boxes = Counter(b.get('label', '未知') for a in annotations for b in a.annotation_data.get('boxes', []))
-    return dict(boxes_by_label=dict(boxes), images_by_source=dict(Counter(a.source_type for a in assets)),
-        images_by_status=dict(Counter(a.annotation_status for a in assets)),
-        images_by_device=dict(Counter(str((a.device_info or {}).get('device_id') or (a.device_info or {}).get('deviceId') or '未知') for a in assets)),
-        images_by_quality=dict(Counter(str(a.quality_score) if a.quality_score is not None else '未评分' for a in assets)),
-        unannotated_images=len(assets)-len(annotations), negative_images=sum(a.annotation_data.get('boxes')==[] for a in annotations))
+    is_pg = db.get_bind().dialect.name == 'postgresql'
+    images_by_source = dict((await db.execute(
+        select(Asset.source_type, func.count()).where(Asset.project_id == project_id).group_by(Asset.source_type)
+    )).all())
+    images_by_status = dict((await db.execute(
+        select(Asset.annotation_status, func.count()).where(Asset.project_id == project_id).group_by(Asset.annotation_status)
+    )).all())
+    total_assets = sum(images_by_status.values())
+    dev_expr = func.coalesce(
+        func.nullif(Asset.device_info['device_id'].as_string(), ''),
+        func.nullif(Asset.device_info['deviceId'].as_string(), ''),
+        '未知',
+    )
+    images_by_device = dict((await db.execute(
+        select(dev_expr, func.count()).where(Asset.project_id == project_id).group_by(dev_expr)
+    )).all())
+    qual_expr = case((Asset.quality_score.is_not(None), cast(Asset.quality_score, String)), else_='未评分')
+    images_by_quality = dict((await db.execute(
+        select(qual_expr, func.count()).where(Asset.project_id == project_id).group_by(qual_expr)
+    )).all())
+
+    if is_pg:
+        is_neg_expr = and_(
+            func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array',
+            func.jsonb_array_length(Annotation.annotation_data['boxes']) == 0,
+        )
+        boxes_arr = case(
+            (func.jsonb_typeof(Annotation.annotation_data['boxes']) == 'array', Annotation.annotation_data['boxes']),
+            else_=cast('[]', JSONB),
+        )
+        box_elems = func.jsonb_array_elements(boxes_arr).table_valued('value')
+        label_expr = func.coalesce(cast(box_elems.c.value, JSONB)['label'].as_string(), '未知')
+    else:
+        is_neg_expr = and_(
+            func.json_type(Annotation.annotation_data, '$.boxes') == 'array',
+            func.json_array_length(Annotation.annotation_data, '$.boxes') == 0,
+        )
+        boxes_src = case(
+            (func.json_type(Annotation.annotation_data, '$.boxes') == 'array', Annotation.annotation_data),
+            else_='{"boxes":[]}',
+        )
+        box_elems = func.json_each(boxes_src, '$.boxes').table_valued('value')
+        label_expr = func.coalesce(func.json_extract(box_elems.c.value, '$.label'), '未知')
+
+    ann_total, neg_count = (await db.execute(
+        select(func.count(Annotation.id), func.coalesce(func.sum(case((is_neg_expr, 1), else_=0)), 0))
+        .where(Annotation.project_id == project_id, Annotation.is_latest.is_(True))
+    )).one()
+    boxes_by_label = dict((await db.execute(
+        select(label_expr, func.count())
+        .select_from(Annotation)
+        .join(box_elems, true())
+        .where(Annotation.project_id == project_id, Annotation.is_latest.is_(True))
+        .group_by(label_expr)
+    )).all())
+    return dict(
+        boxes_by_label=boxes_by_label,
+        images_by_source=images_by_source,
+        images_by_status=images_by_status,
+        images_by_device=images_by_device,
+        images_by_quality=images_by_quality,
+        unannotated_images=total_assets - int(ann_total or 0),
+        negative_images=int(neg_count or 0),
+    )
 
 
 class ProjectStatsResponse(BaseModel):
@@ -91,23 +146,17 @@ async def get_project_statistics(
             detail="项目不存在"
         )
 
-    # 统计资产总数
-    total_assets_stmt = select(func.count(Asset.id)).where(
-        Asset.project_id == project_id
-    )
-    total_assets = await db.scalar(total_assets_stmt) or 0
-
-    # 统计各状态的资产数
-    assets_by_status = {}
-    for status_value in ["pending", "annotating", "completed", "reviewed"]:
-        count_stmt = select(func.count(Asset.id)).where(
-            and_(
-                Asset.project_id == project_id,
-                Asset.annotation_status == status_value
-            )
-        )
-        count = await db.scalar(count_stmt) or 0
-        assets_by_status[status_value] = count
+    # 单条 GROUP BY 统计各状态的资产数与总数
+    status_rows = dict((await db.execute(
+        select(Asset.annotation_status, func.count(Asset.id))
+        .where(Asset.project_id == project_id)
+        .group_by(Asset.annotation_status)
+    )).all())
+    total_assets = sum(status_rows.values())
+    assets_by_status = {
+        status_value: status_rows.get(status_value, 0)
+        for status_value in ["pending", "annotating", "completed", "reviewed"]
+    }
 
     # 统计已标注和已审核的资产
     annotated_count = assets_by_status.get("completed", 0) + assets_by_status.get("reviewed", 0)
@@ -117,45 +166,33 @@ async def get_project_statistics(
     annotation_progress = (annotated_count / total_assets * 100) if total_assets > 0 else 0
     review_progress = (reviewed_count / total_assets * 100) if total_assets > 0 else 0
 
-    # 统计标注的审核状态
-    annotations_by_review = {}
-    for review_status in ["pending", "approved", "rejected"]:
-        count_stmt = (
-            select(func.count(Annotation.id))
-            .join(Asset)
-            .where(
-                and_(
-                    Asset.project_id == project_id,
-                    Annotation.review_status == review_status,
-                    Annotation.is_latest.is_(True)
-                )
-            )
-        )
-        count = await db.scalar(count_stmt) or 0
-        annotations_by_review[review_status] = count
+    # 单条 GROUP BY 统计标注的审核状态（直接按 Annotation.project_id 过滤省去 Asset JOIN）
+    review_rows = dict((await db.execute(
+        select(Annotation.review_status, func.count(Annotation.id))
+        .where(Annotation.project_id == project_id, Annotation.is_latest.is_(True))
+        .group_by(Annotation.review_status)
+    )).all())
+    annotations_by_review = {
+        review_status: review_rows.get(review_status, 0)
+        for review_status in ["pending", "approved", "rejected"]
+    }
 
     # 统计最近7天的活动
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
 
-    recent_assets_stmt = select(func.count(Asset.id)).where(
+    recent_assets = await db.scalar(select(func.count(Asset.id)).where(
         and_(
             Asset.project_id == project_id,
             Asset.created_at >= seven_days_ago
         )
-    )
-    recent_assets = await db.scalar(recent_assets_stmt) or 0
+    )) or 0
 
-    recent_annotations_stmt = (
-        select(func.count(Annotation.id))
-        .join(Asset)
-        .where(
-            and_(
-                Asset.project_id == project_id,
-                Annotation.created_at >= seven_days_ago
-            )
+    recent_annotations = await db.scalar(
+        select(func.count(Annotation.id)).where(
+            Annotation.project_id == project_id,
+            Annotation.created_at >= seven_days_ago,
         )
-    )
-    recent_annotations = await db.scalar(recent_annotations_stmt) or 0
+    ) or 0
 
     recent_activity = {
         "assets_added": recent_assets,
@@ -189,62 +226,39 @@ async def get_tenant_statistics(
     - 存储使用情况
     - 各类型分布
     """
-    # 统计项目
-    total_projects_stmt = select(func.count(Project.id)).where(
-        Project.tenant_id == tenant_id
-    )
-    total_projects = await db.scalar(total_projects_stmt) or 0
+    # 单条 GROUP BY 统计项目状态与类型分布
+    proj_rows = (await db.execute(
+        select(Project.status, Project.task_type, func.count(Project.id))
+        .where(Project.tenant_id == tenant_id)
+        .group_by(Project.status, Project.task_type)
+    )).all()
+    total_projects = sum(cnt for _, _, cnt in proj_rows)
+    active_projects = sum(cnt for st, _, cnt in proj_rows if st == "active")
+    projects_by_task_type = {t: 0 for t in ["detection", "classification", "segmentation", "caption", "vector"]}
+    for _, t_type, cnt in proj_rows:
+        t_key = t_type.value if hasattr(t_type, "value") else str(t_type)
+        if t_key in projects_by_task_type:
+            projects_by_task_type[t_key] += cnt
 
-    active_projects_stmt = select(func.count(Project.id)).where(
-        and_(
-            Project.tenant_id == tenant_id,
-            Project.status == "active"
-        )
-    )
-    active_projects = await db.scalar(active_projects_stmt) or 0
+    # 单条 GROUP BY 统计图片库资产数、按来源分布与存储体积
+    img_rows = (await db.execute(
+        select(LibraryImage.source_type, func.count(LibraryImage.id), func.coalesce(func.sum(LibraryImage.file_size), 0))
+        .where(LibraryImage.tenant_id == tenant_id)
+        .group_by(LibraryImage.source_type)
+    )).all()
+    total_assets = sum(cnt for _, cnt, _ in img_rows)
+    storage_used = sum(int(sz or 0) for _, _, sz in img_rows)
+    assets_by_source = {src: 0 for src in ["upload", "smarteye", "import"]}
+    for src, cnt, _ in img_rows:
+        if src in assets_by_source:
+            assets_by_source[src] += cnt
 
-    # 统计资产总数
-    total_assets_stmt = (
-        select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id == tenant_id)
-    )
-    total_assets = await db.scalar(total_assets_stmt) or 0
-
-    # 统计标注总数
-    total_annotations_stmt = (
+    # 统计标注总数（直接 JOIN Project 省去百万行 Asset JOIN）
+    total_annotations = await db.scalar(
         select(func.count(Annotation.id))
-        .join(Asset)
-        .join(Project)
+        .join(Project, Annotation.project_id == Project.id)
         .where(Project.tenant_id == tenant_id, Annotation.is_latest.is_(True))
-    )
-    total_annotations = await db.scalar(total_annotations_stmt) or 0
-
-    # 统计存储使用（字节）
-    storage_used_stmt = (
-        select(func.sum(LibraryImage.file_size)).where(LibraryImage.tenant_id == tenant_id)
-    )
-    storage_used = await db.scalar(storage_used_stmt) or 0
-
-    # 按任务类型统计项目
-    projects_by_task_type = {}
-    for task_type in ["detection", "classification", "segmentation", "caption", "vector"]:
-        count_stmt = select(func.count(Project.id)).where(
-            and_(
-                Project.tenant_id == tenant_id,
-                Project.task_type == task_type
-            )
-        )
-        count = await db.scalar(count_stmt) or 0
-        projects_by_task_type[task_type] = count
-
-    # 按来源统计资产
-    assets_by_source = {}
-    for source_type in ["upload", "smarteye", "import"]:
-        count_stmt = (
-            select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id == tenant_id,
-                LibraryImage.source_type == source_type)
-        )
-        count = await db.scalar(count_stmt) or 0
-        assets_by_source[source_type] = count
+    ) or 0
 
     return TenantStatsResponse(
         total_projects=total_projects,
@@ -268,76 +282,44 @@ async def get_dashboard_statistics(
 
     综合展示所有关键指标和趋势
     """
-    # 项目概览
-    total_projects = await db.scalar(
-        select(func.count(Project.id)).where(Project.tenant_id == tenant_id)
-    ) or 0
-
-    active_projects = await db.scalar(
-        select(func.count(Project.id)).where(
-            and_(Project.tenant_id == tenant_id, Project.status == "active")
-        )
-    ) or 0
-
-    # 资产概览
-    total_assets = await db.scalar(
-        select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id == tenant_id)
-    ) or 0
-
-    used_image = select(Asset.id).where(Asset.image_id == LibraryImage.id).exists()
-    pending_assets = await db.scalar(select(func.count(LibraryImage.id)).where(
-        LibraryImage.tenant_id == tenant_id, ~used_image)) or 0
-    project_references = await db.scalar(select(func.count(Asset.id)).join(Project)
-        .where(Project.tenant_id == tenant_id)) or 0
-
-    # 标注概览
-    total_annotations = await db.scalar(
-        select(func.count(Annotation.id))
-        .join(Asset)
-        .join(Project)
-        .where(Project.tenant_id == tenant_id, Annotation.is_latest.is_(True))
-    ) or 0
-
-    approved_annotations = await db.scalar(
-        select(func.count(Annotation.id))
-        .join(Asset)
-        .join(Project)
-        .where(
-            and_(
-                Project.tenant_id == tenant_id,
-                Annotation.review_status == "approved",
-                Annotation.is_latest.is_(True)
-            )
-        )
-    ) or 0
-
-    # 最近趋势（30天）
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
 
-    new_projects_30d = await db.scalar(
-        select(func.count(Project.id)).where(
-            and_(
-                Project.tenant_id == tenant_id,
-                Project.created_at >= thirty_days_ago
-            )
-        )
+    # 项目概览与30天新增合并单条查询
+    total_projects, active_projects, new_projects_30d = (await db.execute(
+        select(
+            func.count(Project.id),
+            func.coalesce(func.sum(case((Project.status == "active", 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Project.created_at >= thirty_days_ago, 1), else_=0)), 0),
+        ).where(Project.tenant_id == tenant_id)
+    )).one()
+
+    # 资产概览与30天新增
+    used_image = select(Asset.id).where(Asset.image_id == LibraryImage.id).exists()
+    total_assets, pending_assets, new_assets_30d = (await db.execute(
+        select(
+            func.count(LibraryImage.id),
+            func.coalesce(func.sum(case((~used_image, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((LibraryImage.created_at >= thirty_days_ago, 1), else_=0)), 0),
+        ).where(LibraryImage.tenant_id == tenant_id)
+    )).one()
+    project_references = await db.scalar(
+        select(func.count(Asset.id)).join(Project).where(Project.tenant_id == tenant_id)
     ) or 0
 
-    new_assets_30d = await db.scalar(
-        select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id == tenant_id,
-            LibraryImage.created_at >= thirty_days_ago)
-    ) or 0
+    # 标注概览（直接通过 Annotation.project_id JOIN Project 省去 Asset 表百万行 JOIN）
+    total_annotations, approved_annotations = (await db.execute(
+        select(
+            func.count(Annotation.id),
+            func.coalesce(func.sum(case((Annotation.review_status == "approved", 1), else_=0)), 0),
+        )
+        .join(Project, Annotation.project_id == Project.id)
+        .where(Project.tenant_id == tenant_id, Annotation.is_latest.is_(True))
+    )).one()
 
     new_annotations_30d = await db.scalar(
         select(func.count(Annotation.id))
-        .join(Asset)
-        .join(Project)
-        .where(
-            and_(
-                Project.tenant_id == tenant_id,
-                Annotation.created_at >= thirty_days_ago
-            )
-        )
+        .join(Project, Annotation.project_id == Project.id)
+        .where(Project.tenant_id == tenant_id, Annotation.created_at >= thirty_days_ago)
     ) or 0
 
     return DashboardStatsResponse(

@@ -28,6 +28,7 @@ class AutomationJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     __table_args__ = (Index('idx_automation_job_tenant_created', 'tenant_id', 'created_at'),
+        Index('ix_automation_jobs_project_id', 'project_id'),
         Index('uq_automation_follow_uploads', 'project_id', unique=True,
             postgresql_where=text('follow_uploads'), sqlite_where=text('follow_uploads')))
 
@@ -49,4 +50,6 @@ class AutomationItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     __table_args__ = (Index('idx_automation_item_claim', 'status', 'created_at'),
-        Index('idx_automation_item_job', 'job_id', 'status'))
+        Index('idx_automation_item_job', 'job_id', 'status'),
+        Index('ix_automation_items_ann_review', 'annotation_id', 'annotation_version',
+            postgresql_where=text("status = 'needs_review'"), sqlite_where=text("status = 'needs_review'")))

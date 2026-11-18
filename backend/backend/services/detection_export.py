@@ -16,7 +16,7 @@ from sqlalchemy import select, true
 from models import Asset, Annotation
 from services.annotations import detection_boxes
 from services.storage import get_storage
-from services.dataset_splits import SplitPolicy, split_report, source_groups
+from services.dataset_splits import SplitPolicy, similar_image_groups, split_report, source_groups
 from services.annotation_scope import eligible_assets
 
 
@@ -90,16 +90,25 @@ async def export_rows(db, project, approved_only, lock=True, *, scope=()):
     query=select(Asset,Annotation).outerjoin(Annotation,
         (Annotation.asset_id==Asset.id)&(Annotation.is_latest==true())).where(
         Asset.project_id==project.id,eligible_assets(project),*scope).order_by(Asset.id)
-    rows_with_annotation=(await db.execute(query.with_for_update(of=Asset) if lock else query)).all()
     rows, excluded = [], []
     allowed_statuses = ('approved',) if approved_only else ('approved', 'pending')
-    for asset,ann in rows_with_annotation:
-        if (ann is None or 'boxes' not in ann.annotation_data or ann.status_for('detection') not in allowed_statuses
-                or any('yolo_class_id' in box for box in ann.annotation_data['boxes'])):
-            excluded.append(str(asset.id))
-        else:
-            detection_boxes(ann.annotation_data, asset.width, asset.height)
-            rows.append((asset, ann))
+    if lock:
+        iterable = (await db.execute(query.with_for_update(of=Asset))).all()
+        for asset, ann in iterable:
+            if (ann is None or 'boxes' not in ann.annotation_data or ann.status_for('detection') not in allowed_statuses
+                    or any('yolo_class_id' in box for box in ann.annotation_data['boxes'])):
+                excluded.append(str(asset.id))
+            else:
+                detection_boxes(ann.annotation_data, asset.width, asset.height)
+                rows.append((asset, ann))
+    else:
+        async for asset, ann in await db.stream(query.execution_options(yield_per=2000)):
+            if (ann is None or 'boxes' not in ann.annotation_data or ann.status_for('detection') not in allowed_statuses
+                    or any('yolo_class_id' in box for box in ann.annotation_data['boxes'])):
+                excluded.append(str(asset.id))
+            else:
+                detection_boxes(ann.annotation_data, asset.width, asset.height)
+                rows.append((asset, ann))
     return rows, excluded
 
 def category_labels(project, rows, selected):
@@ -214,13 +223,14 @@ async def prepare_selection(rows, labels, selection):
             training_budget_per_class=None, require_source=selection['require_source'], require_independent=False)
         if selection.get('group_similar'):
             fingerprints = await image_fingerprints(rows)
-            grouping = await run_in_threadpool(split_report, rows, labels, policy, result['splits'], False, fingerprints)
-            result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'], groups=grouping['groups'])
+            groups = await run_in_threadpool(similar_image_groups, rows, policy, fingerprints)
+            result = simple_split(rows, labels, selection['mode'], selection['ratios'], selection['budgets'], groups=groups)
         chosen = [row for row in rows if str(row[0].id) in result['splits']]
         if selection.get('group_similar'):
             kept = {str(asset.id) for asset,_ in chosen}
             report = await run_in_threadpool(split_report, chosen, labels, policy, result['splits'], False,
-                {key:value for key,value in fingerprints.items() if key in kept})
+                {key:value for key,value in fingerprints.items() if key in kept},
+                similar_groups=[group for group in groups if group[0] in kept])
         else:report = await inspect_splits(chosen, labels, policy, result['splits'])
         result.update(errors=report['errors'], warnings=report['warnings'], can_freeze=bool(result['splits']) and not report['errors'],
             failure_reason=split_failure_reason(report, chosen) if report['errors'] else '',leakage_report=report)
@@ -245,19 +255,17 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
     if splits is not None and (set(splits) != ids or any(v not in ('train','val','test') for v in splits.values())):
         raise HTTPException(400, '划分必须包含全部导出图片，且只能使用train/val/test')
     policy = policy or SplitPolicy(training_budget_per_class=None, require_independent=False)
-    if selection_result and selection_result['check_duplicates']:
-        policy = SplitPolicy(phash_distance=selection_result['phash_distance'], color_distance=selection_result['color_distance'],
-            training_budget_per_class=None, require_source=selection_result['require_source'], require_independent=False)
+    evidence = selection_result.get('leakage_report') if selection_result else None
     groups = {}
     for asset,_ in rows:
         split = splits[str(asset.id)] if splits is not None else 'all'
         old = groups.setdefault(asset.content_hash, split)
         if old != split:
             raise HTTPException(400, '同内容图片不能跨训练/验证/测试划分')
-    if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
-        evidence = split_report(rows, labels, policy, splits)
-        if evidence['errors']:
-            raise HTTPException(409, split_failure_reason(evidence, rows))
+    if splits is not None and selection_result is None:
+        source_report = split_report(rows, labels, policy, splits)
+        if source_report['errors']:
+            raise HTTPException(409, split_failure_reason(source_report, rows))
     result = tempfile.SpooledTemporaryFile(max_size=8*1024*1024)
     paths = {}
     manifest = dict(project_id=str(project.id), format=format, labels=labels, approved_only=approved_only,
@@ -296,7 +304,7 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
                         if image.size != (asset.width, asset.height):
                             raise HTTPException(400, '图片尺寸与标注不一致')
                         image.verify()
-                    if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
+                    if splits is not None and selection_result is None:
                         source.seek(0)
                         with Image.open(source) as image:
                             fingerprint = imagehash.phash(image)
@@ -312,7 +320,8 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
                     content_hash=asset.content_hash, image_path=image_path, annotation_id=str(ann.id),
                     annotation_version=ann.version, annotation_data={'boxes':boxes}, review_status=ann.status_for('detection'),
                     source_type=asset.source_type, width=asset.width, height=asset.height, split=split,
-                    perceptual_hash=str(fingerprint) if splits is not None and (selection_result is None or selection_result.get('check_duplicates')) else None))
+                    perceptual_hash=(evidence['fingerprints'][str(asset.id)]['phash'] if evidence else
+                        str(fingerprint) if splits is not None and selection_result is None else None)))
                 if format == 'yolo':
                     lines = [f"{labels.index(b['label'])} {(b['x']+b['width']/2)/asset.width:.10f} "
                         f"{(b['y']+b['height']/2)/asset.height:.10f} {b['width']/asset.width:.10f} {b['height']/asset.height:.10f}"
@@ -320,10 +329,11 @@ async def _build_package(project, rows, excluded, format, selected, approved_onl
                     archive.writestr(f'labels/{split}/{asset.id}.txt', '\n'.join(lines))
                 if progress:
                     progress(len(manifest['assets']), len(rows))
-            if splits is not None and (selection_result is None or selection_result.get('check_duplicates')):
+            if splits is not None and selection_result is None:
                 evidence = split_report(rows, labels, policy, splits, fingerprints=fingerprints)
                 if evidence['errors']:
                     raise HTTPException(409, split_failure_reason(evidence, rows))
+            if evidence:
                 manifest['split_evidence'] = evidence
             manifest['distribution'] = dict(boxes_by_label=dict(counts), images_by_split=dict(Counter(a['split'] for a in manifest['assets'])),
                 images_by_source=dict(Counter(a['source_type'] for a in manifest['assets'])), negative_images=sum(not a['annotation_data']['boxes'] for a in manifest['assets']))

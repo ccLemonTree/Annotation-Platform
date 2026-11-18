@@ -33,10 +33,5 @@ class Tenant(Base):
     projects: Mapped[List["Project"]] = relationship("Project", back_populates="tenant", cascade="all, delete-orphan")
     users: Mapped[List["User"]] = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
 
-    # 索引
-    __table_args__ = (
-        Index('idx_tenant_name', 'tenant_name'),
-    )
-
     def __repr__(self):
         return f"<Tenant(id={self.id}, name={self.tenant_name})>"

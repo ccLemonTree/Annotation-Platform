@@ -138,18 +138,23 @@ async def ai_generate_workflow_script(request:WorkflowAiScriptRequest,ctx=Depend
 
 @router.get('/{project_id}/work/workflows')
 async def list_workflows(page:int=Query(1,ge=1),ctx=Depends(context)):
+    from collections import defaultdict
     db,_,project=ctx
     workflow=ProjectWorkJob.options['workflow_id'].as_string()
     step=ProjectWorkJob.options['workflow_step'].as_integer()
     roots=(await db.scalars(select(ProjectWorkJob).where(ProjectWorkJob.project_id==project.id,step==0,
         ProjectWorkJob.options['workflow_hidden'].as_boolean().is_not(True))
         .order_by(ProjectWorkJob.created_at.desc(),ProjectWorkJob.id).offset((page-1)*10).limit(10))).all()
-    result=[]
-    for root in roots:
-        jobs=(await db.scalars(select(ProjectWorkJob).where(ProjectWorkJob.project_id==project.id,workflow==str(root.id))
-            .order_by(step))).all()
-        result.append(dict(id=str(root.id),name=root.options['workflow_name'],steps=[await service.summary(db,job) for job in jobs]))
-    return result
+    if not roots:
+        return []
+    root_ids=[str(root.id) for root in roots]
+    all_jobs=(await db.scalars(select(ProjectWorkJob).where(
+        ProjectWorkJob.project_id==project.id,workflow.in_(root_ids)).order_by(step,ProjectWorkJob.id))).all()
+    summary_by_id={row['id']:row for row in await service.summaries(db,all_jobs)}
+    steps_by_workflow=defaultdict(list)
+    for job in all_jobs:
+        steps_by_workflow[job.options['workflow_id']].append(summary_by_id[str(job.id)])
+    return [dict(id=str(root.id),name=root.options['workflow_name'],steps=steps_by_workflow.get(str(root.id),[])) for root in roots]
 
 
 @router.get('/{project_id}/work/workflows/{workflow_id}')
@@ -190,23 +195,36 @@ async def cancel_workflow(workflow_id:UUID,ctx=Depends(context)):
 @router.get('/{project_id}/work/jobs')
 async def list_jobs(page:int=Query(1,ge=1),roots_only:bool=False,crops_only:bool=False,ctx=Depends(context)):
     db,_,project=ctx
+    is_pg = db.get_bind().dialect.name == 'postgresql'
     batch_root=ProjectWorkJob.options['batch_root'].as_string()
+    same_root = (batch_root == cast(ProjectWorkJob.id, String)) if is_pg else (
+        func.replace(batch_root,'-','')==func.replace(cast(ProjectWorkJob.id,String),'-','')
+    )
     query=select(ProjectWorkJob).where(ProjectWorkJob.project_id==project.id,
         ProjectWorkJob.operation!='embedding_negatives',
-        or_(batch_root.is_(None),func.replace(batch_root,'-','')==func.replace(cast(ProjectWorkJob.id,String),'-','')),
+        or_(batch_root.is_(None),same_root),
         ProjectWorkJob.options['queue_deleted'].as_boolean().is_not(True))
     if crops_only:
         query=query.where(ProjectWorkJob.operation.in_(('crop','detect_attributes')))
     else:
         query=query.where(ProjectWorkJob.options['workflow_id'].as_string().is_(None))
     if roots_only:
+        query=query.where(ProjectWorkJob.options['parent_job_id'].as_string().is_(None))
         parent_item,parent_job=aliased(ProjectWorkItem),aliased(ProjectWorkJob)
-        parent=select(parent_item.id).join(parent_job,parent_job.id==parent_item.job_id).where(parent_job.project_id==project.id,
-            func.replace(parent_item.result['attribute_job_id'].as_string(),'-','')==func.replace(cast(ProjectWorkJob.id,String),'-',''))
-        query=query.where(~parent.exists())
+        child_match = (
+            parent_item.result['attribute_job_id'].as_string() == cast(ProjectWorkJob.id, String)
+            if is_pg
+            else func.replace(parent_item.result['attribute_job_id'].as_string(), '-', '') == func.replace(cast(ProjectWorkJob.id, String), '-', '')
+        )
+        parent=select(parent_item.id).join(parent_job,parent_job.id==parent_item.job_id).where(
+            parent_job.project_id==project.id,
+            parent_job.operation=='detect_attributes',
+            child_match,
+        )
+        query=query.where(or_(ProjectWorkJob.operation!='attributes', ~parent.exists()))
     jobs=(await db.scalars(query
         .order_by(ProjectWorkJob.created_at.desc(),ProjectWorkJob.id).offset((page-1)*20).limit(20))).all()
-    return [await service.summary(db,job) for job in jobs]
+    return await service.summaries(db,jobs)
 
 
 @router.get('/{project_id}/work/jobs/{job_id}')
@@ -268,6 +286,7 @@ async def smart_search_original(query_id:UUID,asset_id:UUID,ctx=Depends(context)
     from fastapi import Response
     db,_,project=ctx
     content,_=await smart_search.original(db,project,query_id,asset_id)
+    await db.rollback()
     with Image.open(BytesIO(content)) as image:media_type=Image.MIME.get(image.format,'application/octet-stream')
     return Response(content,media_type=media_type,headers={'Cache-Control':'private, max-age=3600'})
 

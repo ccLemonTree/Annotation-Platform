@@ -38,7 +38,7 @@ class ImageUpload(Base):
 class ImageUploadItem(Base):
     __tablename__='image_upload_items'
     upload_id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),ForeignKey('image_uploads.id',ondelete='CASCADE'),primary_key=True)
-    image_id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),ForeignKey('images.id',ondelete='CASCADE'),primary_key=True)
+    image_id:Mapped[uuid.UUID]=mapped_column(UUID(as_uuid=True),ForeignKey('images.id',ondelete='CASCADE'),primary_key=True,index=True)
 
 
 class ImageUploadBatch(Base):

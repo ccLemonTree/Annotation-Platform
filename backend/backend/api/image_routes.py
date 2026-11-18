@@ -15,7 +15,7 @@ from schemas.image_ingest import ImageIngestConfig
 from services.scene_categories import scene_result_status,has_scene_labels
 from schemas.image import ImageResponse,ImageAssociation,CollectionAssignment,CollectionCreate,ImageAssociationRequest,ImageQuery
 from schemas.common import PaginatedResponse,PaginationParams
-from services.image_library import register_image,attach_images,attach_workflow_crops,assign_collection,get_collection,reuse_project_images,reusable_asset,workflow_crop,annotation_label_condition,image_scene_condition,image_sources,image_source_condition
+from services.image_library import register_image,attach_images,attach_workflow_crops,assign_collection,get_collection,reuse_project_images,reusable_asset,workflow_crop,annotation_label_condition,image_scene_condition,image_sources,image_source_condition,iter_id_conditions
 
 router=APIRouter()
 
@@ -63,9 +63,11 @@ async def retry_scene_classification(request:ImageAssociationRequest,db:AsyncSes
     config,revision=await get_config(db,user.tenant_id,request.collection_id)
     if not config.classification_enabled:raise HTTPException(400,'请先在此图片集设置中启用场景分类')
     ids=sorted(set(request.image_ids))
-    images=(await db.scalars(select(LibraryImage).where(LibraryImage.tenant_id==user.tenant_id,LibraryImage.source_type!='model_crop',LibraryImage.id.in_(ids),
-        LibraryImage.id.in_(select(ImageCollectionMember.image_id).where(ImageCollectionMember.collection_id==request.collection_id)))
-        .order_by(LibraryImage.id))).all()
+    images=[]
+    for cond in iter_id_conditions(db, LibraryImage.id, ids):
+        images.extend((await db.scalars(select(LibraryImage).where(LibraryImage.tenant_id==user.tenant_id,LibraryImage.source_type!='model_crop',cond,
+            LibraryImage.id.in_(select(ImageCollectionMember.image_id).where(ImageCollectionMember.collection_id==request.collection_id)))
+            .order_by(LibraryImage.id))).all())
     if len(images)!=len(ids):raise HTTPException(404,'部分图片不存在')
     device_sources=[];device_images=[]
     for image in images:
@@ -128,8 +130,8 @@ async def associate_images(request:ImageAssociation,tenant_id:int=Depends(get_te
         if upload.project_id!=request.project_id or upload.status!='completed':
             raise HTTPException(409,'此上传记录尚未入库完成或不属于当前项目')
         ids=set(request.image_ids)
-        count=await db.scalar(select(func.count()).select_from(ImageUploadItem).where(
-            ImageUploadItem.upload_id==upload.id,ImageUploadItem.image_id.in_(ids)))
+        count=sum([await db.scalar(select(func.count()).select_from(ImageUploadItem).where(
+            ImageUploadItem.upload_id==upload.id,cond)) or 0 for cond in iter_id_conditions(db, ImageUploadItem.image_id, ids)])
         if count!=len(ids):
             raise HTTPException(409,'部分图片不属于本次上传')
         follow_job=await lock_follow_job(db,request.project_id)
@@ -139,11 +141,13 @@ async def associate_images(request:ImageAssociation,tenant_id:int=Depends(get_te
             source=await scoped_project(db,request.source_project_id,tenant_id)
             if source.id==request.project_id:
                 raise HTTPException(400,'来源项目和目标项目必须不同')
-            crops=(await db.scalars(select(Asset).where(
-                Asset.project_id==source.id,workflow_crop(),Asset.id.in_(ids)).order_by(Asset.id))).all()
+            crops=[]
+            for cond in iter_id_conditions(db, Asset.id, sorted(ids)):
+                crops.extend((await db.scalars(select(Asset).where(
+                    Asset.project_id==source.id,workflow_crop(),cond).order_by(Asset.id))).all())
             ids.difference_update(crop.id for crop in crops)
-        count=await db.scalar(select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id==tenant_id,
-            LibraryImage.id.in_(ids),image_condition(db)))
+        count=sum([await db.scalar(select(func.count(LibraryImage.id)).where(LibraryImage.tenant_id==tenant_id,
+            cond,image_condition(db))) or 0 for cond in iter_id_conditions(db, LibraryImage.id, ids)])
         if count!=len(ids):
             raise HTTPException(404,'部分图片不存在')
     image_ids=ids if request.upload_id is None else request.image_ids
@@ -419,9 +423,11 @@ async def scoped_image(db,image_id,tenant_id,lock=False):
     return image
 
 @router.get('/{image_id}/content')
-async def get_image_content(image_id:UUID,tenant_id:int=Depends(get_tenant_id),
+async def get_image_content(image_id:UUID,preview:bool=False,tenant_id:int=Depends(get_tenant_id),
     db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
-    return await image_content(await scoped_image(db,image_id,tenant_id))
+    response=await image_content(await scoped_image(db,image_id,tenant_id),preview=preview,max_edge=480)
+    await db.rollback()
+    return response
 
 @router.delete('/{image_id}',status_code=204)
 async def delete_image(image_id:UUID,tenant_id:int=Depends(get_tenant_id),

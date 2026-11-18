@@ -40,7 +40,7 @@ class VectorTestItem(Base):
 
     project_id: Mapped[UUID] = mapped_column(primary_key=True)
     model_id: Mapped[UUID] = mapped_column(primary_key=True)
-    asset_id: Mapped[UUID] = mapped_column(ForeignKey('assets.id', ondelete='CASCADE'), primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(ForeignKey('assets.id', ondelete='CASCADE'), primary_key=True, index=True)
     content_hash: Mapped[str] = mapped_column(String(128))
     error: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
@@ -58,7 +58,7 @@ class VectorTestSample(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
-    parent_id: Mapped[UUID | None] = mapped_column(ForeignKey('vector_test_samples.id', ondelete='CASCADE'))
+    parent_id: Mapped[UUID | None] = mapped_column(ForeignKey('vector_test_samples.id', ondelete='CASCADE'), index=True)
     blob_path: Mapped[str] = mapped_column(String(500))
     content_hash: Mapped[str] = mapped_column(String(64))
     original_name: Mapped[str] = mapped_column(String(255))
@@ -79,7 +79,7 @@ class VectorTestSampleItem(Base):
         ondelete='CASCADE'),)
     project_id: Mapped[UUID] = mapped_column(primary_key=True)
     model_id: Mapped[UUID] = mapped_column(primary_key=True)
-    asset_id: Mapped[UUID] = mapped_column(ForeignKey('vector_test_samples.id', ondelete='CASCADE'), primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(ForeignKey('vector_test_samples.id', ondelete='CASCADE'), primary_key=True, index=True)
     content_hash: Mapped[str] = mapped_column(String(128))
     error: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

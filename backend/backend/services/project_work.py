@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime, timezone
 from io import BytesIO
@@ -18,6 +19,7 @@ from models import Asset, Project, Annotation, AnnotationEvent, User, LibraryIma
 from models.project_work import ProjectWorkJob, ProjectWorkItem, MatchQuery
 from schemas.model_service import ModelServiceConfig
 from services.annotations import IMAGE_FIELDS, save_annotation, record_event, register_detection_labels, review
+from services.image_library import iter_id_conditions
 from models.automation import AutomationItem
 from services.automation_review import audit_image, auto_pass
 from services.image_semantics import model_snapshot, validate_snapshots, caption, embedding, PREPROCESSING
@@ -35,6 +37,7 @@ from config.settings import settings
 
 _worker=None
 logger=logging.getLogger(__name__)
+MAX_AUTO_RETRY_ATTEMPTS = 5
 INTERRUPTED_ERROR='服务重启中断，请重试'
 LEGACY_RETRY_ERRORS=(
     INTERRUPTED_ERROR,
@@ -45,9 +48,16 @@ LEGACY_RETRY_ERRORS=(
 
 
 def retrying_items():
-    retry_at=ProjectWorkItem.result['retry_at'].as_integer()
-    return and_(ProjectWorkItem.status=='failed',ProjectWorkItem.asset_id.is_not(None),
-        or_(retry_at.is_not(None),ProjectWorkItem.error.in_(LEGACY_RETRY_ERRORS)))
+    retry_at = ProjectWorkItem.result['retry_at'].as_integer()
+    legacy_retry = and_(
+        ProjectWorkItem.status == 'failed',
+        or_(retry_at.is_not(None), ProjectWorkItem.error.in_(LEGACY_RETRY_ERRORS)),
+    )
+    return and_(
+        ProjectWorkItem.asset_id.is_not(None),
+        ProjectWorkItem.attempt < MAX_AUTO_RETRY_ATTEMPTS,
+        or_(ProjectWorkItem.status == 'retry_wait', legacy_retry),
+    )
 
 
 def crop_region(box,width,height,expansion):
@@ -71,8 +81,8 @@ async def create_job(db,project,request,user_id):
         raise HTTPException(400,'请在向量标注项目建立索引')
     image_ids=sorted(set(request.asset_ids)|({request.example_asset_id} if request.example_asset_id else set()))
     images=[]
-    for offset in range(0,len(image_ids),5000):
-        images.extend((await db.scalars(select(Asset).where(Asset.project_id==project.id,Asset.id.in_(image_ids[offset:offset+5000]))
+    for cond in iter_id_conditions(db, Asset.id, image_ids, chunk_size=500):
+        images.extend((await db.scalars(select(Asset).where(Asset.project_id==project.id,cond)
             .order_by(Asset.id).with_for_update())).all())
     if len(images)!=len(image_ids):raise HTTPException(404,'部分项目图片或正确范例不存在')
     kind={'crop':'detection','caption':'caption','index':'embedding','detect_attributes':'detection','attributes':'caption','quality':'caption'}[request.operation]
@@ -111,11 +121,17 @@ async def create_job(db,project,request,user_id):
             options['labels']=AttributeSchema.model_validate(options['attribute_schema']).target_labels
     if request.operation not in ('crop','detect_attributes'):
         for image in images:require_annotation_asset(project,image)
-    latest={} if request.operation=='crop' else {a.asset_id:a for a in (await db.scalars(select(Annotation).where(
-        Annotation.asset_id.in_([a.id for a in images]),Annotation.is_latest.is_(True)))).all()}
+    latest = {}
+    if request.operation != 'crop':
+        for cond in iter_id_conditions(db, Annotation.asset_id, [a.id for a in images], chunk_size=500):
+            for a in (await db.scalars(select(Annotation).where(cond, Annotation.is_latest.is_(True)))).all():
+                latest[a.asset_id] = a
     # A save/delete cycle can restore no latest annotation; immutable events still advance.
-    quality_events=dict((await db.execute(select(AnnotationEvent.asset_id,func.count()).where(
-        AnnotationEvent.asset_id.in_([a.id for a in images])).group_by(AnnotationEvent.asset_id))).all()) if request.operation=='quality' else {}
+    quality_events = {}
+    if request.operation == 'quality':
+        for cond in iter_id_conditions(db, AnnotationEvent.asset_id, [a.id for a in images], chunk_size=500):
+            for aid, cnt in (await db.execute(select(AnnotationEvent.asset_id, func.count()).where(cond).group_by(AnnotationEvent.asset_id))).all():
+                quality_events[aid] = cnt
     job=ProjectWorkJob(project_id=project.id,user_id=user_id,operation=request.operation,model=snapshot,
         options=options)
     db.add(job);await db.flush()
@@ -137,73 +153,254 @@ async def scoped_job(db,project,job_id,*,lock=True):
     return job
 
 
+def _normalize_status_counts(raw_counts: dict[str, int]) -> dict[str, int]:
+    counts = {st: cnt for st, cnt in raw_counts.items() if st != 'retry_wait' and cnt}
+    failed_total = raw_counts.get('failed', 0) + raw_counts.get('retry_wait', 0)
+    if failed_total:
+        counts['failed'] = failed_total
+    return counts
+
+
+async def summaries(db, jobs_list):
+    if not jobs_list:
+        return []
+    batch_roots = {}
+    for job in jobs_list:
+        root_str = (job.options or {}).get('batch_root')
+        if root_str:
+            batch_roots.setdefault((job.project_id, root_str), set()).add(job.id)
+    batch_member_map: dict[tuple[UUID, str], set[UUID]] = defaultdict(set)
+    for (proj_id, root_str), _ in batch_roots.items():
+        member_ids = (await db.scalars(select(ProjectWorkJob.id).where(
+            ProjectWorkJob.project_id == proj_id,
+            or_(ProjectWorkJob.id == UUID(root_str), ProjectWorkJob.options['batch_root'].as_string() == root_str),
+        ))).all()
+        batch_member_map[(proj_id, root_str)].update(member_ids)
+
+    job_scope_ids: dict[UUID, set[UUID]] = {}
+    all_target_job_ids: set[UUID] = set()
+    for job in jobs_list:
+        root_str = (job.options or {}).get('batch_root')
+        scope_ids = set(batch_member_map[(job.project_id, root_str)]) if root_str else {job.id}
+        if not scope_ids:
+            scope_ids = {job.id}
+        job_scope_ids[job.id] = scope_ids
+        all_target_job_ids.update(scope_ids)
+
+    passed_col = ProjectWorkItem.result['passed'].as_boolean()
+    skipped_col = ProjectWorkItem.result['attribute_skipped'].as_boolean()
+    is_completed = ProjectWorkItem.status == 'completed'
+    per_job_status: dict[UUID, dict[str, int]] = defaultdict(dict)
+    per_job_filtered: dict[UUID, int] = defaultdict(int)
+    per_job_passed_true: dict[UUID, int] = defaultdict(int)
+    per_job_passed_false: dict[UUID, int] = defaultdict(int)
+    per_job_passed_not_false: dict[UUID, int] = defaultdict(int)
+    per_job_attr_skipped: dict[UUID, int] = defaultdict(int)
+    per_job_retrying: dict[UUID, int] = defaultdict(int)
+
+    for cond in iter_id_conditions(db, ProjectWorkItem.job_id, sorted(all_target_job_ids)):
+        agg_rows = (await db.execute(
+            select(
+                ProjectWorkItem.job_id,
+                ProjectWorkItem.status,
+                func.count(),
+                func.sum(ProjectWorkItem.result['filtered_count'].as_integer()),
+                func.sum(case((and_(is_completed, passed_col.is_(True)), 1), else_=0)),
+                func.sum(case((and_(is_completed, passed_col.is_(False)), 1), else_=0)),
+                func.sum(case((and_(is_completed, passed_col.is_not(False)), 1), else_=0)),
+                func.sum(case((and_(is_completed, skipped_col.is_(True)), 1), else_=0)),
+                func.sum(case((retrying_items(), 1), else_=0)),
+            )
+            .where(cond)
+            .group_by(ProjectWorkItem.job_id, ProjectWorkItem.status)
+        )).all()
+        for jid, st, cnt, filt, p_true, p_false, p_not_false, a_skip, r_cnt in agg_rows:
+            per_job_status[jid][st] = per_job_status[jid].get(st, 0) + (cnt or 0)
+            per_job_filtered[jid] += filt or 0
+            per_job_passed_true[jid] += p_true or 0
+            per_job_passed_false[jid] += p_false or 0
+            per_job_passed_not_false[jid] += p_not_false or 0
+            per_job_attr_skipped[jid] += a_skip or 0
+            per_job_retrying[jid] += r_cnt or 0
+
+    det_attr_jobs = [job for job in jobs_list if job.operation == 'detect_attributes']
+    det_links_by_job: dict[UUID, list[tuple[str | None, int | None, int | None]]] = defaultdict(list)
+    all_child_ids: set[UUID] = set()
+    if det_attr_jobs:
+        for cond in iter_id_conditions(db, ProjectWorkItem.job_id, [j.id for j in det_attr_jobs]):
+            link_rows = (await db.execute(select(
+                ProjectWorkItem.job_id,
+                ProjectWorkItem.result['attribute_job_id'].as_string(),
+                ProjectWorkItem.result['detected_count'].as_integer(),
+                ProjectWorkItem.result['skipped_annotated_count'].as_integer(),
+            ).where(cond))).all()
+            for jid, attr_jid, det_cnt, skip_cnt in link_rows:
+                det_links_by_job[jid].append((attr_jid, det_cnt, skip_cnt))
+                if attr_jid:
+                    all_child_ids.add(UUID(attr_jid))
+
+    child_status_by_job: dict[UUID, dict[str, int]] = defaultdict(dict)
+    valid_child_project: dict[UUID, UUID] = {}
+    if all_child_ids:
+        for cond in iter_id_conditions(db, ProjectWorkItem.job_id, sorted(all_child_ids)):
+            c_rows = (await db.execute(
+                select(ProjectWorkJob.project_id, ProjectWorkItem.job_id, ProjectWorkItem.status, func.count())
+                .join(ProjectWorkJob, ProjectWorkJob.id == ProjectWorkItem.job_id)
+                .where(cond)
+                .group_by(ProjectWorkJob.project_id, ProjectWorkItem.job_id, ProjectWorkItem.status)
+            )).all()
+            for pid, cid, st, cnt in c_rows:
+                valid_child_project[cid] = pid
+                child_status_by_job[cid][st] = child_status_by_job[cid].get(st, 0) + (cnt or 0)
+
+    failure_related_all: set[UUID] = set()
+    job_related_map: dict[UUID, set[UUID]] = {}
+    for job in jobs_list:
+        scope_ids = job_scope_ids[job.id]
+        raw_merged: dict[str, int] = defaultdict(int)
+        for sid in scope_ids:
+            for st, cnt in per_job_status.get(sid, {}).items():
+                raw_merged[st] += cnt
+        counts = _normalize_status_counts(raw_merged)
+        related = set(scope_ids)
+        child_failed = 0
+        if job.operation == 'detect_attributes':
+            cids = {UUID(r[0]) for r in det_links_by_job.get(job.id, []) if r[0]}
+            related.update(cids)
+            for cid in cids:
+                if valid_child_project.get(cid) == job.project_id:
+                    c_raw = child_status_by_job.get(cid, {})
+                    child_failed += c_raw.get('failed', 0) + c_raw.get('retry_wait', 0)
+        job_related_map[job.id] = related
+        if counts.get('failed') or child_failed:
+            failure_related_all.update(related)
+
+    failure_rows_by_job: dict[UUID, list[tuple[UUID, str, str, int]]] = defaultdict(list)
+    if failure_related_all:
+        for cond in iter_id_conditions(db, ProjectWorkItem.job_id, sorted(failure_related_all)):
+            f_rows = (await db.execute(
+                select(ProjectWorkJob.project_id, ProjectWorkItem.job_id, ProjectWorkJob.operation, ProjectWorkItem.error, func.count())
+                .join(ProjectWorkJob, ProjectWorkJob.id == ProjectWorkItem.job_id)
+                .where(cond, ProjectWorkItem.status.in_(('failed', 'retry_wait')), ProjectWorkItem.error.is_not(None))
+                .group_by(ProjectWorkJob.project_id, ProjectWorkItem.job_id, ProjectWorkJob.operation, ProjectWorkItem.error)
+            )).all()
+            for pid, jid, op_name, err_text, cnt in f_rows:
+                failure_rows_by_job[jid].append((pid, op_name, err_text, cnt))
+
+    results = []
+    for job in jobs_list:
+        scope_ids = job_scope_ids[job.id]
+        raw_merged = defaultdict(int)
+        filtered_crop_count = 0
+        retrying_total = 0
+        for sid in scope_ids:
+            for st, cnt in per_job_status.get(sid, {}).items():
+                raw_merged[st] += cnt
+            filtered_crop_count += per_job_filtered.get(sid, 0)
+            retrying_total += per_job_retrying.get(sid, 0)
+        counts = _normalize_status_counts(raw_merged)
+        result = dict(
+            id=str(job.id),
+            project_id=str(job.project_id),
+            operation=job.operation,
+            model_id=job.model['id'],
+            revision=job.model['revision'],
+            created_at=job.created_at.replace(tzinfo=timezone.utc) if job.created_at.tzinfo is None else job.created_at,
+            total=sum(counts.values()),
+            counts=counts,
+            model_name=job.model.get('config', {}).get('name', ''),
+            follow_uploads=job.follow_uploads,
+            min_crop_long_edge=job.options.get('min_crop_long_edge', 0),
+            filtered_crop_count=filtered_crop_count,
+        )
+        if job.operation == 'quality':
+            p_true = per_job_passed_true.get(job.id, 0)
+            p_false = per_job_passed_false.get(job.id, 0)
+            result.update(quality_counts=dict(passed=p_true, deleted=p_false), quality_requirement=job.options['prompt'])
+            if job.options.get('workflow_id'):
+                result['passed_count'] = p_true
+        if job.operation == 'crop':
+            result['target_labels'] = job.options.get('labels') or job.model.get('config', {}).get('labels', [])
+        if 'workflow_id' in job.options:
+            result.update(
+                workflow_started=job.options['workflow_started'],
+                workflow_streaming=job.options.get('workflow_streaming', False),
+                workflow_cancelled=job.options.get('workflow_cancelled', False),
+                workflow_can_follow=job.options.get('workflow_can_follow', job.options.get('workflow_streaming', False)),
+                node_key=job.options.get('node_key'),
+                title=job.options.get('title'),
+                workflow_routes=job.options.get('workflow_routes'),
+            )
+            if accepts_uploaded_crop_entry(job):
+                result.update(workflow_can_route_uploaded_crops=True, uploaded_crop_job_id=job.options.get('uploaded_crop_job_id'))
+            if counts.get('failed') and result['workflow_streaming'] and not result['workflow_cancelled'] and not job.options.get('queue_deleted'):
+                result['retrying_count'] = retrying_total
+        if job.operation in ('detect', 'filter', 'img_filter', 'box_clean'):
+            result['passed_count'] = per_job_passed_true.get(job.id, 0)
+        elif job.operation == 'script':
+            result['passed_count'] = per_job_passed_not_false.get(job.id, 0)
+        if 'batch_root' in job.options:
+            result['batch_count'] = len(scope_ids)
+        definition = job.options.get('attribute_schema')
+        if definition:
+            result.update(
+                target_labels=AttributeSchema.model_validate(definition).target_labels,
+                attribute_fields=[field['name'] for field in definition['fields']],
+            )
+        if job.operation == 'attributes' and job.options.get('workflow_id'):
+            result['attribute_skipped_count'] = per_job_attr_skipped.get(job.id, 0)
+        if job.operation == 'detect_attributes':
+            links = det_links_by_job.get(job.id, [])
+            child_ids = {UUID(row[0]) for row in links if row[0]}
+            raw_attr_counts: dict[str, int] = defaultdict(int)
+            for cid in child_ids:
+                if valid_child_project.get(cid) == job.project_id:
+                    for st, cnt in child_status_by_job.get(cid, {}).items():
+                        raw_attr_counts[st] += cnt
+            attribute_counts = _normalize_status_counts(raw_attr_counts)
+            result.update(
+                attribute_model_name=job.options.get('attribute_model', {}).get('config', {}).get('name', ''),
+                pipeline=dict(
+                    detection=dict(total=sum(counts.values()), counts=counts),
+                    attributes=dict(total=sum(attribute_counts.values()), counts=attribute_counts),
+                    generated_targets=sum(row[1] or 0 for row in links),
+                    preserved_annotations=sum(row[2] or 0 for row in links),
+                    child_batches=len(child_ids),
+                ),
+            )
+            if attribute_counts.get('pending') and not attribute_counts.get('running'):
+                result['waiting_reason'] = (
+                    '原图检测尚未结束，属性分析排队等待；当前队列先处理原图检测。'
+                    if counts.get('pending') or counts.get('running')
+                    else '属性分析已入队，等待前序任务完成。'
+                )
+            elif not child_ids and (counts.get('pending') or counts.get('running')):
+                result['waiting_reason'] = '等待检测产生目标切图后，再执行属性分析。'
+        if counts.get('failed') or result.get('pipeline', {}).get('attributes', {}).get('counts', {}).get('failed'):
+            merged_failures: dict[tuple[str, str], int] = defaultdict(int)
+            for r_jid in job_related_map[job.id]:
+                for pid, op_name, err_text, cnt in failure_rows_by_job.get(r_jid, []):
+                    if pid == job.project_id:
+                        merged_failures[(op_name, err_text)] += cnt
+            top_failures = sorted(merged_failures.items(), key=lambda kv: -kv[1])[:3]
+            result['failure_reasons'] = [
+                dict(operation=op_name, reason=err_text, count=cnt)
+                for (op_name, err_text), cnt in top_failures
+            ]
+        reference = job.options.get('attribute_example')
+        if reference:
+            result['example'] = {key: reference[key] for key in ('asset_id', 'original_name', 'annotation_version')}
+        results.append(result)
+    return results
+
+
 async def summary(db,job,details=False,page=1):
     from services.project_workflow import batch_jobs
-    jobs=batch_jobs(job) if 'batch_root' in job.options else select(ProjectWorkJob.id).where(ProjectWorkJob.id==job.id)
-    rows=(await db.execute(select(ProjectWorkItem.status,func.count(),
-        func.sum(ProjectWorkItem.result['filtered_count'].as_integer())).where(ProjectWorkItem.job_id.in_(jobs))
-        .group_by(ProjectWorkItem.status))).all()
-    counts={status:count for status,count,_ in rows}
-    result=dict(id=str(job.id),project_id=str(job.project_id),operation=job.operation,model_id=job.model['id'],
-        revision=job.model['revision'],created_at=job.created_at.replace(tzinfo=timezone.utc) if job.created_at.tzinfo is None else job.created_at,
-        total=sum(counts.values()),counts=counts,model_name=job.model.get('config',{}).get('name',''),follow_uploads=job.follow_uploads,
-        min_crop_long_edge=job.options.get('min_crop_long_edge',0),filtered_crop_count=sum(count or 0 for _,_,count in rows))
-    related_ids=set((await db.scalars(jobs)).all()) if 'batch_root' in job.options else {job.id}
-    if job.operation=='quality':
-        passed=ProjectWorkItem.result['passed'].as_boolean()
-        quality=dict((await db.execute(select(passed,func.count()).where(
-            ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed').group_by(passed))).all())
-        result.update(quality_counts=dict(passed=quality.get(True,0),deleted=quality.get(False,0)),quality_requirement=job.options['prompt'])
-        if job.options.get('workflow_id'):result['passed_count']=quality.get(True,0)
-    if job.operation=='crop':result['target_labels']=job.options.get('labels') or job.model.get('config',{}).get('labels',[])
-    if 'workflow_id' in job.options:
-        result.update(workflow_started=job.options['workflow_started'],workflow_streaming=job.options.get('workflow_streaming',False),
-            workflow_cancelled=job.options.get('workflow_cancelled',False),
-            workflow_can_follow=job.options.get('workflow_can_follow',job.options.get('workflow_streaming',False)),
-            node_key=job.options.get('node_key'),title=job.options.get('title'),
-            workflow_routes=job.options.get('workflow_routes'))
-        if accepts_uploaded_crop_entry(job):
-            result.update(workflow_can_route_uploaded_crops=True,uploaded_crop_job_id=job.options.get('uploaded_crop_job_id'))
-        if counts.get('failed') and result['workflow_streaming'] and not result['workflow_cancelled'] and not job.options.get('queue_deleted'):
-            result['retrying_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem)
-                .where(ProjectWorkItem.job_id.in_(jobs),retrying_items()))
-    if job.operation in ('detect','filter','img_filter','box_clean'):
-        result['passed_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem).where(
-            ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed',ProjectWorkItem.result['passed'].as_boolean().is_(True)))
-    elif job.operation=='script':
-        result['passed_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem).where(
-            ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed',ProjectWorkItem.result['passed'].as_boolean().is_not(False)))
-    if 'batch_root' in job.options:result['batch_count']=await db.scalar(select(func.count()).select_from(jobs.subquery()))
-    definition=job.options.get('attribute_schema')
-    if definition:
-        result.update(target_labels=AttributeSchema.model_validate(definition).target_labels,attribute_fields=[field['name'] for field in definition['fields']])
-    attribute_templates=job.options.get('attribute_templates')
-    if job.operation=='attributes' and job.options.get('workflow_id'):
-        result['attribute_skipped_count']=await db.scalar(select(func.count()).select_from(ProjectWorkItem).where(
-            ProjectWorkItem.job_id==job.id,ProjectWorkItem.status=='completed',
-            ProjectWorkItem.result['attribute_skipped'].as_boolean().is_(True)))
-    if job.operation=='detect_attributes':
-        links=(await db.execute(select(ProjectWorkItem.result['attribute_job_id'].as_string(),ProjectWorkItem.result['detected_count'].as_integer(),
-            ProjectWorkItem.result['skipped_annotated_count'].as_integer()).where(ProjectWorkItem.job_id==job.id))).all()
-        child_ids={UUID(row[0]) for row in links if row[0]}
-        related_ids.update(child_ids)
-        attribute_counts=dict((await db.execute(select(ProjectWorkItem.status,func.count()).join(ProjectWorkJob,ProjectWorkJob.id==ProjectWorkItem.job_id)
-            .where(ProjectWorkJob.project_id==job.project_id,ProjectWorkItem.job_id.in_(child_ids)).group_by(ProjectWorkItem.status))).all()) if child_ids else {}
-        result.update(attribute_model_name=job.options.get('attribute_model',{}).get('config',{}).get('name',''),
-            pipeline=dict(detection=dict(total=sum(counts.values()),counts=counts),attributes=dict(total=sum(attribute_counts.values()),counts=attribute_counts),
-                generated_targets=sum(row[1] or 0 for row in links),preserved_annotations=sum(row[2] or 0 for row in links),child_batches=len(child_ids)))
-        if attribute_counts.get('pending') and not attribute_counts.get('running'):
-            result['waiting_reason']='原图检测尚未结束，属性分析排队等待；当前队列先处理原图检测。' if counts.get('pending') or counts.get('running') else '属性分析已入队，等待前序任务完成。'
-        elif not child_ids and (counts.get('pending') or counts.get('running')):
-            result['waiting_reason']='等待检测产生目标切图后，再执行属性分析。'
-    if counts.get('failed') or result.get('pipeline',{}).get('attributes',{}).get('counts',{}).get('failed'):
-        failures=(await db.execute(select(ProjectWorkJob.operation,ProjectWorkItem.error,func.count()).join(ProjectWorkJob,ProjectWorkJob.id==ProjectWorkItem.job_id)
-            .where(ProjectWorkJob.project_id==job.project_id,ProjectWorkItem.job_id.in_(related_ids),ProjectWorkItem.status=='failed',ProjectWorkItem.error.is_not(None))
-            .group_by(ProjectWorkJob.operation,ProjectWorkItem.error).order_by(func.count().desc()).limit(3))).all()
-        result['failure_reasons']=[dict(operation=operation,reason=reason,count=count) for operation,reason,count in failures]
-    reference=job.options.get('attribute_example')
-    if reference:result['example']={key:reference[key] for key in ('asset_id','original_name','annotation_version')}
+    result = (await summaries(db, [job]))[0]
     if details:
+        jobs = batch_jobs(job) if 'batch_root' in job.options else select(ProjectWorkJob.id).where(ProjectWorkJob.id == job.id)
+        definition = job.options.get('attribute_schema')
+        attribute_templates = job.options.get('attribute_templates')
         if definition and job.options.get('workflow_id'):result['attribute_schema']=definition
         if attribute_templates:result['attribute_templates']=attribute_templates
         if job.operation=='crop':result['crop_from_originals']=await crop_accepts_originals(db,job)
@@ -211,7 +408,7 @@ async def summary(db,job,details=False,page=1):
             .order_by(ProjectWorkItem.id).offset((page-1)*20).limit(20))).all()
         assets={asset.id:asset for asset in (await db.scalars(select(Asset).where(Asset.project_id==job.project_id,Asset.id.in_([item.asset_id for item,_ in items if item.asset_id])))).all()}
         result.update(page=page,items=[dict(id=str(i.id),asset_id=str(i.asset_id) if i.asset_id else None,original_name=assets[i.asset_id].original_name if i.asset_id in assets else (i.result or {}).get('original_name'),
-            status=i.status,attempt=i.attempt,result=i.result,error=i.error,
+            status='failed' if i.status=='retry_wait' else i.status,attempt=i.attempt,result=i.result,error=i.error,
             auto_retry=bool(retrying and result.get('retrying_count'))) for i,retrying in items])
         if job.operation=='attributes':
             parent=(await db.execute(select(ProjectWorkJob.id,Asset.original_name).join(ProjectWorkItem,ProjectWorkItem.job_id==ProjectWorkJob.id)
@@ -255,12 +452,14 @@ async def action_job(db,project,job_id,action):
         child=(item.result or {}).get('attribute_job_id')
         if child and action=='cancel':
             children=(await db.scalars(select(ProjectWorkItem).join(ProjectWorkJob).where(ProjectWorkJob.id==UUID(child),
-                ProjectWorkJob.project_id==project.id,ProjectWorkItem.status.in_(['pending','running'])).with_for_update())).all()
+                ProjectWorkJob.project_id==project.id,ProjectWorkItem.status.in_(['pending','running','retry_wait'])).with_for_update())).all()
             for entry in children:entry.status='cancelled';entry.attempt+=1;entry.error='上游批次已取消';count+=1
-        if action=='cancel' and item.status in ('pending','running'):
+        if action=='cancel' and item.status in ('pending','running','retry_wait'):
             item.status='cancelled';item.attempt+=1;item.error='已取消';count+=1
-        if action=='retry' and item.status in ('failed','cancelled') and item.asset_id:
+        if action=='retry' and item.status in ('failed','retry_wait','cancelled') and item.asset_id:
             item.status='pending';item.attempt+=1;item.error=None;count+=1
+            if item.result and 'retry_at' in item.result:
+                item.result={k:v for k,v in item.result.items() if k!='retry_at'} or None
     await db.commit()
     return {'changed_count':count}
 
@@ -337,10 +536,23 @@ async def finish_detection_annotation(db,work,project,asset,result):
     return result
 
 
+def _reencode_crop_with_label(raw: bytes, project_id, asset_id, region, label: str) -> tuple[bytes, str]:
+    with Image.open(BytesIO(raw)) as image:
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text('project_crop', image.info.get('project_crop') or json.dumps([str(project_id), str(asset_id), region]))
+        metadata.add_text('project_crop_label', label)
+        output = BytesIO()
+        image.save(output, 'PNG', pnginfo=metadata)
+    encoded = output.getvalue()
+    return encoded, hashlib.sha256(encoded).hexdigest()
+
+
 async def _persist_derived_crops(db, project, asset, work, item, raw_crops):
-    ids = []
-    derived_assets = []
+    if not raw_crops:
+        return [], []
+    storage = get_storage()
     root = (asset.device_info or {}).get('parent_image_id') or str(asset.image_id or asset.id)
+    prepared = []
     for crop in raw_crops:
         raw = crop.pop('content')
         digest = hashlib.sha256(raw).hexdigest()
@@ -359,30 +571,82 @@ async def _persist_derived_crops(db, project, asset, work, item, raw_crops):
         )
         info = {**(asset.device_info or {}), 'parent_image_id': root, 'crop': crop_info,
                 'crop_chain': [*deepcopy((asset.device_info or {}).get('crop_chain') or ([parent_crop] if parent_crop else [])), crop_info]}
-        await db.scalar(select(Project).where(Project.id == project.id).with_for_update())
-        derived = await db.scalar(select(Asset).where(Asset.project_id == project.id, Asset.content_hash == digest))
-        if derived and (derived.source_type != 'model_crop' or
-                        ((derived.device_info or {}).get('crop') or {}).get('box', {}).get('label') != box['label']):
-            with Image.open(BytesIO(raw)) as image:
-                metadata = PngImagePlugin.PngInfo()
-                metadata.add_text('project_crop', image.info.get('project_crop') or json.dumps([str(project.id), str(asset.id), region]))
-                metadata.add_text('project_crop_label', box['label'])
-                output = BytesIO()
-                image.save(output, 'PNG', pnginfo=metadata)
-            raw = output.getvalue()
-            digest = hashlib.sha256(raw).hexdigest()
-            derived = await db.scalar(select(Asset).where(Asset.project_id == project.id, Asset.content_hash == digest))
-        path = f'project-crops/{project.id}/{digest[:2]}/{digest}.png'
-        await get_storage().save_file(BytesIO(raw), path)
+        prepared.append(dict(raw=raw, digest=digest, region=region, box=box, info=info, width=crop['width'], height=crop['height']))
+
+    # Encode PNG metadata and persist immutable crop files BEFORE acquiring Project FOR UPDATE lock.
+    initial_hashes = sorted({entry['digest'] for entry in prepared})
+    pre_existing = {}
+    for cond in iter_id_conditions(db, Asset.content_hash, initial_hashes):
+        for existing_asset in (await db.scalars(select(Asset).where(Asset.project_id == project.id, cond))).all():
+            pre_existing[existing_asset.content_hash] = existing_asset
+
+    seen_label_by_hash: dict[str, str] = {}
+    for entry in prepared:
+        digest = entry['digest']
+        label = entry['box']['label']
+        conflict_db = pre_existing.get(digest)
+        conflict_batch = digest in seen_label_by_hash and seen_label_by_hash[digest] != label
+        if conflict_batch or (
+            conflict_db is not None
+            and (
+                conflict_db.source_type != 'model_crop'
+                or ((conflict_db.device_info or {}).get('crop') or {}).get('box', {}).get('label') != label
+            )
+        ):
+            raw_new, digest_new = await asyncio.to_thread(
+                _reencode_crop_with_label, entry['raw'], project.id, asset.id, entry['region'], label
+            )
+            entry['raw'] = raw_new
+            entry['digest'] = digest_new
+        seen_label_by_hash.setdefault(entry['digest'], label)
+        path = f"project-crops/{project.id}/{entry['digest'][:2]}/{entry['digest']}.png"
+        entry['path'] = path
+        await storage.save_file(BytesIO(entry['raw']), path)
+
+    # Now acquire Project FOR UPDATE lock solely for quick DB metadata registration.
+    await db.scalar(select(Project).where(Project.id == project.id).with_for_update())
+    final_hashes = sorted({entry['digest'] for entry in prepared})
+    existing = {}
+    for cond in iter_id_conditions(db, Asset.content_hash, final_hashes):
+        for existing_asset in (await db.scalars(select(Asset).where(Asset.project_id == project.id, cond))).all():
+            existing[existing_asset.content_hash] = existing_asset
+
+    ids = []
+    derived_assets = []
+    created_count = 0
+    for entry in prepared:
+        digest = entry['digest']
+        raw = entry['raw']
+        path = entry['path']
+        box = entry['box']
+        derived = existing.get(digest)
+        if derived and (
+            derived.source_type != 'model_crop'
+            or ((derived.device_info or {}).get('crop') or {}).get('box', {}).get('label') != box['label']
+        ):
+            raw, digest = await asyncio.to_thread(
+                _reencode_crop_with_label, raw, project.id, asset.id, entry['region'], box['label']
+            )
+            path = f'project-crops/{project.id}/{digest[:2]}/{digest}.png'
+            await storage.save_file(BytesIO(raw), path)
+            derived = existing.get(digest) or await db.scalar(
+                select(Asset).where(Asset.project_id == project.id, Asset.content_hash == digest)
+            )
         if derived is None:
-            derived = Asset(project_id=project.id, image_id=None, blob_path=path, content_hash=digest,
-                            original_name=f'{asset.id}_{digest[:12]}.png', file_size=len(raw), width=crop['width'], height=crop['height'],
-                            format='PNG', source_type='model_crop', device_info=info, annotation_status='pending')
+            derived = Asset(
+                project_id=project.id, image_id=None, blob_path=path, content_hash=digest,
+                original_name=f'{asset.id}_{digest[:12]}.png', file_size=len(raw),
+                width=entry['width'], height=entry['height'], format='PNG',
+                source_type='model_crop', device_info=entry['info'], annotation_status='pending',
+            )
             db.add(derived)
             await db.flush()
-            await db.execute(update(Project).where(Project.id == project.id).values(total_assets=Project.total_assets + 1))
+            existing[digest] = derived
+            created_count += 1
         ids.append(str(derived.id))
         derived_assets.append(derived)
+    if created_count:
+        await db.execute(update(Project).where(Project.id == project.id).values(total_assets=Project.total_assets + created_count))
     return list(dict.fromkeys(ids)), derived_assets
 
 
@@ -480,12 +744,13 @@ async def finish(sessions,work,result,error):
             elif work['operation'] in ('crop','detect_attributes'):
                 filtered_count=result.get('filtered_count',0)
                 source_annotation={}
+                crop_boxes=[crop['box'] for crop in result['crops'] if crop.get('box')]
+                ids, derived_assets = await _persist_derived_crops(db, project, asset, work, item, result['crops'])
                 if project.task_type=='detection' and work['options'].get('save_input_boxes') and result.get('source_boxes'):
                     source_annotation=await save_crop_source_boxes(db,asset,result['source_boxes'],work['user_id'])
-                elif project.task_type=='detection' and work['options'].get('workflow_id') and result['crops']:
+                elif project.task_type=='detection' and work['options'].get('workflow_id') and crop_boxes:
                     project=await db.scalar(select(Project).where(Project.id==project.id).with_for_update().execution_options(populate_existing=True))
-                    await register_detection_labels(db,project,[crop['box'] for crop in result['crops']])
-                ids, derived_assets = await _persist_derived_crops(db, project, asset, work, item, result['crops'])
+                    await register_detection_labels(db,project,crop_boxes)
                 result=dict(asset_ids=ids,detected_count=len(ids),**source_annotation,
                     filtered_count=filtered_count,
                     warning=('检测到的目标均被尺寸阈值过滤，未生成裁剪图' if filtered_count else '未检测到目标；仅标注裁剪图时，此原图不进入标注队列') if not ids else '')
@@ -496,6 +761,7 @@ async def finish(sessions,work,result,error):
                     if targets:
                         child=ProjectWorkJob(project_id=project.id,user_id=work['user_id'],operation='attributes',
                             model=work['options']['attribute_model'],options={'attribute_schema':attribute_schema,
+                                'parent_job_id':str(work['job_id']),
                                 'prompt':work['options'].get('prompt',''),
                                 'attribute_prompt':work['options'].get('attribute_prompt',''),
                                 **({'attribute_example':deepcopy(work['options']['attribute_example'])} if work['options'].get('attribute_example') else {})})
@@ -558,29 +824,111 @@ async def finish(sessions,work,result,error):
             # Rollback can expire ORM state. Recheck the fence in a new transaction.
             item=await db.scalar(select(ProjectWorkItem).where(ProjectWorkItem.id==work['item_id']).with_for_update())
             if item and item.status=='running' and item.attempt==work['attempt']:
-                item.status='failed';item.error=str(exc.detail)[:500]
-                if work['options'].get('workflow_id'):
-                    metadata={key:value for key,value in (item.result or {}).items() if key!='retry_at'}
-                    if exc.status_code==429 or exc.status_code>=500:
-                        metadata['retry_at']=int(time())+min(300,15*2**min(item.attempt-1,5))
-                    item.result=metadata or None
+                job_row=await db.get(ProjectWorkJob,work['job_id'])
+                job_opts=(job_row.options if job_row else work['options']) or {}
+                metadata={key:value for key,value in (item.result or {}).items() if key!='retry_at'}
+                can_auto_retry=(
+                    bool(work['options'].get('workflow_id'))
+                    and job_opts.get('workflow_streaming',False)
+                    and not job_opts.get('workflow_cancelled',False)
+                    and not job_opts.get('queue_deleted',False)
+                    and (exc.status_code==429 or exc.status_code>=500)
+                    and item.attempt<MAX_AUTO_RETRY_ATTEMPTS
+                    and item.asset_id is not None
+                )
+                if can_auto_retry:
+                    metadata['retry_at']=int(time())+min(300,15*2**min(item.attempt-1,5))
+                    item.status='retry_wait'
+                else:
+                    item.status='failed'
+                item.error=str(exc.detail)[:500]
+                item.result=metadata or None
                 await db.commit()
+
+
+async def _fail_unexpected(sessions, work):
+    try:
+        async with sessions() as db:
+            item = await db.scalar(select(ProjectWorkItem).where(ProjectWorkItem.id == work['item_id']).with_for_update())
+            if item and item.status == 'running' and item.attempt == work['attempt']:
+                metadata = {k: v for k, v in (item.result or {}).items() if k != 'retry_at'}
+                item.status = 'failed'
+                item.error = '任务执行异常中断，请检查配置后重试'
+                item.result = metadata or None
+                await db.commit()
+    except Exception:
+        logger.exception('Failed to persist fallback error state for item %s', work['item_id'])
 
 
 async def process_one(sessions,client):
     async with sessions() as db:
-        active=select(ProjectWorkItem.job_id,func.count().label('running')).where(ProjectWorkItem.status=='running')\
-            .group_by(ProjectWorkItem.job_id).cte('active_work')
-        stage=case((ProjectWorkJob.options['workflow_streaming'].as_boolean().is_(True),
-            ProjectWorkJob.options['workflow_step'].as_integer()),else_=0)
-        retry_ready=and_(retrying_items(),ProjectWorkJob.options['workflow_streaming'].as_boolean().is_(True),
+        now_ts = int(time())
+        is_pg = db.get_bind().dialect.name == 'postgresql'
+        active = (
+            select(ProjectWorkItem.job_id, func.count().label('running'))
+            .where(ProjectWorkItem.status == 'running')
+            .group_by(ProjectWorkItem.job_id)
+            .cte('active_work')
+        )
+        stage = case(
+            (ProjectWorkJob.options['workflow_streaming'].as_boolean().is_(True),
+             ProjectWorkJob.options['workflow_step'].as_integer()),
+            else_=0,
+        )
+        workflow_active = and_(
+            ProjectWorkJob.options['workflow_streaming'].as_boolean().is_(True),
             ProjectWorkJob.options['workflow_cancelled'].as_boolean().is_not(True),
             ProjectWorkJob.options['queue_deleted'].as_boolean().is_not(True),
-            func.coalesce(ProjectWorkItem.result['retry_at'].as_integer(),0)<=int(time()))
-        item=await db.scalar(select(ProjectWorkItem).join(ProjectWorkJob).outerjoin(active,active.c.job_id==ProjectWorkJob.id)
-            .where(or_(ProjectWorkItem.status=='pending',retry_ready))
-            .order_by(ProjectWorkJob.created_at,func.coalesce(active.c.running,0),stage.desc(),ProjectWorkItem.id)
-            .with_for_update(of=ProjectWorkItem,skip_locked=True).limit(1))
+        )
+        if is_pg:
+            retry_due_cond = and_(
+                ProjectWorkItem.status == 'retry_wait',
+                ProjectWorkItem.asset_id.is_not(None),
+                ProjectWorkItem.attempt < MAX_AUTO_RETRY_ATTEMPTS,
+                func.coalesce(ProjectWorkItem.result['retry_at'].as_integer(), 0) <= now_ts,
+            )
+        else:
+            retry_due_cond = and_(
+                retrying_items(),
+                func.coalesce(ProjectWorkItem.result['retry_at'].as_integer(), 0) <= now_ts,
+            )
+        has_pending = select(1).where(
+            ProjectWorkItem.job_id == ProjectWorkJob.id,
+            ProjectWorkItem.status == 'pending',
+        ).exists()
+        has_retry_due = and_(
+            workflow_active,
+            select(1).where(ProjectWorkItem.job_id == ProjectWorkJob.id, retry_due_cond).exists(),
+        )
+        # Step 1: pick prioritized candidate job_ids on small project_work_jobs table.
+        candidates = (await db.execute(
+            select(ProjectWorkJob.id, has_pending.label('has_pending'), workflow_active.label('wf_active'))
+            .outerjoin(active, active.c.job_id == ProjectWorkJob.id)
+            .where(or_(has_pending, has_retry_due))
+            .order_by(ProjectWorkJob.created_at, func.coalesce(active.c.running, 0), stage.desc(), ProjectWorkJob.id)
+            .limit(32)
+        )).all()
+        # Step 2: claim first unlocked item directly via ix_project_work_claim(status, job_id, id).
+        item = None
+        for jid, job_has_pending, wf_active in candidates:
+            if job_has_pending:
+                item = await db.scalar(
+                    select(ProjectWorkItem)
+                    .where(ProjectWorkItem.job_id == jid, ProjectWorkItem.status == 'pending')
+                    .order_by(ProjectWorkItem.id)
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+            if item is None and wf_active:
+                item = await db.scalar(
+                    select(ProjectWorkItem)
+                    .where(ProjectWorkItem.job_id == jid, retry_due_cond)
+                    .order_by(ProjectWorkItem.id)
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+            if item is not None:
+                break
         if not item:return False
         job=await db.get(ProjectWorkJob,item.job_id);project=await db.get(Project,job.project_id)
         item.status='running';item.attempt+=1
@@ -613,151 +961,167 @@ async def process_one(sessions,client):
                 work['quality_event_count']=(item.result or {}).get('quality_event_count')
         work['match_baseline']=deepcopy((item.result or {}).get('match_baseline',{}))
         await db.commit()
-    if work['operation']=='match_review':
-        from services.match_review import process
-        return await process(sessions,work,client)
-    if work['operation']=='embedding_negatives':
-        from services.embedding_recommendation_jobs import process
-        return await process(sessions,work)
-    result=error=None
-    attribute_template_id=None
-    options=work['options']
-    reference=None
     try:
-        async with sessions() as db:
-            asset=await db.get(Asset,work['asset_id']) if work['asset_id'] else None
-            if not asset or asset.content_hash!=work['content_hash'] or asset.project_id!=work['project_id']:raise HTTPException(409,'图片已删除或变更')
-            if work['operation'] not in ('crop','detect_attributes') and not work['options'].get('workflow_id'):
-                require_annotation_asset(await db.get(Project,work['project_id']),asset)
-            if work['operation'] in ('preannotate','ai_review'):
-                project=await db.get(Project,work['project_id'])
-                require_annotation_asset(project,asset)
-                labels=(project.label_schema or {}).get('labels') or []
-            if options.get('attribute_templates'):
-                label,attribute_template_id,schema=crop_attribute_template(asset,options['attribute_templates'])
-                if schema is None:
-                    result={'attribute_skipped':True,'reason':f'裁剪类别「{label}」未匹配属性模板' if label else '图片没有检测裁剪类别'}
-                else:
-                    options['attribute_schema']=schema
-            elif work['operation']=='attributes' and options.get('workflow_id') and (label:=crop_label(asset)):
-                targets=AttributeSchema.model_validate(options['attribute_schema']).target_labels
-                if label.casefold().removeprefix('sam3_') not in {target.casefold().removeprefix('sam3_') for target in targets}:
-                    result={'attribute_skipped':True,'reason':f'裁剪类别「{label}」未选为属性分析目标'}
-            if result is None:
-                if work['operation'] in ('branch', 'box_clean'):
-                    content = b''
-                    width, height = asset.width, asset.height
-                else:
-                    content = await read_content(asset)
-                    width, height = asset.width, asset.height
-                asset_meta = dict(original_name=asset.original_name, source_type=asset.source_type, crop_label=crop_label(asset))
-                existing_phashes = []
-                if work['operation'] == 'img_filter' and (options.get('img_filter_config') or {}).get('dedup_phash_distance') is not None:
-                    phash_col = ProjectWorkItem.result['phash'].as_string()
-                    existing_phashes = list((await db.scalars(select(phash_col).where(
-                        ProjectWorkItem.job_id == work['job_id'], ProjectWorkItem.status == 'completed',
-                        ProjectWorkItem.result['passed'].as_boolean().is_(True), phash_col.is_not(None),
-                    ).limit(5000))).all())
-            await validate_snapshots(db,work['tenant_id'],[work['model'],work['options'].get('attribute_model')],lock=False)
-            if work['options'].get('attribute_schema') and not work['options'].get('workflow_attribute_override') and work['options']['attribute_schema']!=((await db.get(Project,work['project_id'])).label_schema or {}).get('object_attributes'):
-                raise HTTPException(409,'属性配置已变更，请新建批次')
-            reference_asset=await validate_example(db,await db.get(Project,work['project_id']),work['options'].get('attribute_example'))
-            if reference_asset is not None and work['operation']=='attributes':
-                reference=dict(content=await read_example_content(reference_asset),answer=work['options']['attribute_example']['attributes'])
-        if result is not None:
-            await finish(sessions,work,result,None)
-            return True
-        if work['operation'] in ('branch', 'img_filter', 'box_clean', 'img_transform', 'script'):
-            from services import workflow_builtins as builtins
-            from services.script_sandbox import run_script
-            ann_data = work.get('annotation_data') or {}
-            boxes = ann_data.get('boxes') or []
-            attrs = ann_data.get('attributes') or {}
-            desc = ann_data.get('description') or ''
-            if work['operation'] == 'branch':
-                result = builtins.execute_branch(width=width, height=height, crop_label=asset_meta['crop_label'],
-                                                 boxes=boxes, attributes=attrs, config=options['branch_config'])
-            elif work['operation'] == 'img_filter':
-                result = await asyncio.to_thread(builtins.execute_img_filter, content, options['img_filter_config'], existing_phashes)
-            elif work['operation'] == 'box_clean':
-                result = builtins.execute_box_clean(boxes, width, height, options['box_clean_config'])
-            elif work['operation'] == 'img_transform':
-                result = await asyncio.to_thread(builtins.execute_img_transform, content, project_id=str(work['project_id']),
-                                                 asset_id=str(work['asset_id']), boxes=boxes, crop_label=asset_meta['crop_label'],
-                                                 config=options['img_transform_config'])
-            else:
-                scfg = options['script_config']
-                result = await run_script(scfg['code'], content, width=width, height=height,
-                                          original_name=asset_meta['original_name'], source_type=asset_meta['source_type'],
-                                          crop_label=asset_meta['crop_label'], boxes=boxes, attributes=attrs,
-                                          description=desc, timeout_seconds=scfg.get('timeout_seconds', 5.0))
-            await finish(sessions, work, result, None)
-            return True
-        config=ModelServiceConfig(**work['model']['config'])
-        if work['operation']=='caption':
-            result={'description':await caption(config,content,options['prompt'],client)}
-        elif work['operation'] in ('quality','filter'):
-            from services.image_quality import analyze as quality_analyze
-            result=await quality_analyze(config,content,options['prompt'],client)
-        elif work['operation']=='attributes':
-            result={'attributes':await analyze(config,content,options['attribute_schema'],client,example=reference,
-                prompt=options.get('prompt',''),attribute_prompt=options.get('attribute_prompt',''))}
-            if attribute_template_id:result['attribute_template_id']=attribute_template_id
-        elif work['operation']=='index':
-            vector=await embedding(config,content=content,client=client)
-            key=f'{work["item_id"]}_{work["attempt"]}'
-            await Milvus(client).upsert(key,vector,work['tenant_id'],work['project_id'],work['asset_id'],work['model'],work['content_hash'])
-            result={'vector_id':key,'space':space_key(work['model'])}
-        elif work['operation']=='ai_review':
-            boxes=work['annotation_data'].get('boxes')
-            if not boxes or work['review_state'].get('status')!='pending':
-                result={'reason':'待审核的正样本才执行 AI 审核，负样本由人工审核'}
-            elif any(label not in labels for label in options['labels']) or any(box['label'] not in labels for box in boxes):
-                result={'reason':'审核类别与当前项目类别不匹配，保留人工审核'}
-            else:
-                work['project_labels']=labels
-                try:
-                    evidence=await audit_image(config,content,boxes,options['labels'] or labels,options['expansion'],options['prompt'],client)
-                except HTTPException as exc:
-                    evidence=dict(boxes=[],completeness='uncertain',negative='uncertain',reason=str(exc.detail))
-                approved=auto_pass(boxes,evidence,options['auto_approve_confidence'],work['annotation_source'] in ('auto','model'))
-                result=dict(approved=approved,evidence=evidence,reason=evidence['reason'])
-        else:
-            if work['operation']=='preannotate' and 'boxes' in work['annotation_data']:
-                await finish(sessions,work,{'reason':'已保留已有检测框或负样本'},None)
+        if work['operation']=='match_review':
+            from services.match_review import process
+            return await process(sessions,work,client)
+        if work['operation']=='embedding_negatives':
+            from services.embedding_recommendation_jobs import process
+            return await process(sessions,work)
+        result=error=None
+        attribute_template_id=None
+        options=work['options']
+        reference=None
+        try:
+            async with sessions() as db:
+                asset=await db.get(Asset,work['asset_id']) if work['asset_id'] else None
+                if not asset or asset.content_hash!=work['content_hash'] or asset.project_id!=work['project_id']:raise HTTPException(409,'图片已删除或变更')
+                if work['operation'] not in ('crop','detect_attributes') and not work['options'].get('workflow_id'):
+                    require_annotation_asset(await db.get(Project,work['project_id']),asset)
+                if work['operation'] in ('preannotate','ai_review'):
+                    project=await db.get(Project,work['project_id'])
+                    require_annotation_asset(project,asset)
+                    labels=(project.label_schema or {}).get('labels') or []
+                if options.get('attribute_templates'):
+                    label,attribute_template_id,schema=crop_attribute_template(asset,options['attribute_templates'])
+                    if schema is None:
+                        result={'attribute_skipped':True,'reason':f'裁剪类别「{label}」未匹配属性模板' if label else '图片没有检测裁剪类别'}
+                    else:
+                        options['attribute_schema']=schema
+                elif work['operation']=='attributes' and options.get('workflow_id') and (label:=crop_label(asset)):
+                    targets=AttributeSchema.model_validate(options['attribute_schema']).target_labels
+                    if label.casefold().removeprefix('sam3_') not in {target.casefold().removeprefix('sam3_') for target in targets}:
+                        result={'attribute_skipped':True,'reason':f'裁剪类别「{label}」未选为属性分析目标'}
+                if result is None:
+                    if work['operation'] in ('branch', 'box_clean'):
+                        content = b''
+                        width, height = asset.width, asset.height
+                    else:
+                        content = await read_content(asset)
+                        width, height = asset.width, asset.height
+                    asset_meta = dict(original_name=asset.original_name, source_type=asset.source_type, crop_label=crop_label(asset))
+                    existing_phashes = []
+                    if work['operation'] == 'img_filter' and (options.get('img_filter_config') or {}).get('dedup_phash_distance') is not None:
+                        phash_col = ProjectWorkItem.result['phash'].as_string()
+                        existing_phashes = list((await db.scalars(select(phash_col).where(
+                            ProjectWorkItem.job_id == work['job_id'], ProjectWorkItem.status == 'completed',
+                            ProjectWorkItem.result['passed'].as_boolean().is_(True), phash_col.is_not(None),
+                        ).limit(5000))).all())
+                await validate_snapshots(db,work['tenant_id'],[work['model'],work['options'].get('attribute_model')],lock=False)
+                if work['options'].get('attribute_schema') and not work['options'].get('workflow_attribute_override') and work['options']['attribute_schema']!=((await db.get(Project,work['project_id'])).label_schema or {}).get('object_attributes'):
+                    raise HTTPException(409,'属性配置已变更，请新建批次')
+                reference_asset=await validate_example(db,await db.get(Project,work['project_id']),work['options'].get('attribute_example'))
+                if reference_asset is not None and work['operation']=='attributes':
+                    reference=dict(content=await read_example_content(reference_asset),answer=work['options']['attribute_example']['attributes'])
+            if result is not None:
+                await finish(sessions,work,result,None)
                 return True
-            config=config.model_copy(update={'confidence':options['confidence'],'labels':options['labels'] or config.labels})
-            detection=await infer(config,content,width,height,options.get('detection_prompt','') or
-                (options.get('prompt','') if work['operation'] in ('crop','detect','preannotate') else ''),client=client)
-            if work['operation'] in ('detect','preannotate'):
-                labels={config.label_mapping.get(label,label) for label in options['labels']}
-                boxes=[box for box in detection['boxes'] if not labels or box['label'] in labels]
-                outcome=dict(boxes=boxes,detected_count=len(boxes))
-                if work['operation']=='detect':outcome['passed']=bool(boxes)
-                elif not boxes:outcome['reason']='未检出目标，已保存为待审核的候选负样本'
-                await finish(sessions,work,outcome,None)
+            if work['operation'] in ('branch', 'img_filter', 'box_clean', 'img_transform', 'script'):
+                from services import workflow_builtins as builtins
+                from services.script_sandbox import run_script
+                ann_data = work.get('annotation_data') or {}
+                boxes = ann_data.get('boxes') or []
+                attrs = ann_data.get('attributes') or {}
+                desc = ann_data.get('description') or ''
+                if work['operation'] == 'branch':
+                    result = builtins.execute_branch(width=width, height=height, crop_label=asset_meta['crop_label'],
+                                                     boxes=boxes, attributes=attrs, config=options['branch_config'])
+                elif work['operation'] == 'img_filter':
+                    result = await asyncio.to_thread(builtins.execute_img_filter, content, options['img_filter_config'], existing_phashes)
+                elif work['operation'] == 'box_clean':
+                    result = builtins.execute_box_clean(boxes, width, height, options['box_clean_config'])
+                elif work['operation'] == 'img_transform':
+                    result = await asyncio.to_thread(builtins.execute_img_transform, content, project_id=str(work['project_id']),
+                                                     asset_id=str(work['asset_id']), boxes=boxes, crop_label=asset_meta['crop_label'],
+                                                     config=options['img_transform_config'])
+                else:
+                    scfg = options['script_config']
+                    result = await run_script(scfg['code'], content, width=width, height=height,
+                                              original_name=asset_meta['original_name'], source_type=asset_meta['source_type'],
+                                              crop_label=asset_meta['crop_label'], boxes=boxes, attributes=attrs,
+                                              description=desc, timeout_seconds=scfg.get('timeout_seconds', 5.0))
+                await finish(sessions, work, result, None)
                 return True
-            crops=[];source_boxes=[];filtered_count=0
-            labels={config.label_mapping.get(label,label) for label in options['labels']}
-            with Image.open(BytesIO(content)) as image:
-                image=image.convert('RGB')
-                for box in detection['boxes']:
-                    if work['operation']=='detect_attributes' and box['label'] not in options['labels']:continue
-                    if labels and box['label'] not in labels:continue
-                    if options.get('save_input_boxes'):source_boxes.append(box)
-                    region=crop_region(box,width,height,options['expansion'])
-                    if max(region[2]-region[0],region[3]-region[1])<options.get('min_crop_long_edge',0):
-                        filtered_count+=1
-                        continue
-                    metadata=PngImagePlugin.PngInfo()
-                    metadata.add_text('project_crop',json.dumps([str(work['project_id']),str(work['asset_id']),region]))
-                    output=BytesIO();image.crop(region).save(output,'PNG',pnginfo=metadata)
-                    crops.append(dict(content=output.getvalue(),width=region[2]-region[0],height=region[3]-region[1],region=list(region),box=box))
-            result={'crops':crops,'filtered_count':filtered_count,'source_boxes':source_boxes}
-    except HTTPException as exc:error=exc
-    except (OSError,ValueError,Image.DecompressionBombError):error=HTTPException(400,'图片或推理结果无法读取，请检查配置后重试')
-    await finish(sessions,work,result,error)
-    return True
+            config=ModelServiceConfig(**work['model']['config'])
+            if work['operation']=='caption':
+                result={'description':await caption(config,content,options['prompt'],client)}
+            elif work['operation'] in ('quality','filter'):
+                from services.image_quality import analyze as quality_analyze
+                result=await quality_analyze(config,content,options['prompt'],client)
+            elif work['operation']=='attributes':
+                result={'attributes':await analyze(config,content,options['attribute_schema'],client,example=reference,
+                    prompt=options.get('prompt',''),attribute_prompt=options.get('attribute_prompt',''))}
+                if attribute_template_id:result['attribute_template_id']=attribute_template_id
+            elif work['operation']=='index':
+                vector=await embedding(config,content=content,client=client)
+                key=f'{work["item_id"]}_{work["attempt"]}'
+                await Milvus(client).upsert(key,vector,work['tenant_id'],work['project_id'],work['asset_id'],work['model'],work['content_hash'])
+                result={'vector_id':key,'space':space_key(work['model'])}
+            elif work['operation']=='ai_review':
+                boxes=work['annotation_data'].get('boxes')
+                req_labels = options.get('labels') or []
+                if not boxes or work['review_state'].get('status')!='pending':
+                    result={'reason':'待审核的正样本才执行 AI 审核，负样本由人工审核'}
+                elif any(label not in labels for label in req_labels) or any(box['label'] not in labels for box in boxes):
+                    result={'reason':'审核类别与当前项目类别不匹配，保留人工审核'}
+                else:
+                    work['project_labels']=labels
+                    try:
+                        evidence=await audit_image(config,content,boxes,req_labels or labels,options['expansion'],options['prompt'],client)
+                    except HTTPException as exc:
+                        evidence=dict(boxes=[],completeness='uncertain',negative='uncertain',reason=str(exc.detail))
+                    approved=auto_pass(boxes,evidence,options['auto_approve_confidence'],work['annotation_source'] in ('auto','model'))
+                    result=dict(approved=approved,evidence=evidence,reason=evidence['reason'])
+            else:
+                if work['operation']=='preannotate' and 'boxes' in work['annotation_data']:
+                    await finish(sessions,work,{'reason':'已保留已有检测框或负样本'},None)
+                    return True
+                req_labels = options.get('labels') or []
+                config=config.model_copy(update={'confidence':options['confidence'],'labels':req_labels or config.labels})
+                detection=await infer(config,content,width,height,options.get('detection_prompt','') or
+                    (options.get('prompt','') if work['operation'] in ('crop','detect','preannotate') else ''),client=client)
+                if work['operation'] in ('detect','preannotate'):
+                    labels={config.label_mapping.get(label,label) for label in req_labels}
+                    boxes=[box for box in detection['boxes'] if not labels or box['label'] in labels]
+                    outcome=dict(boxes=boxes,detected_count=len(boxes))
+                    if work['operation']=='detect':outcome['passed']=bool(boxes)
+                    elif not boxes:outcome['reason']='未检出目标，已保存为待审核的候选负样本'
+                    await finish(sessions,work,outcome,None)
+                    return True
+                crops=[];source_boxes=[];filtered_count=0
+                labels={config.label_mapping.get(label,label) for label in req_labels}
+                with Image.open(BytesIO(content)) as image:
+                    image=image.convert('RGB')
+                    for box in detection['boxes']:
+                        if work['operation']=='detect_attributes' and box['label'] not in req_labels:continue
+                        if labels and box['label'] not in labels:continue
+                        if options.get('save_input_boxes'):source_boxes.append(box)
+                        region=crop_region(box,width,height,options['expansion'])
+                        if max(region[2]-region[0],region[3]-region[1])<options.get('min_crop_long_edge',0):
+                            filtered_count+=1
+                            continue
+                        metadata=PngImagePlugin.PngInfo()
+                        metadata.add_text('project_crop',json.dumps([str(work['project_id']),str(work['asset_id']),region]))
+                        output=BytesIO();image.crop(region).save(output,'PNG',pnginfo=metadata)
+                        crops.append(dict(content=output.getvalue(),width=region[2]-region[0],height=region[3]-region[1],region=list(region),box=box))
+                result={'crops':crops,'filtered_count':filtered_count,'source_boxes':source_boxes}
+        except asyncio.CancelledError:
+            raise
+        except HTTPException as exc:
+            error=exc
+        except (OSError,ValueError,Image.DecompressionBombError):
+            error=HTTPException(400,'图片或推理结果无法读取，请检查配置后重试')
+        except Exception:
+            logger.exception('Unexpected error processing project work item %s', work['item_id'])
+            error=HTTPException(500,'处理任务执行异常，请检查配置后重试')
+        await finish(sessions,work,result,error)
+        return True
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception('Unhandled failure in project work item %s', work['item_id'])
+        await _fail_unexpected(sessions, work)
+        return True
 
 
 def query_response(query):
@@ -783,14 +1147,16 @@ async def search(db,project,request,client):
     project_id,tenant_id=project.id,project.tenant_id
     snapshot=await model_snapshot(db,tenant_id,request.model_id,'embedding')
     key=space_key(snapshot)
-    rows=(await db.execute(select(ProjectWorkItem,Asset).join(ProjectWorkJob,ProjectWorkJob.id==ProjectWorkItem.job_id)
+    vector_id_col = ProjectWorkItem.result['vector_id'].as_string()
+    rows=(await db.execute(select(Asset.id, Asset.content_hash, vector_id_col)
+        .join(ProjectWorkJob,ProjectWorkJob.id==ProjectWorkItem.job_id)
         .join(Asset,Asset.id==ProjectWorkItem.asset_id).where(ProjectWorkJob.project_id==project_id,
-            ProjectWorkJob.operation=='index',ProjectWorkItem.status=='completed',Asset.project_id==project_id,
-            ProjectWorkItem.content_hash==Asset.content_hash,eligible_assets(project)).order_by(ProjectWorkJob.created_at,ProjectWorkJob.id))).all()
-    by_asset={}
-    for item,asset in rows:
-        if item.result and item.result.get('space')==key:
-            by_asset[asset.id]=(item.result['vector_id'],dict(asset_id=str(asset.id),content_hash=asset.content_hash))
+            ProjectWorkJob.operation=='index',ProjectWorkItem.status=='completed',
+            ProjectWorkItem.result['space'].as_string()==key,vector_id_col.is_not(None),
+            Asset.project_id==project_id,ProjectWorkItem.content_hash==Asset.content_hash,
+            eligible_assets(project)).order_by(ProjectWorkJob.created_at,ProjectWorkJob.id))).all()
+    by_asset={asset_id:(vec_id,dict(asset_id=str(asset_id),content_hash=content_hash))
+              for asset_id,content_hash,vec_id in rows}
     allowed=dict(by_asset.values())
     content=None
     query={'text':request.text} if request.text else {'image_id':str(request.image_id)}
@@ -854,34 +1220,79 @@ async def judge(db,project,query_id,asset_id,judgment,base_version,user_id,appro
 
 async def recover_running(sessions):
     async with sessions() as db:
-        jobs=select(ProjectWorkJob.id).where(ProjectWorkJob.operation=='embedding_negatives')
-        await db.execute(update(ProjectWorkItem).where(ProjectWorkItem.status=='running',ProjectWorkItem.job_id.in_(jobs))
-            .values(status='pending',attempt=ProjectWorkItem.attempt+1,error=None))
-        await db.execute(update(ProjectWorkItem).where(ProjectWorkItem.status=='running').values(
-            status='failed',attempt=ProjectWorkItem.attempt+1,error=INTERRUPTED_ERROR))
+        neg_jobs = select(ProjectWorkJob.id).where(ProjectWorkJob.operation == 'embedding_negatives')
+        await db.execute(update(ProjectWorkItem).where(ProjectWorkItem.status == 'running', ProjectWorkItem.job_id.in_(neg_jobs))
+            .values(status='pending', attempt=ProjectWorkItem.attempt + 1, error=None))
+        streaming_jobs = select(ProjectWorkJob.id).where(
+            ProjectWorkJob.options['workflow_streaming'].as_boolean().is_(True),
+            ProjectWorkJob.options['workflow_cancelled'].as_boolean().is_not(True),
+            ProjectWorkJob.options['queue_deleted'].as_boolean().is_not(True),
+        )
+        await db.execute(update(ProjectWorkItem).where(
+            ProjectWorkItem.status == 'running',
+            ProjectWorkItem.job_id.in_(streaming_jobs),
+            ProjectWorkItem.asset_id.is_not(None),
+            ProjectWorkItem.attempt + 1 < MAX_AUTO_RETRY_ATTEMPTS,
+        ).values(status='retry_wait', attempt=ProjectWorkItem.attempt + 1, error=INTERRUPTED_ERROR))
+        await db.execute(update(ProjectWorkItem).where(ProjectWorkItem.status == 'running').values(
+            status='failed', attempt=ProjectWorkItem.attempt + 1, error=INTERRUPTED_ERROR))
+        # Migrate legacy failed auto-retry items to retry_wait so PostgreSQL never scans historical failed rows.
+        retry_at = ProjectWorkItem.result['retry_at'].as_integer()
+        await db.execute(update(ProjectWorkItem).where(
+            ProjectWorkItem.status == 'failed',
+            ProjectWorkItem.job_id.in_(streaming_jobs),
+            ProjectWorkItem.asset_id.is_not(None),
+            ProjectWorkItem.attempt < MAX_AUTO_RETRY_ATTEMPTS,
+            or_(retry_at.is_not(None), ProjectWorkItem.error.in_(LEGACY_RETRY_ERRORS)),
+        ).values(status='retry_wait'))
         await db.commit()
 
 
 async def run_worker(sessions):
     # NodePort balances TCP connections; fresh requests avoid pinning batches to a replica.
-    limits=httpx.Limits(max_connections=settings.PROJECT_WORK_CONCURRENCY,max_keepalive_connections=0)
-    async with httpx.AsyncClient(follow_redirects=False,limits=limits) as client:
-        async def process_until_error(stopped):
-            try:
-                while not stopped.is_set():
-                    if not await process_one(sessions,client):await asyncio.sleep(1)
-            except Exception:
-                stopped.set()
-                raise
+    limits = httpx.Limits(max_connections=settings.PROJECT_WORK_CONCURRENCY, max_keepalive_connections=0)
+    async with httpx.AsyncClient(follow_redirects=False, limits=limits) as client:
+        in_flight = 0
+        needs_recovery = False
+        gate = asyncio.Lock()
 
-        while True:
-            stopped=asyncio.Event()
-            results=await asyncio.gather(*(process_until_error(stopped) for _ in range(settings.PROJECT_WORK_CONCURRENCY)),return_exceptions=True)
-            for result in results:
-                if isinstance(result,Exception):logger.error('Project annotation worker failed: %s',type(result).__name__)
-            # Recover only after the other requests have finished and released their fences.
-            await recover_running(sessions)
-            await asyncio.sleep(1)
+        async def _run_recovery_locked():
+            nonlocal needs_recovery
+            needs_recovery = False
+            try:
+                await recover_running(sessions)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception('Project annotation worker recovery error')
+
+        async def consume():
+            nonlocal in_flight, needs_recovery
+            while True:
+                async with gate:
+                    if needs_recovery and in_flight == 0:
+                        await _run_recovery_locked()
+                    in_flight += 1
+                busy = False
+                failed = False
+                try:
+                    busy = await process_one(sessions, client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failed = True
+                    logger.exception('Project annotation worker consumer error')
+                finally:
+                    async with gate:
+                        if failed:
+                            needs_recovery = True
+                        in_flight -= 1
+                        if needs_recovery and in_flight == 0:
+                            await _run_recovery_locked()
+                if not busy:
+                    await asyncio.sleep(1)
+
+        await asyncio.gather(*(consume() for _ in range(settings.PROJECT_WORK_CONCURRENCY)))
 
 
 async def start_worker():

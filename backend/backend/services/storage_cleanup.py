@@ -122,7 +122,8 @@ async def _references(db, root):
         matches_exists = await connection.run_sync(lambda conn: inspect(conn).has_table('match_queries'))
         for name, query in _reference_queries(legacy_exists, validation_exists, training_exists, matches_exists):
             refs[name] = set()
-            for row in await db.execute(query):
+            stream = await db.stream(query.execution_options(yield_per=1000))
+            async for row in stream:
                 values = list(row)
                 if name == 'frozen_export':
                     values[-1] = await read_manifest(values[-2], values[-1])
@@ -173,26 +174,54 @@ def _keys(root):
                 yield key
 
 
+def _scan_filesystem_summary(root, refs, uploads, downloads, limit):
+    now = time.time()
+    items = []
+    candidate_count = 0
+    candidate_bytes = 0
+    scanned_count = 0
+    protected_counts = Counter()
+    for key in _keys(root):
+        scanned_count += 1
+        row = _record(root, key, refs, uploads, downloads, now)
+        if not row['reasons']:
+            candidate_count += 1
+            candidate_bytes += row['size']
+            if len(items) < limit:
+                items.append(row)
+        else:
+            protected_counts.update(row['reasons'])
+    return items, candidate_count, candidate_bytes, scanned_count, dict(protected_counts)
+
+
 async def _audit(db, paths=None):
     try:
         root = _root()
         refs, uploads, downloads = await _references(db, root)
         now = time.time()
-        records = [_record(root, key, refs, uploads, downloads, now)
-                   for key in (_keys(root) if paths is None else paths)]
+        records = await asyncio.to_thread(
+            lambda: [_record(root, key, refs, uploads, downloads, now) for key in (_keys(root) if paths is None else paths)]
+        )
     except OSError:
         raise HTTPException(503, {'code': 'filesystem_check_failed', 'message': '文件系统核查失败，停止扫描'}) from None
     return records, uploads, downloads
 
 
 async def preview_cleanup(db, limit=200):
-    records, uploads, downloads = await _audit(db)
-    candidates = [row for row in records if not row['reasons']]
-    return {'items': candidates[:limit], 'candidate_count': len(candidates),
-        'candidate_bytes': sum(row['size'] for row in candidates), 'scanned_count': len(records),
-        'protected_counts': dict(Counter(reason for row in records for reason in row['reasons'])),
+    try:
+        root = _root()
+        refs, uploads, downloads = await _references(db, root)
+        await db.rollback()
+        items, candidate_count, candidate_bytes, scanned_count, protected_counts = await asyncio.to_thread(
+            _scan_filesystem_summary, root, refs, uploads, downloads, limit
+        )
+    except OSError:
+        raise HTTPException(503, {'code': 'filesystem_check_failed', 'message': '文件系统核查失败，停止扫描'}) from None
+    return {'items': items, 'candidate_count': candidate_count,
+        'candidate_bytes': candidate_bytes, 'scanned_count': scanned_count,
+        'protected_counts': protected_counts,
         'active_uploads': uploads, 'active_downloads': downloads, 'grace_days': GRACE_SECONDS // 86400,
-        'truncated': len(candidates) > limit, 'execution_available': False,
+        'truncated': candidate_count > limit, 'execution_available': False,
         'blocked_reason': 'concurrency_guard_unavailable', 'message': BLOCKED_MESSAGE}
 
 

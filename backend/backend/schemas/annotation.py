@@ -60,6 +60,8 @@ class AnnotationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     reviewed_at: Optional[datetime]
+    asset_original_name: Optional[str] = None
+    asset_source_type: Optional[str] = None
 
     @field_serializer('created_at', 'updated_at', 'reviewed_at')
     def utc_datetime(self, value):
