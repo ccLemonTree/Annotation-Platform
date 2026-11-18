@@ -23,7 +23,6 @@ export default function StorageMaintenancePage() {
   }
 
   return <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-    <Typography.Title level={2}>存储维护</Typography.Title>
     <Alert type="info" showIcon title="管理员只读预览" description="核查所有租户的本地原图引用。仅检查已知 images 哈希目录，保护下载、冻结包、暂存及共享硬链接。" />
     <Space>
       <Button type="primary" onClick={scan} loading={loading}>扫描预览</Button>
@@ -45,7 +44,7 @@ export default function StorageMaintenancePage() {
         {Object.entries(preview.protected_counts).map(([reason, count]) =>
           <Typography.Paragraph key={reason}>{reasons[reason] || reason}：{count}</Typography.Paragraph>)}
       </Card>
-      {preview.truncated && <Alert type="info" title="仅显示前200个候选，以上汇总包含全部已核查文件。" />}
+      {preview.truncated && <Alert type="info" showIcon title="仅显示前200个候选，以上汇总包含全部已核查文件。" />}
       <Table rowKey="path" dataSource={preview.items} pagination={{ pageSize: 20 }} columns={[
         { title: '存储相对路径', dataIndex: 'path', render: (path: string) => <Typography.Text style={{ overflowWrap: 'anywhere' }}>{path}</Typography.Text> },
         { title: '大小（字节）', dataIndex: 'size', render: (size: number) => size.toLocaleString() },

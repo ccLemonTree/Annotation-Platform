@@ -30,7 +30,9 @@ function RepositoryVersions({ group, q, format, gpu, reload, renderModel }: { gr
   },[group,page,q,format,gpu,reload,retry]);
   return <div className="repository-versions">{error&&<Alert type="error" showIcon title={error} action={<Button onClick={()=>setRetry(value=>value+1)}>重试版本</Button>} />}
     <Spin spinning={loading}><div className="repository-card-grid">{models.map(renderModel)}</div>{!loading&&!models.length&&<Empty description="暂无模型版本" />}</Spin>
-    <Pagination current={page} pageSize={20} total={total} showSizeChanger={false} onChange={setPage} showTotal={value=>`共 ${value} 个模型版本`} style={{marginTop:20}} />
+    <div style={{marginTop:20,display:'flex',justifyContent:'flex-end'}}>
+      <Pagination current={page} pageSize={20} total={total} showSizeChanger={false} onChange={setPage} showTotal={value=>`共 ${value} 个模型版本`} />
+    </div>
   </div>;
 }
 
@@ -223,8 +225,10 @@ export default function ModelRepositoryPage() {
         </Card>)}</div>
         {!loading&&!groups.length&&<Empty description={q||format||gpu?'没有符合条件的模型':'模型仓库暂无文件'} />}
       </Spin>
-      <Pagination current={page} pageSize={20} total={total} showSizeChanger={false} onChange={setPage} showTotal={value=>`共 ${value} 组模型`} style={{marginTop:20}} />
-      <Drawer title={openGroup} open={openGroup!==undefined} size="90vw" destroyOnHidden onClose={()=>setOpenGroup(undefined)}
+      <div style={{marginTop:20,display:'flex',justifyContent:'flex-end'}}>
+        <Pagination current={page} pageSize={20} total={total} showSizeChanger={false} onChange={setPage} showTotal={value=>`共 ${value} 组模型`} />
+      </div>
+      <Drawer className="repository-drawer" title={openGroup} open={openGroup!==undefined} size="90vw" styles={{wrapper:{maxWidth:'100vw'}}} destroyOnHidden onClose={()=>setOpenGroup(undefined)}
         extra={<Button icon={<DownloadOutlined />} disabled={batchDownloading} onClick={()=>openBatchDownload(openGroup)}>批量下载{selectedIds.length?`（${selectedIds.length}）`:''}</Button>}>
         {error&&<Alert type="error" showIcon closable onClose={()=>setError('')} title={error} />}
         {openGroup!==undefined&&<RepositoryVersions key={`${openGroup}/${q}/${format}/${gpu}`} group={openGroup} q={q} format={format} gpu={gpu} reload={reload} renderModel={renderVersion} />}
@@ -242,7 +246,9 @@ export default function ModelRepositoryPage() {
         <Typography.Paragraph type="secondary">每批最多100个版本。筛选下载包含所有分页中的可下载版本，不含入库中或失败的记录。ZIP按版本分目录保存，模型文件和Python backend目录结构均保留；大文件建议通过接口在服务器下载。</Typography.Paragraph>
         {downloadError&&<Alert type="error" showIcon title={downloadError} style={{marginBottom:16}}/>}
         {batchDownloading&&<Typography.Paragraph>正在校验、打包并下载，请保持页面打开。</Typography.Paragraph>}
-        <Space><Button type="primary" htmlType="submit" loading={batchDownloading}>开始下载</Button><Button disabled={batchDownloading} onClick={()=>setDownloadOpen(false)}>取消</Button></Space>
+        <div style={{display:'flex',justifyContent:'flex-end'}}>
+          <Space><Button disabled={batchDownloading} onClick={()=>setDownloadOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={batchDownloading}>开始下载</Button></Space>
+        </div>
       </Form>
     </Modal>
     <Modal open={!!mode} title={mode === 'upload' ? '上传模型到仓库' : '从已完成训练产物入库'} width={720} footer={null} closable={!saving} mask={{ closable: !saving }} onCancel={() => { if (!saving) setMode(undefined); }}>
@@ -278,11 +284,13 @@ export default function ModelRepositoryPage() {
         {saving && mode === 'upload' && <Progress percent={progress} status="active" format={value => value === 100 ? '正在校验' : `${value}%`} />}
         {saving && mode === 'training' && <Typography.Paragraph type="secondary">正在核对来源文件，完成后后台复制。</Typography.Paragraph>}
         {saveError && <Alert type="error" role="alert" showIcon title={saveError} style={{ marginBottom: 16 }} />}
-        <Space><Button type="primary" htmlType="submit" loading={saving}>{mode === 'upload' ? '上传并保存' : '开始入库'}</Button><Button disabled={saving} onClick={() => setMode(undefined)}>取消</Button></Space>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Space><Button disabled={saving} onClick={() => setMode(undefined)}>取消</Button><Button type="primary" htmlType="submit" loading={saving}>{mode === 'upload' ? '上传并保存' : '开始入库'}</Button></Space>
+        </div>
       </Form>
     </Modal>
-    <Drawer className="repository-drawer" open={!!selected} title={editing ? '版本配置' : '版本详情'} size={680} closable={!editSaving} mask={{ closable: !editSaving }} onClose={() => { if (!editSaving) setSelected(undefined); }}
-      footer={<Space>{editing && <Button type="primary" loading={editSaving} onClick={() => editForm.submit()}>保存修改</Button>}<Button aria-label={editing ? '取消' : '关闭'} disabled={editSaving} onClick={() => setSelected(undefined)}>{editing ? '取消' : '关闭'}</Button></Space>}>
+    <Drawer className="repository-drawer" open={!!selected} title={editing ? '版本配置' : '版本详情'} size={680} styles={{ wrapper: { maxWidth: '100vw' } }} closable={!editSaving} mask={{ closable: !editSaving }} onClose={() => { if (!editSaving) setSelected(undefined); }}
+      footer={<div style={{ display: 'flex', justifyContent: 'flex-end' }}><Space><Button aria-label={editing ? '取消' : '关闭'} disabled={editSaving} onClick={() => setSelected(undefined)}>{editing ? '取消' : '关闭'}</Button>{editing && <Button type="primary" loading={editSaving} onClick={() => editForm.submit()}>保存修改</Button>}</Space></div>}>
       {selected && <><div className="repository-detail-title"><Tag>{formats.find(item => item.value === selected.format)?.label}</Tag><strong>{selected.name}</strong><span>{selected.version}</span></div>
         {editing ? <Form form={editForm} name="repository-edit" layout="vertical" disabled={editSaving} onFinish={values => void saveEdit(values)}>
           <Form.Item name="name" label="模型名称" rules={[{ required:true,whitespace:true,max:100,message:'请输入模型名称（最多100字）' }]}><Input maxLength={100} /></Form.Item>

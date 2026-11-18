@@ -1,7 +1,8 @@
 // 项目管理页面
 import { useState, useEffect, useRef } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
+  App,
   Card,
   Button,
   Pagination,
@@ -13,7 +14,6 @@ import {
   Input,
   Select,
   Space,
-  message,
   Tag,
   Popconfirm,
   Alert,
@@ -24,6 +24,7 @@ import { isAxiosError } from 'axios';
 import {
   getProjects,
   getProject,
+  getProjectUsedLabels,
   createProject,
   updateProject,
   deleteProject,
@@ -31,7 +32,6 @@ import {
   type ProjectCreate,
 } from '../api/projects';
 
-import { getAnnotations } from '../api/annotations';
 import ProjectAssignments from '../components/ProjectAssignments';
 import ProjectWorkflow from '../components/ProjectWorkflow';
 import './ProjectsPage.css';
@@ -39,8 +39,10 @@ import './ProjectsPage.css';
 const { TextArea } = Input;
 
 export default function ProjectsPage() {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const { projectId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [loadError, setLoadError] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const projectRequest = useRef(0);
@@ -64,18 +66,9 @@ export default function ProjectsPage() {
     if (!modalVisible || !editingProject || !['detection','classification'].includes(editingProject.task_type)) return;
     let active = true;
     setLabelsLoading(true); setLabelsError(''); setUsedLabels([]); setRenames({});
-    (async () => {
-      const names = new Set<string>();
-      for (let page = 1; ; page++) {
-        const data = await getAnnotations({ project_id: editingProject.id, scope:'annotation', latest_only: true, page, page_size: 100 });
-        for (const annotation of data.items) {
-          for (const box of annotation.annotation_data.boxes || []) names.add(box.label);
-          for (const label of annotation.annotation_data.labels || []) names.add(label);
-        }
-        if (page * 100 >= data.total || !data.items.length) break;
-      }
-      if (active) setUsedLabels([...names]);
-    })().catch(() => { if (active) setLabelsError('读取已标注类别失败，请重新打开编辑窗口'); })
+    getProjectUsedLabels(editingProject.id)
+      .then(data => { if (active) setUsedLabels(data.labels || []); })
+      .catch(() => { if (active) setLabelsError('读取已标注类别失败，请重新打开编辑窗口'); })
       .finally(() => { if (active) setLabelsLoading(false); });
     return () => { active = false; };
   }, [modalVisible, editingProject]);
@@ -180,6 +173,14 @@ export default function ProjectsPage() {
   };
 
   const project = projectId ? projects.find(item => item.id === projectId) : undefined;
+  useEffect(() => {
+    if (project && searchParams.get('edit') === '1') {
+      handleEdit(project);
+      const next = new URLSearchParams(searchParams);
+      next.delete('edit');
+      setSearchParams(next, { replace: true });
+    }
+  }, [project, searchParams]);
   return (
     <div>
       {assignmentProject&&<ProjectAssignments project={assignmentProject} onClose={()=>setAssignmentProject(undefined)}/>}
@@ -210,8 +211,10 @@ export default function ProjectsPage() {
             </Link>)}
           </div>}
         </Spin>
-        <Pagination current={pagination.page} pageSize={pagination.page_size} total={pagination.total} showSizeChanger
-          showTotal={total=>`共 ${total} 个项目`} style={{marginTop:20}} onChange={(page,pageSize)=>setPagination(previous=>({...previous,page,page_size:pageSize}))} />
+        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+          <Pagination current={pagination.page} pageSize={pagination.page_size} total={pagination.total} showSizeChanger
+            showTotal={total=>`共 ${total} 个项目`} onChange={(page,pageSize)=>setPagination(previous=>({...previous,page,page_size:pageSize}))} />
+        </div>
       </>}
 
       <Modal
@@ -224,6 +227,7 @@ export default function ProjectsPage() {
         closable={!submitting}
         mask={{closable:!submitting}}
         width={600}
+        styles={{ body: { maxHeight: '72dvh', overflowY: 'auto' } }}
         okText={editingProject ? "保存设置" : "创建项目"}
         cancelText="取消"
       >

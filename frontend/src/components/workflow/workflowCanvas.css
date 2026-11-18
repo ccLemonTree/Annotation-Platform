@@ -52,7 +52,7 @@
   position: relative;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius);
-  background-color: var(--ui-background);
+  background-color: var(--ui-canvas-bg, var(--ui-background));
   background-image: radial-gradient(circle, rgba(105, 156, 255, 0.14) 1px, transparent 1px);
   background-size: 20px 20px;
   overflow: hidden;
@@ -106,7 +106,7 @@
 
 .wf-edge-path {
   fill: none;
-  stroke: #3c5174;
+  stroke: var(--ui-edge-stroke, #3c5174);
   stroke-width: 2;
   transition: stroke var(--ui-motion-fast);
 }
@@ -150,8 +150,8 @@
 
 .wf-node-card[data-category="builtin"]::before { background: var(--ui-success); }
 .wf-node-card[data-category="branch"]::before { background: var(--ui-warning); }
-.wf-node-card[data-category="script"]::before { background: #b69cff; }
-.wf-node-card[data-category="input"]::before { background: #64748b; }
+.wf-node-card[data-category="script"]::before { background: var(--ui-node-script-accent, #b69cff); }
+.wf-node-card[data-category="input"]::before { background: var(--ui-muted, #64748b); }
 
 .wf-node-card:hover:not([data-readonly="true"]) {
   border-color: var(--ui-primary);
@@ -193,8 +193,8 @@
 }
 
 .wf-node-card[data-category="script"] .wf-node-badge {
-  background: rgba(182, 156, 255, 0.16);
-  color: #c8b5ff;
+  background: var(--ui-node-script-soft, rgba(182, 156, 255, 0.16));
+  color: var(--ui-node-script-accent, #c8b5ff);
 }
 
 .wf-node-title {
@@ -260,7 +260,7 @@
   font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace !important;
   font-size: 12.5px !important;
   line-height: 1.55 !important;
-  background: #090e18 !important;
+  background: var(--ui-code-bg, #090e18) !important;
 }
 
 @media (max-width: 768px) {

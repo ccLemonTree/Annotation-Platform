@@ -27,7 +27,7 @@
 .repository-group-name { overflow-wrap: anywhere; font-weight: 600; }
 .repository-versions { min-width: 0; padding: 8px 0; }
 .repository-versions .ant-table-cell { vertical-align: top; }
-.repository-config { max-height: 60vh; overflow: auto; margin: 0; padding: 16px; background: var(--ui-background); border: 1px solid var(--ui-border); border-radius: 6px; font: 13px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
+.repository-config { max-height: 60vh; overflow: auto; margin: 0; padding: 16px; background: var(--ui-code-bg, var(--ui-background)); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); font: 13px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
 @media (max-width: 600px) {
   .repository-list-heading { flex-direction: column; gap: 8px; margin-bottom: 16px; }
   .model-repository .page-toolbar > .ant-space { width: 100%; }

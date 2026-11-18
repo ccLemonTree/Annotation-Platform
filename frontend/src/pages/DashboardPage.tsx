@@ -10,6 +10,7 @@ import AssetImage from '../components/AssetImage';
 import PagedAssetPreview from '../components/PagedAssetPreview';
 import DashboardQueue from '../components/dashboard/DashboardQueue';
 import DashboardGpu from '../components/dashboard/DashboardGpu';
+import { useCurrentUser } from '../components/currentUser';
 import './DashboardPage.css';
 
 interface Overview {
@@ -23,10 +24,7 @@ export default function DashboardPage() {
   const [images, setImages] = useState<LibraryImage[]>([]);
   const [loading, setLoading] = useState(true), [errors, setErrors] = useState<string[]>([]);
   const [revision, setRevision] = useState(0), [preview, setPreview] = useState<number>();
-  const [admin] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; }
-    catch { return false; }
-  });
+  const admin = useCurrentUser()?.role === 'admin';
   useEffect(() => {
     let active = true;
     const controller = new AbortController();

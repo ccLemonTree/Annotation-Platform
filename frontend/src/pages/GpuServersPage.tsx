@@ -6,6 +6,7 @@ import { deleteGpuServer, getGpuServers, importGpuServers, updateGpuServer } fro
 import type { GpuServer, GpuServerInput } from '../api/gpuResources';
 import GpuServerForm from '../components/gpu/GpuServerForm';
 import { connectionError, forbidden } from '../components/gpu/connectionError';
+import { useCurrentUser } from '../components/currentUser';
 
 function downloadTemplate() {
   const data = { servers: [{ name: '训练服务器示例', host: '192.0.2.10', port: 22, username: 'root', password: '请替换为实际密码', enabled: true,
@@ -16,7 +17,9 @@ function downloadTemplate() {
 }
 
 export default function GpuServersPage() {
-  const [admin, setAdmin] = useState(() => { try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; } catch { return false; } });
+  const currentUser = useCurrentUser();
+  const [forbiddenAccess, setForbiddenAccess] = useState(false);
+  const admin = currentUser?.role === 'admin' && !forbiddenAccess;
   const [servers, setServers] = useState<GpuServer[]>([]), [loading, setLoading] = useState(true), [reload, setReload] = useState(0);
   const [search,setSearch]=useState(''),[page,setPage]=useState(1);
   const [listError, setListError] = useState(''), [actionError, setActionError] = useState(''), [notice, setNotice] = useState('');
@@ -24,7 +27,7 @@ export default function GpuServersPage() {
   const [importOpen, setImportOpen] = useState(false), [importRows, setImportRows] = useState<GpuServerInput[]>([]), [importError, setImportError] = useState(''), [reading, setReading] = useState(false);
   const mounted = useRef(false), writing = useRef(false);
   const onForbidden = useCallback(() => {
-    setAdmin(false); setServers([]); setEditing(undefined); setDeleting(undefined); setImportOpen(false); setImportRows([]); setActionError(''); setListError(''); setImportError('');
+    setForbiddenAccess(true); setServers([]); setEditing(undefined); setDeleting(undefined); setImportOpen(false); setImportRows([]); setActionError(''); setListError(''); setImportError('');
   }, []);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -90,8 +93,10 @@ export default function GpuServersPage() {
     {listError && <Alert type="error" showIcon title={listError} action={<Button onClick={() => { setLoading(true); setListError(''); setReload(value => value + 1); }}>重试列表</Button>} />}
     {actionError && !deleting && <Alert type="error" showIcon title={actionError} />}
     <Card title="服务器连接">
-      <Space wrap style={{ marginBottom: 16 }}><Button type="primary" disabled={loading || busy} onClick={() => { setActionError(''); setEditing(null); }}>新增服务器</Button><Button disabled={loading || busy} onClick={() => { setImportRows([]); setImportError(''); setImportOpen(true); }}>JSON 批量导入</Button></Space>
-      <Input.Search aria-label="搜索服务器" placeholder="搜索连接名称或IP" allowClear value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}} style={{maxWidth:420,marginBottom:16}} />
+      <div className="page-toolbar">
+        <Input.Search aria-label="搜索服务器" placeholder="搜索连接名称或IP" allowClear value={search} onChange={event=>{setSearch(event.target.value);setPage(1);}} style={{width:320,maxWidth:'100%'}} />
+        <Space wrap><Button disabled={loading || busy} onClick={() => { setImportRows([]); setImportError(''); setImportOpen(true); }}>JSON 批量导入</Button><Button type="primary" disabled={loading || busy} onClick={() => { setActionError(''); setEditing(null); }}>新增服务器</Button></Space>
+      </div>
       <Table<GpuServer> rowKey="id" loading={loading} dataSource={servers.filter(row=>!(row.id==='default'&&servers.some(other=>other.source==='password'&&other.name.toLowerCase()===row.name.toLowerCase()))).filter(row=>[row.name,row.host,row.jump?.host].some(value=>value?.toLowerCase().includes(search.trim().toLowerCase())))} pagination={{ current:page,pageSize:20,onChange:setPage }} scroll={{ x: 900 }} locale={{ emptyText: search.trim() ? '没有匹配的服务器' : '暂无服务器，请新增连接或导入 JSON 文件。' }} columns={[
         { title: '连接名称', dataIndex: 'name', render: value => <strong>{value}</strong> },
         { title: '来源', render: (_, row) => <Tag>{row.source === 'ssh_manager' ? 'ssh-manager · 只读' : '自建连接'}</Tag> },
@@ -100,7 +105,7 @@ export default function GpuServersPage() {
         { title: '密码', render: (_, row) => row.source === 'ssh_manager' ? '由 ssh-manager 管理' : <Tag color={row.has_password ? 'success' : 'warning'}>{row.has_password ? '已设置密码' : '未设置密码'}</Tag> },
         { title: '启用采集', render: (_, row) => row.source === 'ssh_manager' ? <Tag>{row.enabled ? '已启用' : '已停用'}</Tag> : <Switch aria-label={`启用采集 ${row.name}`} checked={row.enabled} disabled={busy || editing !== undefined || !!deleting} onChange={() => { void change(row, 'enabled'); }} /> },
         { title: '训练服务器', render: (_, row) => row.source === 'ssh_manager' ? <Tag color="success">系统预设</Tag> : <Switch aria-label={`训练服务器 ${row.name}`} checked={row.training_enabled} disabled={busy || editing !== undefined || !!deleting} onChange={() => { void change(row, 'training_enabled'); }} /> },
-        { title: '操作', render: (_, row) => <Space wrap><Link to={`/gpu-resources?server_id=${encodeURIComponent(row.id)}`}>查看资源</Link>{row.source === 'password' && <><Button disabled={busy} onClick={() => { setActionError(''); setEditing(row); }}>编辑连接</Button><Button danger disabled={busy} onClick={() => { setActionError(''); setDeleting(row); }}>删除连接</Button></>}</Space> },
+        { title: '操作', render: (_, row) => <Space size="small" wrap><Link to={`/gpu-resources?server_id=${encodeURIComponent(row.id)}`}>查看资源</Link>{row.source === 'password' && <><Button size="small" disabled={busy} onClick={() => { setActionError(''); setEditing(row); }}>编辑连接</Button><Button size="small" danger disabled={busy} onClick={() => { setActionError(''); setDeleting(row); }}>删除连接</Button></>}</Space> },
       ]} />
     </Card>
     {editing !== undefined && <GpuServerForm server={editing || undefined} onClose={() => setEditing(undefined)} onSaved={saved} onForbidden={onForbidden} />}

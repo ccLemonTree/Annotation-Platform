@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Empty, Modal, Select, Space, Tag, Typography } from 'antd';
 import { isAxiosError } from 'axios';
 import { getAssets, type Asset } from '../../api/assets';
@@ -32,37 +32,92 @@ export default function WorkflowDryRunModal({
   onResult: (result: WorkflowDryRunResult) => void;
 }) {
   const [candidates, setCandidates] = useState<Asset[]>([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [sampleError, setSampleError] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [report, setReport] = useState<WorkflowDryRunResult>();
+  const abortRef = useRef<AbortController | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const loadCandidates = useCallback(async (keyword?: string) => {
+    setCandidatesLoading(true);
+    setSampleError('');
+    try {
+      const res = await getAssets({
+        project_id: projectId,
+        image_kind: imageKind,
+        work_job_id: sourceJobId,
+        q: keyword?.trim() || undefined,
+        page: 1,
+        page_size: 30,
+      });
+      setCandidates(prev => {
+        const chosen = prev.filter(item => selectedIds.includes(item.id) && !res.items.some(r => r.id === item.id));
+        return [...chosen, ...res.items];
+      });
+    } catch {
+      setSampleError('读取候选样本图片失败；可直接开始自动抽样试运行，或点击重试。');
+    } finally {
+      setCandidatesLoading(false);
+    }
+  }, [projectId, imageKind, sourceJobId, selectedIds]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [projectId, imageKind, sourceJobId]);
 
   useEffect(() => {
     if (!open) return;
-    let active = true;
-    getAssets({ project_id: projectId, page: 1, page_size: 20 })
-      .then(res => { if (active) setCandidates(res.items); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, [open, projectId]);
+    void loadCandidates();
+    return () => {
+      clearTimeout(searchTimer.current);
+      abortRef.current?.abort();
+    };
+  }, [open, projectId, imageKind, sourceJobId]);
+
+  const cancelRun = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  };
+
+  const handleClose = () => {
+    cancelRun();
+    onClose();
+  };
 
   const execute = async () => {
+    cancelRun();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     setError('');
     try {
-      const res = await dryRunWorkflow(projectId, {
-        steps: workflow.steps,
-        edges: workflow.edges,
-        attribute_schema: workflow.attribute_schema,
-        image_kind: imageKind,
-        source_job_id: sourceJobId,
-        sample_asset_ids: selectedIds.length ? selectedIds : undefined,
-      });
-      setReport(res);
-      onResult(res);
+      const res = await dryRunWorkflow(
+        projectId,
+        {
+          steps: workflow.steps,
+          edges: workflow.edges,
+          attribute_schema: workflow.attribute_schema,
+          image_kind: imageKind,
+          source_job_id: sourceJobId,
+          sample_asset_ids: selectedIds.length ? selectedIds : undefined,
+        },
+        controller.signal,
+      );
+      if (!controller.signal.aborted) {
+        setReport(res);
+        onResult(res);
+      }
     } catch (cause) {
-      setError(errorText(cause));
+      if (controller.signal.aborted || (isAxiosError(cause) && cause.code === 'ERR_CANCELED')) {
+        setError('');
+      } else {
+        setError(errorText(cause));
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setBusy(false);
     }
   };
@@ -72,11 +127,15 @@ export default function WorkflowDryRunModal({
       open={open}
       title="工作流样本试运行（仅内存预览 · 不落库）"
       width={920}
-      onCancel={() => { if (!busy) onClose(); }}
+      onCancel={handleClose}
       styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
       footer={
         <Space>
-          <Button onClick={onClose} disabled={busy}>关闭</Button>
+          {busy ? (
+            <Button danger onClick={cancelRun}>取消试运行</Button>
+          ) : (
+            <Button onClick={handleClose}>关闭</Button>
+          )}
           <Button type="primary" loading={busy} onClick={() => void execute()}>
             开始试运行
           </Button>
@@ -95,11 +154,19 @@ export default function WorkflowDryRunModal({
             mode="multiple"
             maxCount={3}
             allowClear
+            showSearch
+            filterOption={false}
+            loading={candidatesLoading}
             aria-label="选择试运行样本图片"
-            placeholder="留空自动按当前输入范围抽样 2 张"
+            placeholder="搜索文件名或留空自动按当前输入范围抽样 2 张"
             style={{ minWidth: 360, maxWidth: '100%' }}
             value={selectedIds}
             disabled={busy}
+            onSearch={val => {
+              clearTimeout(searchTimer.current);
+              searchTimer.current = setTimeout(() => { void loadCandidates(val); }, 250);
+            }}
+            onClear={() => void loadCandidates()}
             onChange={setSelectedIds}
             options={candidates.map(a => ({
               value: a.id,
@@ -107,6 +174,15 @@ export default function WorkflowDryRunModal({
             }))}
           />
         </Space>
+
+        {sampleError && (
+          <Alert
+            type="warning"
+            showIcon
+            title={sampleError}
+            action={<Button size="small" disabled={candidatesLoading} onClick={() => void loadCandidates()}>重试读取样本</Button>}
+          />
+        )}
 
         {error && <Alert type="error" showIcon title={error} />}
 
@@ -155,7 +231,7 @@ export default function WorkflowDryRunModal({
                         <Typography.Text type="secondary">{item.reason}</Typography.Text>
                       </Space>
                       {!!item.logs?.length && (
-                        <pre style={{ margin: '6px 0 0', padding: 8, background: '#070b12', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
+                        <pre style={{ margin: '6px 0 0', padding: 8, background: 'var(--ui-code-bg, var(--ui-background))', border: '1px solid var(--ui-border)', borderRadius: 4, fontSize: 12, overflowX: 'auto' }}>
                           {item.logs.join('\n')}
                         </pre>
                       )}
@@ -166,19 +242,29 @@ export default function WorkflowDryRunModal({
                             viewBox={`0 0 ${item.width} ${item.height}`}
                             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
                           >
-                            {item.boxes.map((b, bi) => (
-                              <rect
-                                key={bi}
-                                x={b.x}
-                                y={b.y}
-                                width={b.width}
-                                height={b.height}
-                                fill="none"
-                                stroke={labelColor(b.label)}
-                                strokeWidth={2}
-                                vectorEffect="non-scaling-stroke"
-                              />
-                            ))}
+                            {item.boxes.map((b, bi) => {
+                              const color = labelColor(b.label);
+                              const fontSize = Math.max(14, item.width! / 38);
+                              return (
+                                <g key={bi}>
+                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke="#0b101b" strokeWidth={6} vectorEffect="non-scaling-stroke" />
+                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke="white" strokeWidth={4} vectorEffect="non-scaling-stroke" />
+                                  <rect x={b.x} y={b.y} width={b.width} height={b.height} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                                  <text
+                                    x={b.x}
+                                    y={Math.max(fontSize, b.y - 4)}
+                                    fill="white"
+                                    stroke="#0b101b"
+                                    strokeWidth={Math.max(3, fontSize * 0.2)}
+                                    paintOrder="stroke"
+                                    strokeLinejoin="round"
+                                    fontSize={fontSize}
+                                  >
+                                    {b.label}{typeof b.score === 'number' ? ` ${(b.score * 100).toFixed(1)}%` : ''}
+                                  </text>
+                                </g>
+                              );
+                            })}
                           </svg>
                         </div>
                       )}

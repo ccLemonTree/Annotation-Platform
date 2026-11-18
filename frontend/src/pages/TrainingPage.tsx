@@ -17,6 +17,7 @@ import TrainingPlatformData from '../components/TrainingPlatformData';
 import TrainingTrainerManager, { parseTrainingParameters } from '../components/TrainingTrainerManager';
 import ModelOutputForm from '../components/ModelOutputForm';
 import JsonView from '../components/JsonView';
+import { useCurrentUser } from '../components/currentUser';
 import type { TrainingArtifact, TrainingCheck, TrainingInput, TrainingRun, TrainingSnapshot, TrainingTemplate, TrainingK8sInfo, TrainingTrainer } from '../api/training';
 
 const names: Record<string, string> = { draft: '待启动', starting: '准备中', running: '训练中', stopping: '停止中', unknown: '状态待核对', completed: '已完成', failed: '失败', canceled: '已取消' };
@@ -59,7 +60,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
   const embeddedProjectId=embeddedProject?.id;
   const contextId=embeddedProjectId || params.get('project_id');
   const [form] = Form.useForm();
-  const [admin] = useState(() => { try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; } catch { return false; } });
+  const admin = useCurrentUser()?.role === 'admin';
   const [catalog, setCatalog] = useState<Record<string, TrainingTemplate>>({}), [servers, setServers] = useState<GpuServer[]>([]), [projects, setProjects] = useState<Project[]>([]);
   const [trainers, setTrainers] = useState<TrainingTrainer[]>([]);
   const [savedTrainer, setSavedTrainer] = useState<TrainingTrainer>();
@@ -387,23 +388,23 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
   };
   const checkResult = selected?.inspection as TrainingCheck | undefined;
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
-    {context&&!embeddedProject&&<Alert type="info" title={`使用项目数据：${context.project_name}`} description="本页仅显示本项目任务；创建时已锁定项目，并预选适用训练器。" action={<Link to={`/projects/${context.id}/deliver`}>返回项目导出与训练</Link>}/>}
+    {context&&!embeddedProject&&<Alert type="info" showIcon title={`使用项目数据：${context.project_name}`} description="本页仅显示本项目任务；创建时已锁定项目，并预选适用训练器。" action={<Link to={`/projects/${context.id}/deliver`}>返回项目导出与训练</Link>}/>}
     <Alert type="info" showIcon title="先保存配置，再预检查和启动" description="任务不会自动开始。每次训练使用独立输出目录，已有GPU计算进程会阻止启动；状态未知时保留资源占用，需核对或停止。" />
-    {!admin && <Alert type="info" title="你可以查看任务、配置、日志与产物；创建和执行需要管理员权限。" />}
+    {!admin && <Alert type="info" showIcon title="你可以查看任务、配置、日志与产物；创建和执行需要管理员权限。" />}
     {error && !open && <Alert type="error" showIcon title={error} />}
     {trainersError && <Alert type="warning" showIcon title={`登记训练器读取失败：${trainersError}`} />}
     <Card title="训练任务" extra={<Space wrap><Button onClick={() => setReload(n => n + 1)}>刷新列表</Button>{admin && <><Button onClick={() => setManageTrainers(true)}>管理训练器</Button><Button type="primary" disabled={!catalog.yolo26} onClick={showCreate}>创建训练任务</Button></>}</Space>}>
       <Table rowKey="id" dataSource={runs} loading={loading} scroll={{ x: 900 }} pagination={{ current: page, pageSize: 20, total, onChange: setPage, showSizeChanger: false }} columns={[
-        { title: '任务', dataIndex: 'name', render: (_, run) => <Button type="link" onClick={() => { void inspect(run); }}>{run.name}</Button> },
+        { title: '任务', dataIndex: 'name', render: (_, run) => <Button type="link" size="small" onClick={() => { void inspect(run); }}>{run.name}</Button> },
         { title: '训练器', render: (_, run) => run.config.trainer?.name || outputNames[run.kind] || catalog[run.kind]?.name || run.kind }, { title: '运行环境', render: (_, run) => run.config.execution_backend === 'k8s' ? '嘉善移动K8s' : 'Docker' }, { title: '服务器 / 节点', render: (_, run) => run.config.execution_backend === 'k8s' ? run.config.k8s?.nodes.join('、') : run.server.name },
         { title: 'GPU数', render: (_, run) => run.kind==='model_export'&&run.config.output?.format==='onnx'?0:run.config.execution_backend === 'k8s' ? `${run.config.k8s?.nodes.length || 0} × ${run.config.k8s?.gpus_per_node || 0} = ${(run.config.k8s?.nodes.length || 0) * (run.config.k8s?.gpus_per_node || 0)}` : run.config.gpu_uuids.length }, { title: '状态', render: (_, run) => status(run) },
         { title: '创建时间', render: (_, run) => new Date(run.created_at).toLocaleString('zh-CN') },
-        { title: '操作', render: (_, run) => <Space wrap><Button onClick={() => { void inspect(run); }}>查看详情</Button>{run.status!=='draft'&&!outputKinds.includes(run.kind)&&<Button onClick={()=>{void inspect(run);setDetailTab('analysis');}}>效果分析与对比</Button>}</Space> },
+        { title: '操作', render: (_, run) => <Space size="small" wrap><Button size="small" onClick={() => { void inspect(run); }}>查看详情</Button>{run.status!=='draft'&&!outputKinds.includes(run.kind)&&<Button size="small" onClick={()=>{void inspect(run);setDetailTab('analysis');}}>效果分析与对比</Button>}</Space> },
       ]} />
     </Card>
     {manageTrainers && <TrainingTrainerManager catalog={catalog} onBuiltinChange={applyBuiltinDefaults}
       trainers={trainers} onChange={setTrainers} onClose={() => setManageTrainers(false)} errorText={errorText} />}
-    <Modal open={open} title={editing ? '编辑训练任务配置' : '创建训练任务'} width={1000} footer={null} mask={{ closable: false }} destroyOnHidden onCancel={() => { if (!saving) setOpen(false); }} closable={!saving}>
+    <Modal open={open} title={editing ? '编辑训练任务配置' : '创建训练任务'} width={1000} styles={{ body: { maxHeight: '75dvh', overflowY: 'auto' } }} footer={null} mask={{ closable: false }} destroyOnHidden onCancel={() => { if (!saving) setOpen(false); }} closable={!saving}>
       {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
       <Form form={form} layout="vertical" onFinish={values => { void save(values); }} onFinishFailed={({errorFields})=>{
         setSaveError('配置未保存：'+errorFields.flatMap(field=>field.errors).join('；'));
@@ -442,7 +443,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
           {selectedProjectId && !snapshotLoading && !compatibleSnapshots.some(row=>!row.problems.length) && <Alert type="warning" showIcon style={{marginBottom:16}}
             title="没有可用于当前训练器的冻结版本" description={<Space wrap><span>请重新冻结同时包含训练集和验证集的版本。取消勾选「仅审核通过」可纳入待审核标注。</span><Link to={`/annotations?project_id=${selectedProjectId}&review_status=pending`}>查看待审核</Link>{!context&&<Link to={`/projects/${selectedProjectId}/deliver`}>去项目导出</Link>}</Space>}/>}
           {snapshotInfo && <Alert type={snapshotInfo.problems.length ? 'warning' : 'success'} showIcon title={`训练集 ${snapshotInfo.counts.train} · 验证集 ${snapshotInfo.counts.val} · 测试集 ${snapshotInfo.counts.test}；${snapshotInfo.problems.length ? snapshotInfo.problems.join('；') : snapshotInfo.pending ? `待审核 ${snapshotInfo.pending} 张，可用于训练` : '全部已审核通过'}`} style={{ marginBottom: 16 }} />}
-          <Alert type="info" title="平台自动生成训练配置" description="按所选冻结版本、训练器和标签生成配置及类别映射，无需手写YAML；保留原train/val/test划分。" style={{ marginBottom: 16 }} />
+          <Alert type="info" showIcon title="平台自动生成训练配置" description="按所选冻结版本、训练器和标签生成配置及类别映射，无需手写YAML；保留原train/val/test划分。" style={{ marginBottom: 16 }} />
           <Form.Item name="selected_labels" label="训练标签" rules={datasetLabels.length ? [{ required: true, type: 'array', min: 1, message: '至少选择一个训练标签' }] : []} extra="默认训练全部标签；按原顺序重新编号。未选类别的框被移除，图片保留为背景样本。">
             <Select mode="multiple" disabled={!datasetLabels.length} placeholder="选择冻结版本后可选择训练标签" options={datasetLabels.map(label => ({ value: label, label }))} />
           </Form.Item>
@@ -485,14 +486,17 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
         </>}
         </> }]} />
         {saveError && <Alert type="error" role="alert" title={saveError} showIcon style={{ marginBottom: 12 }} />}
-        <Space wrap><Button type="primary" htmlType="submit" loading={saving}>保存任务配置</Button><Button onClick={() => setOpen(false)}>取消</Button><Typography.Text type="secondary">待启动任务可修改；保存后须重新预检查，保存不会启动训练。</Typography.Text></Space>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <Typography.Text type="secondary">待启动任务可修改；保存后须重新预检查，保存不会启动训练。</Typography.Text>
+          <Space><Button disabled={saving} onClick={() => setOpen(false)}>取消</Button><Button type="primary" htmlType="submit" loading={saving}>保存任务配置</Button></Space>
+        </div>
       </Form>
     </Modal>
     <Modal open={!!outputEdit} title="编辑导出 / 合并配置" width={1000} footer={null} onCancel={()=>setOutputEdit(undefined)}>
       {outputEdit&&<ModelOutputForm key={outputEdit.job.id} run={outputEdit.parent} job={outputEdit.job} servers={servers} admin={admin}
         onCreated={job=>{setOutputEdit(undefined);setSelected(job);setDetailTab('overview');setReload(n=>n+1);}}/>}
     </Modal>
-    <Drawer open={!!selected && !open} width={1000} title={selected?.name || '训练详情'} onClose={() => { if (!busy||outputBusy) {outputRequest.current++;outputController.current?.abort();outputController.current=null;setBusy('');setSelected(undefined);} }} closable={!busy||outputBusy} mask={{ closable: !busy||outputBusy }}>
+    <Drawer open={!!selected && !open} size={1000} styles={{ wrapper: { maxWidth: '100vw' } }} title={selected?.name || '训练详情'} onClose={() => { if (!busy||outputBusy) {outputRequest.current++;outputController.current?.abort();outputController.current=null;setBusy('');setSelected(undefined);} }} closable={!busy||outputBusy} mask={{ closable: !busy||outputBusy }}>
       {selected && <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
         <Space wrap>{status(selected)}{admin && <>
           <Button disabled={!!busy || selected.status !== 'draft'} onClick={() => {if(outputKinds.includes(selected.kind))void showOutputEdit(selected);else showEdit(selected);}}>编辑配置</Button>
@@ -509,7 +513,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
           {admin&&canReuseFullModel&&<Button disabled={!!busy} onClick={()=>void readOutput('artifacts')}>选择完整模型继续训练</Button>}
           {admin&&selected.status==='completed'&&['model_merge','swift_sft','wemm'].includes(selected.kind)&&<Link to={`/model-deployments?run_id=${selected.id}`}>归档完整目录与更新模型 →</Link>}
           {admin&&selected.status==='completed'&&<Link to={`/model-repository?run_id=${selected.id}`}>存入模型仓库 →</Link>}
-          {selected.config.execution_backend !== 'k8s'&&['yolo26','rfdetr_medium','rfdetr_2xlarge','dinov3_vits16_ltdetr'].includes(selected.kind)&&<Link to={selected.source.project_id ? `/projects/${selected.source.project_id}/test?view=validation` : '/validation'}>验证模型权重 →</Link>}
+          {selected.config.execution_backend !== 'k8s'&&['yolo26','rfdetr_medium','rfdetr_2xlarge','dinov3_vits16_ltdetr'].includes(selected.kind)&&<Link to={selected.source.project_id ? `/projects/${selected.source.project_id}/test?view=validation&training_run_id=${encodeURIComponent(selected.id)}` : `/validation?training_run_id=${encodeURIComponent(selected.id)}`}>验证模型权重 →</Link>}
           {admin&&selected.config.execution_backend !== 'k8s'&&<Link to={`/gpu-terminal?server_id=${encodeURIComponent(selected.server.id)}`}>调试此服务器</Link>}
         </Space>
         {busy && <Space><Spin size="small" /><Typography.Text>{busy === 'start' ? '正在预检查并准备输入，可能需要几分钟；请勿重复启动。' : busy==='download'?'正在校验并下载产物，较大权重需要一些时间，请保持窗口打开…':busy==='delete'?'正在删除平台任务记录…':'正在读取服务器状态…'}</Typography.Text></Space>}
@@ -528,13 +532,13 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
           { key: 'checks', label: '预检查', children: checkResult?.checks ? <Space orientation="vertical" style={{ width: '100%' }}>{checkResult.checks.map((check, i) => <Alert key={i} showIcon type={check.ok ? 'success' : 'error'} title={check.name} description={<JsonView label={check.name+'详情'} value={check.detail}/>} />)}</Space> : <Typography.Paragraph>保存任务后点击预检查；启动时会再次检查，避免使用过期资源状态。</Typography.Paragraph> },
           { key: 'logs', disabled:!!busy&&!outputBusy,label: outputKinds.includes(selected.kind)?'执行日志':'训练日志', children: <>{selected.config.execution_backend === 'k8s' && <Select aria-label="日志节点" disabled={!!busy&&!outputBusy} placeholder="选择日志节点" value={logNode} style={{width:300,marginBottom:12}} options={(selected.config.k8s?.nodes || []).map(node=>({value:node,label:node}))} onChange={node=>{setLogNode(node);void readOutput('logs',node);}}/>}<TrainingLogs key={selected.id} text={logs} busy={!!busy} onRefresh={()=>{void readOutput('logs');}}/></> },
           ...((canExport||canMerge)?[{key:'outputs',label:canMerge?'LoRA合并':'模型导出',children:<ModelOutputForm key={selected.id} run={selected} servers={servers} admin={admin} initialSource={outputPath} onCreated={job=>{void inspect(job);setReload(n=>n+1);}}/>}]:[]),
-          { key: 'artifacts', disabled:!!busy&&!outputBusy,label: '模型产物', children: <><Button aria-label="刷新模型产物" loading={busy==='artifacts'} disabled={!!busy&&!outputBusy} onClick={()=>{void readOutput('artifacts');}} style={{marginBottom:12}}>刷新产物</Button>{admin&&selected.status==='completed'&&mergeSources.includes(selected.kind)&&<Button disabled={!!busy} onClick={()=>void archiveAndDownload('base/config.json')}>下载基础模型并入库</Button>}{truncated && <Alert type="warning" title="仅显示前500个文件，完整产物保留在服务器目录。" />}<Table rowKey="path" scroll={{ x: 650 }} dataSource={files} pagination={{ pageSize: 20 }} columns={[{ title: '文件', dataIndex: 'path' }, { title: '大小', dataIndex: 'bytes',render:value=>value<1024?`${value} B`:`${(value/1024**2).toFixed(2)} MiB` }, { title: '类型', dataIndex: 'role', render: value => value === 'weights' ? '模型权重' : '配置/日志' },{title:'操作',render:(_,file)=><Space wrap><Button disabled={!!busy} onClick={()=>{void download(file);}}>下载到本地</Button>{admin&&selected.status==='completed'&&(mergeSources.includes(selected.kind)||selected.kind==='model_merge')&&/(^|\/)(adapter_)?config\.json$/.test(file.path)&&<Button disabled={!!busy} onClick={()=>void archiveAndDownload(file.path)}>下载模型目录并入库</Button>}{admin&&canReuseFullModel&&/(^|\/)config\.json$/.test(file.path)&&<Button disabled={!!busy} onClick={()=>showEdit(selected,true,(`${selected.output_dir}/${selected.config.output_subdir}/${file.path}`).replace(/\/config\.json$/,""))}>用此模型继续训练</Button>}{admin&&canExport&&/\.(pt|pth)$/.test(file.path)&&<Button disabled={!!busy} onClick={()=>{setOutputPath(`${selected.output_dir}/${selected.config.output_subdir}/${file.path}`);setDetailTab('outputs');}}>导出此权重</Button>}</Space>}]} /><Typography.Paragraph type="secondary">可下载模型权重、配置和日志；训练中的文件如发生变化会拒绝本次下载，请选稳定检查点或结束后重试。</Typography.Paragraph></> },
+          { key: 'artifacts', disabled:!!busy&&!outputBusy,label: '模型产物', children: <><Space wrap style={{marginBottom:12}}><Button aria-label="刷新模型产物" loading={busy==='artifacts'} disabled={!!busy&&!outputBusy} onClick={()=>{void readOutput('artifacts');}}>刷新产物</Button>{admin&&selected.status==='completed'&&mergeSources.includes(selected.kind)&&<Button disabled={!!busy} onClick={()=>void archiveAndDownload('base/config.json')}>下载基础模型并入库</Button>}</Space>{truncated && <Alert type="warning" showIcon title="仅显示前500个文件，完整产物保留在服务器目录。" style={{marginBottom:12}} />}<Table rowKey="path" scroll={{ x: 650 }} dataSource={files} pagination={{ pageSize: 20 }} columns={[{ title: '文件', dataIndex: 'path' }, { title: '大小', dataIndex: 'bytes',render:value=>value<1024?`${value} B`:`${(value/1024**2).toFixed(2)} MiB` }, { title: '类型', dataIndex: 'role', render: value => value === 'weights' ? '模型权重' : '配置/日志' },{title:'操作',render:(_,file)=><Space size="small" wrap><Button size="small" disabled={!!busy} onClick={()=>{void download(file);}}>下载到本地</Button>{admin&&selected.status==='completed'&&(mergeSources.includes(selected.kind)||selected.kind==='model_merge')&&/(^|\/)(adapter_)?config\.json$/.test(file.path)&&<Button size="small" disabled={!!busy} onClick={()=>void archiveAndDownload(file.path)}>下载模型目录并入库</Button>}{admin&&canReuseFullModel&&/(^|\/)config\.json$/.test(file.path)&&<Button size="small" disabled={!!busy} onClick={()=>showEdit(selected,true,(`${selected.output_dir}/${selected.config.output_subdir}/${file.path}`).replace(/\/config\.json$/,""))}>用此模型继续训练</Button>}{admin&&canExport&&/\.(pt|pth)$/.test(file.path)&&<Button size="small" disabled={!!busy} onClick={()=>{setOutputPath(`${selected.output_dir}/${selected.config.output_subdir}/${file.path}`);setDetailTab('outputs');}}>导出此权重</Button>}</Space>}]} /><Typography.Paragraph type="secondary">可下载模型权重、配置和日志；训练中的文件如发生变化会拒绝本次下载，请选稳定检查点或结束后重试。</Typography.Paragraph></> },
         ]} />
       </Space>}
     </Drawer>
     <Modal open={!!confirm} title={confirm === 'start' ? (selected&&outputKinds.includes(selected.kind)?'启动此导出 / 合并任务？':'启动此训练任务？') : confirm==='delete'?'删除此任务记录？':'停止此任务？'} confirmLoading={!!busy} okText={confirm === 'start' ? '确认启动' : confirm==='delete'?'确认删除':'确认停止'} cancelText="返回" okButtonProps={{ danger: confirm !== 'start' }} onCancel={() => { if (!busy) setConfirm(undefined); }} onOk={() => { if (confirm) void action(confirm); }}>
       <Typography.Paragraph>{confirm === 'start' ? (selected&&outputKinds.includes(selected.kind)?'将重新检查来源、镜像和GPU，创建独立导出/合并容器，占用所选GPU；输入只读，结果写入新任务目录。':selected?.config.execution_backend === 'k8s' ? '将重新检查镜像、数据和节点GPU，然后创建K8s训练任务。' : '将重新检查镜像、数据和GPU，然后创建独立Docker容器。不会停止其他服务。冻结包需先传输并校验，训练会占用所选GPU。') : confirm==='delete'?'只移除平台任务记录。服务器上的模型权重、日志、数据和容器均保留；删除后该任务入口消失，请先下载所需产物。已有验证记录保留。':selected?.config.execution_backend === 'k8s' ? '只停止此K8s训练任务，保留数据、日志和已保存产物。' : '只停止本平台记录的对应任务容器，保留数据、日志和已保存产物；确认停止后释放GPU占用。'}</Typography.Paragraph>
-      {detailError && <Alert type="error" title={detailError} />}
+      {detailError && <Alert type="error" showIcon title={detailError} />}
     </Modal>
   </Space>;
 }

@@ -244,6 +244,7 @@ export default function WorkflowNodeDrawer({
       open={open}
       onClose={onClose}
       size={580}
+      styles={{ wrapper: { maxWidth: '100vw' } }}
       title={`配置节点 #${stepIndex + 1} · ${step.title || WORKFLOW_OPERATIONS[op]}`}
       extra={
         allSteps.length > 1 && (
@@ -1118,10 +1119,10 @@ export default function WorkflowNodeDrawer({
         {/* === 6. Python 安全沙箱脚本节点 (script) === */}
         {op === 'script' && (
           <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-            <Card size="small" style={{ background: 'rgba(182, 156, 255, 0.06)', borderColor: 'rgba(182, 156, 255, 0.3)' }}>
+            <Card size="small" style={{ background: 'var(--ui-node-script-soft, rgba(182, 156, 255, 0.06))', borderColor: 'var(--ui-node-script-border, rgba(182, 156, 255, 0.3))' }}>
               <Space orientation="vertical" size="small" style={{ width: '100%' }}>
                 <Space>
-                  <ThunderboltOutlined style={{ color: '#c8b5ff' }} />
+                  <ThunderboltOutlined style={{ color: 'var(--ui-node-script-accent, #c8b5ff)' }} />
                   <Typography.Text strong>AI 一句话自动写脚本</Typography.Text>
                   <Tag color="purple">自动生成并通过沙箱安全校验</Tag>
                 </Space>

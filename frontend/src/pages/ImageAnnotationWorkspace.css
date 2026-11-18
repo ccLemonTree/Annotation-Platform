@@ -4,7 +4,7 @@
 .image-annotation-workspace > .ant-card-head .ant-card-extra { margin-inline-start: auto; }
 .image-annotation-workspace > .ant-card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .image-annotation-toolbar { flex-shrink: 0; margin-bottom: 16px; }
-.image-annotation-panels { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 24px; }
+.image-annotation-panels { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 20px; }
 .image-annotation-picture, .image-annotation-fields { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .image-annotation-picture .ant-image-img { max-height: 50dvh; object-fit: contain; }
 .annotation-image-viewer .workspace-canvas { height: auto; max-height: none !important; cursor: zoom-in !important; }
@@ -24,6 +24,6 @@
   .image-annotation-panels { flex: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; gap: 16px; }
   .image-annotation-picture { overflow: visible; }
   .image-annotation-sidebar .image-annotation-fields { flex: none; overflow: visible; }
-  .image-annotation-picture .ant-image-img { max-height: 20dvh; }
+  .image-annotation-picture .ant-image-img { max-height: 45dvh; }
   .image-annotation-picture .ant-typography { margin-bottom: 4px; font-size: 12px; }
 }

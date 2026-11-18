@@ -261,8 +261,9 @@ export const createWorkflow = async (id: string, input: WorkflowConfig & { image
 export const dryRunWorkflow = async (
   id: string,
   input: Omit<WorkflowConfig, 'name'> & { image_kind: 'all' | 'originals' | 'crops'; source_job_id?: string; sample_asset_ids?: string[] },
+  signal?: AbortSignal,
 ): Promise<WorkflowDryRunResult> =>
-  (await apiClient.post(base(id) + '/work/workflows/dry-run', input, { timeout: 185000, skipErrorToast: true })).data;
+  (await apiClient.post(base(id) + '/work/workflows/dry-run', input, { timeout: 185000, skipErrorToast: true, signal })).data;
 
 export const aiGenerateWorkflow = async (
   projectId: string | undefined,

@@ -16,12 +16,21 @@ export default function MatchReviews({projectId}:{projectId:string}){
   const admin=useCurrentUser()?.role==='admin';
   const fail=(cause:unknown)=>{const error=cause as {response?:{data?:{detail?:unknown}}};setError(typeof error.response?.data?.detail==='string'?error.response.data.detail:'读取或审核失败，请刷新重试');};
   useEffect(()=>{if(!admin)return;let active=true;getModelServices({enabled:true}).then(rows=>{if(active)setModels(rows.filter(m=>m.kind==='caption'&&m.protocol==='openai_chat'));}).catch(cause=>{if(active)fail(cause);});return()=>{active=false;};},[admin]);
-  useEffect(()=>{let active=true,pending=false;
+  useEffect(()=>{let active=true,pending=false,shouldPoll=false;
     const load=async()=>{if(pending)return;pending=true;try{
-      const [rows,jobs]=await Promise.all([getMatchQueries(projectId,page),admin?getWorkJobs(projectId):Promise.resolve([])]);
-      if(active){setQueries(current=>rows.map(row=>{const newer=current.find(q=>q.id===row.id&&q.version>row.version);return newer||row;}));setJobs(jobs.filter(job=>job.operation==='match_review'));}
+      const [rows,nextJobs]=await Promise.all([getMatchQueries(projectId,page),admin?getWorkJobs(projectId):Promise.resolve([])]);
+      if(active){
+        const matchJobs=nextJobs.filter(job=>job.operation==='match_review');
+        setQueries(current=>rows.map(row=>{const newer=current.find(q=>q.id===row.id&&q.version>row.version);return newer||row;}));
+        setJobs(matchJobs);
+        shouldPoll=matchJobs.some(j=>(j.counts.pending||0)>0||(j.counts.running||0)>0||!!j.retrying_count);
+      }
     }catch(cause){if(active)fail(cause);}finally{pending=false;if(active)setLoading(false);}};
-    void load();const timer=setInterval(load,3000);return()=>{active=false;clearInterval(timer);};
+    const onVisible=()=>{if(!document.hidden&&shouldPoll)void load();};
+    void load();
+    const timer=setInterval(()=>{if(shouldPoll&&!document.hidden)void load();},3000);
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>{active=false;clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[projectId,page,reload,admin]);
   const rows=queries.flatMap(query=>query.hits.filter(hit=>hit.judgment!=='unknown').map(hit=>({key:query.id+hit.asset_id,query,hit})));
   const needsManual=(hit:MatchHit)=>(hit.review_status||'pending')==='pending'&&hit.ai_review?.status==='needs_review';
@@ -44,8 +53,8 @@ export default function MatchReviews({projectId}:{projectId:string}){
         <PromptEditor key={`supplement:${projectId}:${model}`} title="匹配大模型审核补充要求" buttonLabel="编辑匹配补充要求" value={prompt} disabled={!!busy} onChange={setPrompt} maxLength={2000} defaultValue="" referencePrompt={reviewPrompt||models.find(row=>row.id===model)?.chat_prompts?.match_review} referenceLabel="本批匹配审核核心提示词" help="本批补充审核要求（可选），例如只核对上衣颜色，不根据阴影猜测。"/></Space>
       {!!jobs.length&&<Typography.Text type="secondary">最近匹配审核批次：排队 {jobs.reduce((n,j)=>n+(j.counts.pending||0),0)} · 处理中 {jobs.reduce((n,j)=>n+(j.counts.running||0),0)} · 完成 {jobs.reduce((n,j)=>n+(j.counts.completed||0),0)} · 失败 {jobs.reduce((n,j)=>n+(j.counts.failed||0),0)}</Typography.Text>}
     </Space>}
-    {info&&<Alert type="success" title={info} style={{marginBottom:12}}/>}
-    {error&&<Alert type="error" title={error} style={{marginBottom:12}}/>}
+    {info&&<Alert type="success" showIcon title={info} style={{marginBottom:12}}/>}
+    {error&&<Alert type="error" showIcon title={error} style={{marginBottom:12}}/>}
     <Space wrap style={{marginBottom:16}}><Typography.Text>本页查询 {queries.length} 条 · 已判定关系 {rows.length} 条</Typography.Text>
       {Object.entries(statuses).map(([key,label])=><Tag key={key}>{label} {rows.filter(row=>(row.hit.review_status||'pending')===key).length}</Tag>)}
       <Tag color="warning">待人工复核 {rows.filter(row=>needsManual(row.hit)).length}</Tag>
@@ -60,8 +69,10 @@ export default function MatchReviews({projectId}:{projectId:string}){
         {title:'匹配判定',width:110,render:(_,row)=><Tag color={row.hit.judgment==='correct'?'success':'error'}>{row.hit.judgment==='correct'?'正确':'错误'}</Tag>},
         {title:'大模型结论 / 理由',width:300,render:(_,row)=>row.hit.ai_review?<><Tag color={row.hit.ai_review.status==='approved'?'success':row.hit.ai_review.status==='needs_review'?'warning':'default'}>{({correct:'匹配',incorrect:'不匹配',uncertain:'无法判断'})[row.hit.ai_review.judgment]}</Tag><Typography.Paragraph style={{marginBottom:4}} ellipsis={{rows:2,expandable:true}}>{row.hit.ai_review.reason}</Typography.Paragraph><Typography.Text type="secondary">{row.hit.ai_review.model_name} · r{row.hit.ai_review.revision}</Typography.Text><details><summary>完整AI审核记录</summary><JsonView label="匹配AI审核记录" value={row.hit.ai_review}/></details></>:'尚未AI审核'},
         {title:'审核状态',width:110,render:(_,row)=><Tag color={needsManual(row.hit)?'warning':row.hit.review_status==='approved'?'success':'default'}>{needsManual(row.hit)?'待人工复核':statuses[row.hit.review_status||'pending']}</Tag>},
-        {title:'审核操作',width:180,render:(_,row)=><Space><Button aria-label="通过匹配审核" disabled={!!busy||row.hit.review_status==='approved'} loading={busy===row.key} onClick={()=>review(row.query,row.hit,true)}>通过</Button><Button aria-label="驳回匹配审核" danger disabled={!!busy||row.hit.review_status==='rejected'} onClick={()=>review(row.query,row.hit,false)}>驳回</Button></Space>},
+        {title:'审核操作',width:180,render:(_,row)=><Space size="small"><Button size="small" aria-label="通过匹配审核" disabled={!!busy||row.hit.review_status==='approved'} loading={busy===row.key} onClick={()=>review(row.query,row.hit,true)}>通过</Button><Button size="small" aria-label="驳回匹配审核" danger disabled={!!busy||row.hit.review_status==='rejected'} onClick={()=>review(row.query,row.hit,false)}>驳回</Button></Space>},
       ]}/>
-    <Space wrap style={{marginTop:16}}><Button disabled={loading||!!busy||page===1} onClick={()=>changePage(page-1)}>上一页匹配查询</Button><span>第 {page} 页查询 · 每页最多 20 条查询</span><Button disabled={loading||!!busy||queries.length<20} onClick={()=>changePage(page+1)}>下一页匹配查询</Button></Space>
+    <div style={{marginTop:16,display:'flex',justifyContent:'flex-end'}}>
+      <Space size="small" wrap><Button size="small" disabled={loading||!!busy||page===1} onClick={()=>changePage(page-1)}>上一页</Button><Typography.Text type="secondary">第 {page} 页 · 每页最多 20 条查询</Typography.Text><Button size="small" disabled={loading||!!busy||queries.length<20} onClick={()=>changePage(page+1)}>下一页</Button></Space>
+    </div>
   </Card>;
 }

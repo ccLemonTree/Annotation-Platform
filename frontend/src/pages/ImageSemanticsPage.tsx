@@ -51,27 +51,45 @@ export default function ImageSemanticsPage() {
     return () => { active = false; };
   }, [collection, imagePage, imageKey]);
   useEffect(() => {
-    const controller = new AbortController(); let inFlight = false;
+    const controller = new AbortController(); let inFlight = false, shouldPoll = true;
     const load = async () => {
       if (inFlight) return; inFlight = true;
-      try { const rows = await getSemanticJobs(collection, jobsPage, controller.signal); if (!controller.signal.aborted) setJobs(rows); }
+      try {
+        const rows = await getSemanticJobs(collection, jobsPage, controller.signal);
+        if (!controller.signal.aborted) {
+          setJobs(rows);
+          shouldPoll = rows.some(job => (job.counts.pending || 0) > 0 || (job.counts.running || 0) > 0);
+        }
+      }
       catch (error) { if (!controller.signal.aborted) setError(errorText(error)); }
       finally { inFlight = false; }
     };
-    void load(); const timer = window.setInterval(load, 3000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    const onVisible = () => { if (!document.hidden && shouldPoll) void load(); };
+    void load();
+    const timer = window.setInterval(() => { if (shouldPoll && !document.hidden) void load(); }, 3000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [collection, jobsPage, refresh]);
   useEffect(() => {
     if (!jobId) return;
-    const controller = new AbortController(); let inFlight = false;
+    const controller = new AbortController(); let inFlight = false, shouldPoll = true;
     const load = async () => {
       if (inFlight) return; inFlight = true;
-      try { const row = await getSemanticJob(jobId, itemPage, controller.signal); if (!controller.signal.aborted) setDetail(row); }
+      try {
+        const row = await getSemanticJob(jobId, itemPage, controller.signal);
+        if (!controller.signal.aborted) {
+          setDetail(row);
+          shouldPoll = (row.counts.pending || 0) > 0 || (row.counts.running || 0) > 0;
+        }
+      }
       catch (error) { if (!controller.signal.aborted) setError(errorText(error)); }
       finally { inFlight = false; }
     };
-    void load(); const timer = window.setInterval(load, 3000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    const onVisible = () => { if (!document.hidden && shouldPoll) void load(); };
+    void load();
+    const timer = window.setInterval(() => { if (shouldPoll && !document.hidden) void load(); }, 3000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [jobId, itemPage, refresh]);
   const modelOptions = (kind: 'caption' | 'embedding') => models.filter(model => model.kind === kind).map(model => ({ value: model.id, label: `${model.name} · r${model.revision}` }));
   const create = async (wholeCollection = false) => {
@@ -152,7 +170,9 @@ export default function ImageSemanticsPage() {
         { title: '批次', dataIndex: 'id', render: (value: string) => <Button type="link" onClick={() => { setJobId(value); setItemPage(1); }}>{value.slice(0, 8)}</Button> },
         { title: '总计', dataIndex: 'total' }, ...(['pending', 'running', 'completed', 'failed', 'cancelled'] as SemanticStatus[]).map(status => ({ title: statusText[status], key: status, render: (_: unknown, job: SemanticJob) => job.counts[status] || 0 })),
       ]} />
-      <Space><Button disabled={jobsPage === 1} onClick={() => setJobsPage(value => value - 1)}>上一批</Button><span>第 {jobsPage} 页</span><Button disabled={jobs.length < 20} onClick={() => setJobsPage(value => value + 1)}>下一批</Button></Space>
+      <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+        <Space size="small"><Button size="small" disabled={jobsPage === 1} onClick={() => setJobsPage(value => value - 1)}>上一批</Button><Typography.Text type="secondary">第 {jobsPage} 页</Typography.Text><Button size="small" disabled={jobs.length < 20} onClick={() => setJobsPage(value => value + 1)}>下一批</Button></Space>
+      </div>
       {detail && <>
         <Typography.Title level={5}>批次 {detail.id.slice(0, 8)} · 已处理 {done} / {detail.total}</Typography.Title>
         <Progress percent={detail.total ? Math.round(done / detail.total * 100) : 0} status={detail.counts.failed ? 'exception' : undefined} />
@@ -163,12 +183,14 @@ export default function ImageSemanticsPage() {
         <Table rowKey="id" dataSource={detail.items} pagination={false} scroll={{ x: 700 }} columns={[
           { title: '图片', dataIndex: 'original_name' }, { title: '状态', dataIndex: 'status', render: (value: SemanticStatus) => <Tag>{statusText[value]}</Tag> },
           { title: '描述', dataIndex: 'caption' }, { title: '失败原因', dataIndex: 'error' },
-          { title: '操作', render: (_, item) => <Space>
+          { title: '操作', render: (_, item) => <Space size="small">
             <Button size="small" danger disabled={working || !['pending', 'running'].includes(item.status)} onClick={() => action('cancel', item.id)}>取消此项</Button>
             <Button size="small" disabled={working || !item.image_id || !['failed', 'cancelled'].includes(item.status)} onClick={() => action('retry', item.id)}>重试此项</Button>
           </Space> },
         ]} />
-        <Pagination current={itemPage} pageSize={20} total={detail.total} showSizeChanger={false} onChange={setItemPage} style={{ marginTop: 12 }} />
+        <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+          <Pagination current={itemPage} pageSize={20} total={detail.total} showSizeChanger={false} onChange={setItemPage} />
+        </div>
       </>}
     </Card>
   </Space>;

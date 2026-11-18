@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Checkbox, Drawer, Modal,Pagination,Progress,Select,Space, Table, Tag } from 'antd';
+import { Alert, App, Button, Checkbox, Drawer, Pagination, Progress, Select, Space, Table, Tag } from 'antd';
 import { getImages, getImageCollections, associateImages } from '../api/images';
 import type { LibraryImage, ImageCollection, ImageFilters as Filters } from '../api/images';
 import AssetImage from './AssetImage';
@@ -11,6 +11,7 @@ import {useSceneGroups,sceneLabel} from './SceneCategories';
 export default function ProjectImagePicker({ projectId, projectName, taskType='detection', onClose, onAdded }: {
   projectId: string; projectName: string;taskType?:string; onClose: () => void; onAdded: (count: number,summary?:string) => void;
 }) {
+  const { modal } = App.useApp();
   const [images, setImages] = useState<LibraryImage[]>([]);
   const [collections, setCollections] = useState<ImageCollection[]>([]);
   const [used, setUsed] = useState(new Set<string>());
@@ -78,32 +79,34 @@ export default function ProjectImagePicker({ projectId, projectName, taskType='d
     finally { setBusy(false);setReuseProgress(null); }
   };
   const confirmAdd=()=>{
-    if(includeSource){if(!compatible||!filters.source_project_id){setError('请选择任务类型兼容的来源项目后复制标注');return;}Modal.confirm({title:'确认复制来源项目标注',content:`从“${source?.project_name}”复制${includePending?'已通过和待审核':'已通过'}的最新标注到“${projectName}”。待审核标注复制后仍待审核，目标项目已有标注会保留。`,okText:'确认复用',cancelText:'取消',onOk:()=>{void add();}});}
+    if(includeSource){if(!compatible||!filters.source_project_id){setError('请选择任务类型兼容的来源项目后复制标注');return;}modal.confirm({title:'确认复制来源项目标注',content:`从“${source?.project_name}”复制${includePending?'已通过和待审核':'已通过'}的最新标注到“${projectName}”。待审核标注复制后仍待审核，目标项目已有标注会保留。`,okText:'确认复用',cancelText:'取消',onOk:()=>{void add();}});}
     else void add();
   };
   return <Drawer title={`复用已有数据到 ${projectName}`} open size={1080}
-    styles={{ body: { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
+    styles={{ wrapper: { maxWidth: '100vw' }, body: { display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
     onClose={() => { if (!busy) onClose(); }} footer={<>
       {reuseProgress&&<div role="status">
         已处理 {reuseProgress.done} / {reuseProgress.total} 张
         <Progress percent={Math.floor(reuseProgress.done/reuseProgress.total*100)} status="active" />
       </div>}
-      <Space wrap>
-      <span>已选 {selected.length} 张 · 添加到 {projectName}</span>
-      <Button aria-label="取消选图" onClick={onClose} disabled={busy}>取消</Button>
-      <Button type="primary" loading={busy} disabled={!selected.length || loading || !canList}
-        onClick={confirmAdd}>添加到 {projectName}</Button>
-      </Space>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <span>已选 {selected.length} 张 · 添加到 {projectName}</span>
+        <Space wrap>
+          <Button aria-label="取消选图" onClick={onClose} disabled={busy}>取消</Button>
+          <Button type="primary" loading={busy} disabled={!selected.length || loading || !canList}
+            onClick={confirmAdd}>添加到 {projectName}</Button>
+        </Space>
+      </div>
     </>}>
     <div style={{ flexShrink: 0, maxHeight: '42%', overflowY: 'auto' }}>
     <p>目标项目：{projectName}。重复图片共用原图，只创建项目引用；各项目标注独立，只带入本项目标签匹配的内容，目标已有标注不覆盖。</p>
     <Space wrap style={{marginBottom:12}}>
-      <Select aria-label="复用来源项目" placeholder="选择来源项目" allowClear showSearch optionFilterProp="label" style={{width:260}} value={filters.source_project_id}
+      <Select aria-label="复用来源项目" placeholder="选择来源项目" allowClear showSearch optionFilterProp="label" style={{width:260,maxWidth:'100%'}} value={filters.source_project_id}
         loading={contextLoading} notFoundContent={contextLoading?'正在读取项目…':'暂无可选项目'} disabled={busy}
         options={projects.filter(project=>!includeSource||project.task_type===taskType).map(project=>({value:project.id,label:project.project_name}))}
         onChange={id=>changeFilters({...filters,source_project_id:id,source_type:undefined,label:undefined})}/>
       {projectError&&<Button size="small" onClick={()=>setReloadProjects(n=>n+1)}>{projectError}，重试</Button>}
-      <Select aria-label="来源标注标签" placeholder="全部目标标签" allowClear showSearch optionFilterProp="label" style={{width:180}} value={filters.label} disabled={busy||!source} options={(Array.isArray(source?.label_schema?.labels)?source.label_schema.labels as string[]:[]).map(label=>({value:label,label}))} onChange={label=>changeFilters({...filters,label})}/>
+      <Select aria-label="来源标注标签" placeholder="全部目标标签" allowClear showSearch optionFilterProp="label" style={{width:180,maxWidth:'100%'}} value={filters.label} disabled={busy||!source} options={(Array.isArray(source?.label_schema?.labels)?source.label_schema.labels as string[]:[]).map(label=>({value:label,label}))} onChange={label=>changeFilters({...filters,label})}/>
     </Space>
     <Space wrap><Checkbox checked={includeSource} disabled={busy||taskType==='segmentation'} onChange={event=>{
       const checked=event.target.checked;
@@ -114,7 +117,7 @@ export default function ProjectImagePicker({ projectId, projectName, taskType='d
     {includeSource&&<Checkbox checked={includePending} disabled={busy} onChange={event=>changeFilters({...filters,review_status:event.target.checked?'approved_or_pending':'approved'})}>包含待审核标注</Checkbox>}
     <Checkbox checked={includeImported} disabled={busy||taskType!=='detection'} onChange={event=>{setIncludeImported(event.target.checked);setIncludeSource(false);changeFilters({...filters,review_status:undefined});}}>带入已有YOLO标注</Checkbox></Space>
     {!source&&includeSource&&<p className="workspace-help">选择来源项目后显示可复用的标注图片。</p>}
-    {source&&!compatible&&<Alert type="info" title="来源与目标任务类型不兼容或暂不支持复制；仍可仅复用图片。"/>}
+    {source&&!compatible&&<Alert type="info" showIcon title="来源与目标任务类型不兼容或暂不支持复制；仍可仅复用图片。" style={{marginBottom:12}}/>}
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
     <ImageFilters value={filters} collections={collections} groups={sceneGroups} scenes={images.flatMap(image => image.scene_labels)}
       prefix="选择器" disabled={busy} onChange={changeFilters} workflowCrops={!!source} />
@@ -135,8 +138,10 @@ export default function ProjectImagePicker({ projectId, projectName, taskType='d
       ]}
       pagination={false} />
     </div>
-    <Pagination aria-label="图片选择分页" current={page} pageSize={pageSize} total={total} showSizeChanger responsive showLessItems
-      pageSizeOptions={[20, 50, 100]} showTotal={count => <span style={{ whiteSpace: 'nowrap' }}>共 {count} 张</span>} disabled={busy}
-      style={{ flexShrink: 0, paddingTop: 12 }} onChange={(next, size) => { setPage(next); setPageSize(size); }} />
+    <div style={{ flexShrink: 0, paddingTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+      <Pagination aria-label="图片选择分页" current={page} pageSize={pageSize} total={total} showSizeChanger responsive showLessItems
+        pageSizeOptions={[20, 50, 100]} showTotal={count => <span style={{ whiteSpace: 'nowrap' }}>共 {count} 张</span>} disabled={busy}
+        onChange={(next, size) => { setPage(next); setPageSize(size); }} />
+    </div>
   </Drawer>;
 }

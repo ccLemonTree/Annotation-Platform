@@ -121,13 +121,12 @@ export default function MultimodalWorkspace({kind,preview=false,embeddedProject}
     <Button type="primary" htmlType="submit" loading={busy} disabled={!ready||busy||preview&&!files.length&&!projectImages.length} style={{marginTop:16}}>{preview?'开始效果预览':'开始验证'}</Button>
   </Form>;
   return <Space orientation="vertical" size="middle" style={{width:'100%',minWidth:0}}>
-    <Typography.Title level={3}>{title}{preview?'效果预览':'验证'}</Typography.Title>
-    {error&&<Alert type="error" closable title={error} onClose={()=>setError('')} action={<Button disabled={busy} onClick={()=>setRevision(n=>n+1)}>刷新</Button>}/>}
-    <Alert type="info" title={preview?'快速测试仅查看模型输出':kind==='caption'?'查看人工描述与模型输出，按语义复核，不要求字面完全一致':'分别评测文搜图、图搜图；自动排除同内容自身命中'} description={preview?'结果不修改项目图片或标注；未提供人工真值，不计算准确率。定量评估请切换数据集评估。':kind==='caption'?'验证集只采用人工审核通过的非空图片描述，生成结果不回写原标注。':'使用已人工审核的匹配关系。未判定的检索结果显示“未判定”，不自动算误报；本次任务独立检索，不改原项目向量索引。'}/>
-    {preview?<Card title={embeddedProject?'选择图片并测试':'上传并推理'}>{modelForm}</Card>:<Card title="验证集" extra={<Button disabled={!ready||!admin||busy} onClick={()=>setSetModal(true)}>创建验证集</Button>}>
+    {error&&<Alert type="error" showIcon closable title={error} onClose={()=>setError('')} action={<Button size="small" disabled={busy} onClick={()=>setRevision(n=>n+1)}>刷新</Button>}/>}
+    <Alert type="info" showIcon title={preview?'快速测试仅查看模型输出':kind==='caption'?'查看人工描述与模型输出，按语义复核，不要求字面完全一致':'分别评测文搜图、图搜图；自动排除同内容自身命中'} description={preview?'结果不修改项目图片或标注；未提供人工真值，不计算准确率。定量评估请切换数据集评估。':kind==='caption'?'验证集只采用人工审核通过的非空图片描述，生成结果不回写原标注。':'使用已人工审核的匹配关系。未判定的检索结果显示“未判定”，不自动算误报；本次任务独立检索，不改原项目向量索引。'}/>
+    {preview?<Card title={embeddedProject?'选择图片并测试':'上传并推理'}>{modelForm}</Card>:<Card title="验证集" extra={<Button type="primary" disabled={!ready||!admin||busy} onClick={()=>setSetModal(true)}>创建验证集</Button>}>
       <Table<ValidationSet> rowKey="id" dataSource={sets} scroll={{x:650}} pagination={{current:setListPage,pageSize:20,total:setCount,onChange:setSetPage,showSizeChanger:false}} columns={[
         {title:'名称',dataIndex:'name'},{title:'图片数',dataIndex:'total'},{title:'查询数',render:(_,s)=>kind==='embedding'?String(s.source.query_count||0):'—'},
-        {title:'操作',render:(_,s)=><Space wrap><Button disabled={!admin||busy} onClick={()=>setLaunch(s)}>验证模型</Button><Button disabled={!admin||busy||!s.project_id} onClick={()=>void act(()=>refreshValidationSet(s.id))}>更新真值</Button><Popconfirm title="删除验证集及其历史任务？原图和项目标注保留。" onConfirm={()=>act(()=>deleteValidationSet(s.id))}><Button danger disabled={!admin||busy}>删除</Button></Popconfirm></Space>}
+        {title:'操作',render:(_,s)=><Space size="small" wrap><Button size="small" disabled={!admin||busy} onClick={()=>setLaunch(s)}>验证模型</Button><Button size="small" disabled={!admin||busy||!s.project_id} onClick={()=>void act(()=>refreshValidationSet(s.id))}>更新真值</Button><Popconfirm title="删除验证集及其历史任务？原图和项目标注保留。" onConfirm={()=>act(()=>deleteValidationSet(s.id))}><Button size="small" danger disabled={!admin||busy}>删除</Button></Popconfirm></Space>}
       ]}/>
     </Card>}
     <Card title={preview?'最近预览':'验证任务'} extra={<Button disabled={busy} onClick={()=>setRevision(n=>n+1)}>刷新任务</Button>}>
@@ -135,22 +134,22 @@ export default function MultimodalWorkspace({kind,preview=false,embeddedProject}
         {title:'名称',dataIndex:'name'},{title:'模型',render:(_,r)=>`${r.model.name} · ${r.model.weight_sha256?.slice(0,8)||'r'+r.model.revision}`},
         {title:'状态',render:(_,r)=><Tag color={r.status==='failed'?'error':r.status==='completed'?'success':'default'}>{validationStatusLabels[r.status]}</Tag>},
         {title:'已处理 / 总数',render:(_,r)=>`${r.processed} / ${r.total}`},{title:'错误',dataIndex:'error'},
-        {title:'操作',render:(_,r)=><Space wrap><Button onClick={()=>open(r.id)}>查看结果</Button>{(admin||preview)&&<>{(['pending','running'].includes(r.status)||r.remote_active)&&<Button disabled={busy} onClick={()=>void change(r,'cancel')}>取消 / 确认停止</Button>}{!['pending','running'].includes(r.status)&&(r.failed_count>0||r.status==='canceled')&&<Button disabled={busy||r.remote_active} onClick={()=>void change(r,'retry')}>重试失败项</Button>}<Popconfirm title="删除此任务及结果？原图与模型保留。" onConfirm={()=>change(r,'delete')}><Button danger disabled={busy}>删除</Button></Popconfirm></>}</Space>}
+        {title:'操作',render:(_,r)=><Space size="small" wrap><Button size="small" onClick={()=>open(r.id)}>查看结果</Button>{(admin||preview)&&<>{(['pending','running'].includes(r.status)||r.remote_active)&&<Button size="small" disabled={busy} onClick={()=>void change(r,'cancel')}>取消 / 确认停止</Button>}{!['pending','running'].includes(r.status)&&(r.failed_count>0||r.status==='canceled')&&<Button size="small" disabled={busy||r.remote_active} onClick={()=>void change(r,'retry')}>重试失败项</Button>}<Popconfirm title="删除此任务及结果？原图与模型保留。" onConfirm={()=>change(r,'delete')}><Button size="small" danger disabled={busy}>删除</Button></Popconfirm></>}</Space>}
       ]}/>
     </Card>
     {detail&&detail.run.id===runId&&<Card title="验证结果" extra={<Button disabled={busy} onClick={()=>void download()}>下载 JSON 报告</Button>}>
       <Space wrap><Tag>{validationStatusLabels[detail.run.status]}</Tag><strong>{detail.run.model.name}</strong><span>已处理 {detail.run.processed} / {detail.run.total} · 失败 {detail.run.failed_count}</span></Space>
       {detail.run.model.source==='checkpoint'&&<Typography.Paragraph type="secondary">权重：{detail.run.model.weight_path} · SHA256：{detail.run.model.weight_sha256} · 设备：{detail.run.model.device}</Typography.Paragraph>}
-      {active&&<Alert type="info" title={detail.run.processed===0?'准备、上传或批量推理中，完成后统一取回结果':'正在处理，请稍候'}/>}
-      {detail.run.error&&<Alert type="error" title={detail.run.error}/>}
-      {metrics?.coverage&&!metrics.coverage.complete&&!active&&<Alert type="warning" title="结果覆盖不完整，不能代表整个验证集"/>}
+      {active&&<Alert type="info" showIcon title={detail.run.processed===0?'准备、上传或批量推理中，完成后统一取回结果':'正在处理，请稍候'}/>}
+      {detail.run.error&&<Alert type="error" showIcon title={detail.run.error}/>}
+      {metrics?.coverage&&!metrics.coverage.complete&&!active&&<Alert type="warning" showIcon title="结果覆盖不完整，不能代表整个验证集"/>}
       {kind==='caption'?<>
         {!preview&&<Typography.Paragraph>已复核 {metrics?.reviewed||0} 张；正确 {metrics?.correct||0}，错误 {metrics?.incorrect||0}，无法判断 {metrics?.uncertain||0}；人工复核通过率 {percent(metrics?.pass_rate)}（不含未复核和无法判断）。</Typography.Paragraph>}
-        <Space wrap><Button disabled={!navigation.canPrevious} onClick={navigation.previous}>← 上一张</Button><span>{navigation.position} / {detail.run.total} · 方向键切图</span><Button disabled={!navigation.canNext} onClick={navigation.next}>下一张 →</Button></Space>
-        <Pagination current={page} pageSize={20} total={detail.run.total} onChange={setPage} showSizeChanger={false}/>
+        <Space wrap><Button size="small" disabled={!navigation.canPrevious} onClick={navigation.previous}>← 上一张</Button><span>{navigation.position} / {detail.run.total} · 方向键切图</span><Button size="small" disabled={!navigation.canNext} onClick={navigation.next}>下一张 →</Button></Space>
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:12}}><Pagination current={page} pageSize={20} total={detail.run.total} onChange={setPage} showSizeChanger={false}/></div>
         {item?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,300px),1fr))',gap:20,marginTop:16}}>
           <ResultImage path={`${root}/${runId}/items/${item.id}/image`} name={item.original_name}/>
-          <div><Typography.Text strong>{item.original_name}</Typography.Text>{item.error&&<Alert type="error" title={item.error}/>}
+          <div><Typography.Text strong>{item.original_name}</Typography.Text>{item.error&&<Alert type="error" showIcon title={item.error}/>}
             {!preview&&<><Typography.Title level={5}>人工参考描述</Typography.Title><Typography.Paragraph style={{whiteSpace:'pre-wrap'}}>{item.truth[0]?.description||'—'}</Typography.Paragraph></>}
             <Typography.Title level={5}>模型描述</Typography.Title><Typography.Paragraph style={{whiteSpace:'pre-wrap'}}>{item.evaluation?.caption||validationStatusLabels[item.status]}</Typography.Paragraph>
             {admin&&!preview&&item.status==='completed'&&<><Input.TextArea aria-label="描述复核说明" value={comment} onChange={e=>setDraft({id:item.id,value:e.target.value})} maxLength={2000} placeholder="复核说明（选填）"/><Space wrap style={{marginTop:12}}>{(['correct','incorrect','uncertain'] as ReviewVerdict[]).map((verdict,i)=><Button key={verdict} disabled={busy} type={item.evaluation.review?.verdict===verdict?'primary':'default'} onClick={()=>void act(()=>reviewCaption(runId,item.id,verdict,comment))}>{['描述正确','描述错误','无法判断'][i]}</Button>)}</Space></>}
@@ -162,11 +161,11 @@ export default function MultimodalWorkspace({kind,preview=false,embeddedProject}
           ...[1,5,10].map(k=>({title:`Hit@${k}`,dataIndex:`hit_at_${k}`,render:percent})),...[1,5,10].map(k=>({title:`Recall@${k}`,dataIndex:`recall_at_${k}`,render:percent})),{title:'MRR',dataIndex:'mrr',render:(v?:number|null)=>v==null?'—':v.toFixed(4)}
         ]}/>}
         <Select aria-label="查看检索查询" value={query?.id} style={{width:'100%',marginTop:16}} placeholder="完成推理后查看检索排名" onChange={id=>{setQueryId(id);setHitItem(undefined);}} options={(metrics?.queries||[]).map(q=>({value:q.id,label:`${q.kind==='text'?'文搜图：'+q.text:'图搜图：'+q.asset_id}`}))}/>
-        {query?.excluded_reason&&<Alert type={preview?'info':'warning'} title={query.excluded_reason}/>}
+        {query?.excluded_reason&&<Alert type={preview?'info':'warning'} showIcon title={query.excluded_reason}/>}
         {query&&<Table rowKey="asset_id" dataSource={query.hits} pagination={false} scroll={{x:600}} columns={[
           {title:'排名',render:(_,__,i)=>i+1},{title:'图片',dataIndex:'original_name'},{title:'余弦相似度',dataIndex:'score',render:v=>v.toFixed(4)},
           {title:'人工真值',dataIndex:'judgment',render:v=>({correct:'匹配',incorrect:'不匹配',unknown:'未判定'}[v as string]||v)},
-          {title:'操作',render:(_,h)=><Button onClick={()=>setHitItem({id:h.item_id,name:h.original_name})}>查看图片</Button>}
+          {title:'操作',render:(_,h)=><Button size="small" onClick={()=>setHitItem({id:h.item_id,name:h.original_name})}>查看图片</Button>}
         ]}/>}
         {hitItem&&<><Typography.Title level={5}>{hitItem.name}</Typography.Title><ResultImage path={`${root}/${runId}/items/${hitItem.id}/image`} name={hitItem.name}/></>}
       </>}
@@ -175,8 +174,11 @@ export default function MultimodalWorkspace({kind,preview=false,embeddedProject}
       <Form form={setForm} layout="vertical" disabled={busy} initialValues={{project_id:projectId||params.get('project_id')||undefined}} onFinish={values=>act(()=>createValidationSet({...values,split:'val'}),()=>{setSetModal(false);setForm.resetFields();})}>
         <Form.Item name="name" label="验证集名称" rules={[{required:true,whitespace:true}]}><Input maxLength={200}/></Form.Item>
         <Form.Item name="project_id" label="标注项目" rules={[{required:true}]}><Select aria-label="语义验证项目" disabled={!!embeddedProject} showSearch optionFilterProp="label" options={projects.map(p=>({value:p.id,label:p.project_name}))}/></Form.Item>
-        <Alert type="info" title={preview?'快速测试仅查看模型输出':kind==='caption'?'固定当前已人工审核的图片描述':'固定当前候选图片与已审核文搜图 / 图搜图匹配关系'} description="创建时间不能证明与训练集独立，请使用独立验证项目。"/>
-        {busy&&<Typography.Paragraph>正在保存，已等待 {elapsed} 秒</Typography.Paragraph>}<Button type="primary" htmlType="submit" loading={busy} style={{marginTop:16}}>保存验证集</Button>
+        <Alert type="info" showIcon title={preview?'快速测试仅查看模型输出':kind==='caption'?'固定当前已人工审核的图片描述':'固定当前候选图片与已审核文搜图 / 图搜图匹配关系'} description="创建时间不能证明与训练集独立，请使用独立验证项目。"/>
+        {busy&&<Typography.Paragraph style={{marginTop:12}}>正在保存，已等待 {elapsed} 秒</Typography.Paragraph>}
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:16}}>
+          <Space><Button disabled={busy} onClick={()=>setSetModal(false)}>取消</Button><Button type="primary" htmlType="submit" loading={busy}>保存验证集</Button></Space>
+        </div>
       </Form>
     </Modal>}
     {launch&&<Modal open title={`验证模型 · ${launch.name}`} footer={null} width={640} onCancel={()=>{if(!busy)setLaunch(undefined);}}>{modelForm}</Modal>}

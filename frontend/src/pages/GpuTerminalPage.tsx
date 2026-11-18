@@ -10,6 +10,7 @@ import { getGpuServers } from '../api/gpuResources';
 import { getDeploymentServers } from '../api/modelDeployments';
 import type { GpuServer } from '../api/gpuResources';
 import { connectionError, forbidden } from '../components/gpu/connectionError';
+import { useCurrentUser } from '../components/currentUser';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'closing' | 'error';
 const stateLabels = { disconnected: '未连接', connecting: '正在连接', connected: '已连接', closing: '正在断开', error: '连接失败' };
@@ -18,7 +19,9 @@ export default function GpuTerminalPage() {
   const [params] = useSearchParams();
   const sshMode=params.has('ssh_server')||params.get('source')==='deployment';
   const requestedSsh=params.get('ssh_server');
-  const [admin, setAdmin] = useState(() => { try { return JSON.parse(localStorage.getItem('user') || 'null')?.role === 'admin'; } catch { return false; } });
+  const currentUser = useCurrentUser();
+  const [forbiddenAccess, setForbiddenAccess] = useState(false);
+  const admin = currentUser?.role === 'admin' && !forbiddenAccess;
   const [servers, setServers] = useState<GpuServer[]>([]), [serverId, setServerId] = useState(sshMode?(requestedSsh?'ssh:'+requestedSsh:''):params.get('server_id') || 'default');
   const [loading, setLoading] = useState(true), [reload, setReload] = useState(0), [listError, setListError] = useState('');
   const [state, setState] = useState<ConnectionState>('disconnected'), [error, setError] = useState('');
@@ -37,14 +40,18 @@ export default function GpuTerminalPage() {
       setServerId(id => sshMode&&requestedSsh?'ssh:'+requestedSsh:list.some(server => server.id === id) ? id : list[0]?.id || 'default');
     }).catch(cause => {
       if (controller.signal.aborted) return;
-      if (forbidden(cause)) setAdmin(false); else setListError(connectionError(cause, '服务器列表读取失败'));
+      if (forbidden(cause)) setForbiddenAccess(true); else setListError(connectionError(cause, '服务器列表读取失败'));
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [admin, reload,sshMode,requestedSsh]);
   useEffect(() => {
     if (!admin || !surface.current) return;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const termBg = rootStyle.getPropertyValue('--ui-code-bg').trim() || rootStyle.getPropertyValue('--ui-background').trim() || '#0b101b';
+    const termFg = rootStyle.getPropertyValue('--ui-text').trim() || '#e8eef9';
+    const termCursor = rootStyle.getPropertyValue('--ui-primary').trim() || '#699cff';
     const term = new Terminal({ cursorBlink: true, disableStdin: true, scrollback: 3000, fontSize: 14,
-      fontFamily: 'Consolas, "SFMono-Regular", monospace', theme: { background: '#111827', foreground: '#e5e7eb', cursor: '#93c5fd' } });
+      fontFamily: 'Consolas, "SFMono-Regular", monospace', theme: { background: termBg, foreground: termFg, cursor: termCursor } });
     const addon = new FitAddon(); term.loadAddon(addon); term.open(surface.current); addon.fit();
     term.textarea?.setAttribute('aria-label', 'SSH终端输入');
     term.writeln('选择服务器，点击“连接终端”开始。');
@@ -109,7 +116,7 @@ export default function GpuTerminalPage() {
           ws.send(JSON.stringify({ type: 'resize', cols: terminal.current.cols, rows: terminal.current.rows }));
         } else if (value.type === 'error') {
           setError(value.message || 'SSH终端连接失败'); setState('error');
-          if (value.code === 403) setAdmin(false);
+          if (value.code === 403) setForbiddenAccess(true);
         }
       } catch { setError('终端返回无效数据'); ws.close(); }
     };
@@ -141,7 +148,7 @@ export default function GpuTerminalPage() {
         {selected&&(sshMode?<Link to="/model-deployments">返回模型下发</Link>:<Link to={`/gpu-resources?server_id=${encodeURIComponent(selected.id)}`}>查看此服务器GPU</Link>)}
       </Space>
       {selected && <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, overflowWrap: 'anywhere' }}>{selected.source === 'password' ? `${selected.username}@${selected.host}:${selected.port}` : `${selected.name} · 使用已有ssh-manager配置`} · 一页一个会话，空闲20分钟断开</Typography.Paragraph>}
-      {listError && <Alert style={{ marginTop: 12 }} type="error" title={listError} action={<Button onClick={() => { setLoading(true); setListError(''); setReload(value => value + 1); }}>重试</Button>} />}
+      {listError && <Alert style={{ marginTop: 12 }} type="error" showIcon title={listError} action={<Button size="small" onClick={() => { setLoading(true); setListError(''); setReload(value => value + 1); }}>重试</Button>} />}
       {error && <Alert style={{ marginTop: 12 }} type="error" showIcon title={error} />}
     </Card>
     <div className="gpu-terminal-surface" role="region" aria-label="SSH交互终端"><div className="gpu-terminal-viewport" ref={surface} /></div>
