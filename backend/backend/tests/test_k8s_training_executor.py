@@ -1,7 +1,22 @@
 import pytest
 import contextlib
+import io
 import json
 from services import k8s_training_executor as executor
+
+
+def test_mount_root_prefers_verified_controller_mount(monkeypatch):
+    source = executor.SERVER + ':' + executor.EXPORT
+    mounts = f'{source} /var/lib/kubelet/pods/a nfs rw 0 0\n{source} /var/lib/kubelet/pods/b nfs rw 0 0\n'
+    controller = '/mnt/data-platform-training'
+    monkeypatch.setattr(executor, 'open', lambda _: io.StringIO(
+        mounts + f'{source} {controller} nfs rw 0 0\n'), raising=False)
+    assert executor.mount_root() == controller
+
+    monkeypatch.setattr(executor, 'open', lambda _: io.StringIO(
+        mounts + f'wrong:/ai {controller} nfs rw 0 0\n'))
+    with pytest.raises(ValueError, match='训练 NFS'):
+        executor.mount_root()
 
 
 def test_manifest_has_coordinated_jobs_and_shared_output():

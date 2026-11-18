@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Popconfirm, Progress, Space, Table } from 'antd';
 import { isAxiosError } from 'axios';
-import apiClient from '../api/client';
+import apiClient, { API_BASE_URL } from '../api/client';
 import { useCurrentUser } from './currentUser';
 
 interface FrozenDataset {
@@ -39,6 +39,7 @@ export default function FrozenDatasetList({ projectId, revision, onDeleted, down
   const [rows, setRows] = useState<FrozenDataset[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
+  const [downloading, setDownloading] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [jobs, setJobs] = useState<FreezeJob[]>([]);
@@ -82,15 +83,20 @@ export default function FrozenDatasetList({ projectId, revision, onDeleted, down
     return () => controller.abort();
   }, [projectId, revision, reload, completed]);
 
-  const download = async (id: string, format: string) => {
-    const response = await apiClient.get<Blob>(`/api/export/snapshots/${id}/download`,
-      { responseType: 'blob', timeout: 600000, skipErrorToast: true });
-    const href = URL.createObjectURL(response.data);
-    const link = document.createElement('a');
-    link.href = href;
-    link.download = `snapshot_${id}_${format}.zip`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(href), 30000);
+  const download = async (id: string, automatic = false) => {
+    setDownloading(previous => [...previous, id]);
+    setError('');
+    try {
+      const path = `/api/export/snapshots/${id}/browser-download`;
+      await apiClient.post(path, undefined, { skipErrorToast: true, withCredentials: true });
+      const link = document.createElement('a');
+      link.href = new URL(`${API_BASE_URL.replace(/\/$/, '')}${path}`, window.location.origin).href;
+      link.click();
+    } catch (cause) {
+      const detail = isAxiosError(cause) ? cause.response?.data?.detail : undefined;
+      setError(typeof detail === 'string' ? detail : automatic
+        ? '冻结版本已保存，自动下载失败，请从列表重新下载。' : '下载冻结版本失败，请重试。');
+    } finally { setDownloading(previous => previous.filter(pending => pending !== id)); }
   };
 
   useEffect(() => {
@@ -98,7 +104,7 @@ export default function FrozenDatasetList({ projectId, revision, onDeleted, down
       if (!downloads.includes(job.id) || startedDownloads.current.has(job.id)) continue;
       if (job.status === 'completed') {
         startedDownloads.current.add(job.id);
-        void download(job.id, job.format).catch(() => setError('冻结版本已保存，自动下载失败，请从列表重新下载。'));
+        void download(job.id, true);
         onDownloadHandled(job.id);
       } else if (job.status === 'failed') {
         onDownloadHandled(job.id);
@@ -106,22 +112,17 @@ export default function FrozenDatasetList({ projectId, revision, onDeleted, down
     }
   }, [jobs, downloads, onDownloadHandled]);
 
-  const act = async (row: FrozenDataset, remove: boolean) => {
+  const removeSnapshot = async (row: FrozenDataset) => {
     setBusy(row.id);
     setError('');
     const url = `/api/export/snapshots/${row.id}`;
     try {
-      if (remove) {
-        await apiClient.delete(url, { skipErrorToast: true });
-        setRows(previous => previous.filter(item => item.id !== row.id));
-        onDeleted();
-      } else {
-        await download(row.id, row.format);
-      }
+      await apiClient.delete(url, { skipErrorToast: true });
+      setRows(previous => previous.filter(item => item.id !== row.id));
+      onDeleted();
     } catch (cause) {
-      let detail = isAxiosError(cause) ? cause.response?.data : undefined;
-      if (detail instanceof Blob) detail = await detail.text().then(text => JSON.parse(text)).catch(() => undefined);
-      setError(typeof detail?.detail === 'string' ? detail.detail : remove ? '删除冻结版本失败，请重试。' : '下载冻结版本失败，请重试。');
+      const detail = isAxiosError(cause) ? cause.response?.data?.detail : undefined;
+      setError(typeof detail === 'string' ? detail : '删除冻结版本失败，请重试。');
     } finally { setBusy(''); }
   };
 
@@ -144,10 +145,11 @@ export default function FrozenDatasetList({ projectId, revision, onDeleted, down
         { title: '数量', render: (_, row) => row.sample_count == null ? `${row.asset_count} 张` : `${row.sample_count} 条 · ${row.asset_count} 张` },
         { title: '冻结时间', render: (_, row) => new Date(row.created_at).toLocaleString('zh-CN') },
         { title: '操作', render: (_, row) => <Space>
-          <Button size="small" disabled={!!busy || loading} onClick={() => void act(row, false)}>下载</Button>
+          <Button size="small" loading={downloading.includes(row.id)} disabled={busy === row.id}
+            onClick={() => void download(row.id)}>下载</Button>
           {admin && <Popconfirm title="删除此冻结版本？" description="删除冻结包和版本记录，原图与项目标注保留。"
-            okText="删除" cancelText="取消" onConfirm={() => act(row, true)} disabled={!!busy || loading}>
-            <Button size="small" danger disabled={!!busy || loading} aria-label={`删除冻结版本 ${row.version_label || row.id}`}>删除</Button>
+            okText="删除" cancelText="取消" onConfirm={() => removeSnapshot(row)} disabled={!!busy || loading || downloading.includes(row.id)}>
+            <Button size="small" danger disabled={!!busy || loading || downloading.includes(row.id)} aria-label={`删除冻结版本 ${row.version_label || row.id}`}>删除</Button>
           </Popconfirm>}
         </Space> },
       ]} />

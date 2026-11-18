@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert,Button,Checkbox,Input,InputNumber,Modal,Select,Space } from 'antd';
 import type { TaskType } from '../api/projects';
 import type { AttributeFilters, AttributeSchema } from '../api/objectAttributes';
@@ -11,6 +11,7 @@ import EmbeddingNegativeRecommendations from './EmbeddingNegativeRecommendations
 
 export default function ImageAnnotationExport({projectId,taskType,attributeSchema,scope,onFrozen}:{projectId:string;taskType:TaskType;attributeSchema?:AttributeSchema;scope:ExportScope;onFrozen:()=>void}) {
   const [open,setOpen]=useState(false),[pending,setPending]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const downloadRequest=useRef<AbortController|null>(null);
   const defaultInstruction=taskType==='classification'?'请识别图片中的类别，以JSON数组回答。':'请描述这张图片。';
   const instructionFor=(sample:string)=>sample==='attributes'?'请分析目标属性，以 JSON 对象回答。无法判断的属性填 null。':
     sample==='attribute_descriptions'?'请用自然语言描述图中目标的可见属性。':
@@ -62,23 +63,31 @@ export default function ImageAnnotationExport({projectId,taskType,attributeSchem
     } finally {setBusy(false);}
   };
   const download=async()=>{
+    const controller=new AbortController();
+    downloadRequest.current=controller;
     setBusy(true);setError('');
     try {
       const response=await apiClient.get(exportingAttributes?`/api/projects/${projectId}/attributes/export`:`/api/export/projects/${projectId}/export`,{
         params:exportingAttributes?{...scope,...attributes,approved_only:!pending&&attributes.review_status!=='pending'}:
           {...scope,format:'annotation',approved_only:!pending,dataset_format:format,sample_source:snapshotRequest.sample_source,explicit_negatives,automatic_negative_job_id,single_attribute:single_attribute?JSON.stringify(single_attribute):undefined,instruction:format==='swift_sft'?instruction:undefined},
-        responseType:'blob',timeout:120000});
+        responseType:'blob',timeout:0,signal:controller.signal,skipErrorToast:true});
       const url=URL.createObjectURL(response.data);const link=document.createElement('a');link.href=url;link.download=`${exportingAttributes?'attributes':'annotations'}_${projectId}.zip`;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);setOpen(false);
     } catch(error) {
-      let detail='导出失败，请检查所选来源是否有符合审核范围的标注；InfoNCE检索配对需要至少一个正确结果。';
+      if(controller.signal.aborted)return;
+      let detail='ZIP 下载中断，请重试。';
       if(isAxiosError(error)&&error.response?.data instanceof Blob){try{const body=JSON.parse(await error.response.data.text());if(typeof body.detail==='string')detail=body.detail;}catch{/* Keep the fallback for non-JSON responses. */}}
       setError(detail);
     }
-    finally {setBusy(false);}
+    finally {downloadRequest.current=null;setBusy(false);}
+  };
+  const close=()=>{
+    if(busy&&!downloadRequest.current)return;
+    downloadRequest.current?.abort();
+    setOpen(false);
   };
   return <><Button onClick={()=>{setPreview(undefined);setError('');setOpen(true);}}>导出 / 冻结描述与属性</Button>
-    <Modal title="描述与属性数据" open={open} onCancel={()=>!busy&&setOpen(false)} footer={<Space wrap>
-      <Button disabled={busy} onClick={()=>setOpen(false)}>关闭</Button><Button disabled={busy||invalidLimit||automatic&&!automatic_negative_job_id} onClick={download}>下载 ZIP</Button>
+    <Modal title="描述与属性数据" open={open} onCancel={close} footer={<Space wrap>
+      <Button disabled={busy&&!downloadRequest.current} onClick={close}>{downloadRequest.current?'取消下载':'关闭'}</Button><Button loading={!!downloadRequest.current} disabled={busy||invalidLimit||automatic&&!automatic_negative_job_id} onClick={download}>下载 ZIP</Button>
       {trainable&&<><Button disabled={busy||invalidLimit||automatic&&!automatic_negative_job_id||format==='swift_sft'&&!instruction.trim()} onClick={()=>void prepare(false)}>预览冻结范围</Button>
         <Button type="primary" disabled={busy||!confirmed?.asset_count} onClick={()=>void prepare(true)}>冻结数据</Button></>}
     </Space>}>

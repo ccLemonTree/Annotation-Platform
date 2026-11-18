@@ -85,6 +85,21 @@ def test_frozen_export_survives_edit_and_has_explicit_split(client, auth_headers
         json={'base_version': 1, 'annotation_data': {'boxes': []}})
     assert client.get(url, headers=auth_headers).content == before.content
     assert client.get(url).status_code == 401
+    browser_url = url.removesuffix('/download') + '/browser-download'
+    assert client.get(browser_url).status_code == 401
+    assert client.post(browser_url).status_code == 401
+    permission = client.post(browser_url, headers=auth_headers)
+    assert permission.status_code == 204
+    assert 'HttpOnly' in permission.headers['set-cookie']
+    assert 'SameSite=strict' in permission.headers['set-cookie']
+    part = client.get(browser_url, headers={'Range': 'bytes=0-3'})
+    assert part.status_code == 206 and part.content == b'PK\x03\x04'
+    assert part.headers['content-range'] == f'bytes 0-3/{len(before.content)}'
+    assert client.get(browser_url).content == before.content
+    ticket = client.cookies.get('snapshot_download')
+    wrong_url = '/api/export/snapshots/00000000-0000-0000-0000-000000000000/browser-download'
+    assert client.get(wrong_url, headers={'Cookie': f'snapshot_download={ticket}'}).status_code == 401
+    assert client.get('/api/auth/me', headers={'Authorization': f'Bearer {ticket}'}).status_code == 401
 
 
 @pytest.mark.asyncio

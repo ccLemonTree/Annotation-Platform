@@ -18,6 +18,7 @@ PVC = 'nfs-pvc-ai'
 SERVER = '172.22.132.169'
 EXPORT = '/adb-ssd-mount/ai'
 ROOT = EXPORT + '/chen/training'
+CONTROLLER_MOUNT = '/mnt/data-platform-training'
 
 
 def error_text(error):
@@ -84,7 +85,10 @@ def mount_root():
         for line in stream:
             cols = line.split()
             if len(cols) >= 3 and cols[0] == SERVER + ':' + EXPORT and cols[2] in ('nfs', 'nfs4'):
-                candidates.append(cols[1].replace('\\040', ' ').replace('\\011', '\t').replace('\\134', '\\'))
+                target = cols[1].replace('\\040', ' ').replace('\\011', '\t').replace('\\134', '\\')
+                if target == CONTROLLER_MOUNT:
+                    return target
+                candidates.append(target)
     if len(candidates) != 1:
         raise ValueError('未找到唯一匹配的训练 NFS 挂载')
     return candidates[0]

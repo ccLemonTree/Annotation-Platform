@@ -2,8 +2,8 @@
 数据导出API路由
 支持多种格式的数据导出
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -12,7 +12,7 @@ from uuid import UUID
 import json
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import uuid
 import logging
@@ -23,7 +23,8 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from models import ExportSnapshot, ExportSnapshotJob, AnnotationEvent, TrainingRun, ValidationSet
 from api.asset_routes import scoped_project, scoped_asset
-from services.storage import get_storage
+from services.storage import LocalStorage, get_storage
+from services.auth import create_access_token, decode_access_token
 from services.snapshot_manifests import manifest_summary, read_manifest, write_manifest
 from services.detection_export import training_package, export_rows, category_labels, coco_document, preview_splits, preview_simple_split
 from services.annotation_scope import eligible_assets
@@ -690,16 +691,60 @@ async def list_snapshots(project_id: UUID, db: AsyncSession = Depends(get_db), u
             created_at=row.created_at.replace(tzinfo=timezone.utc)))
     return listed
 
-@router.get('/snapshots/{snapshot_id}/download')
-async def download_snapshot(snapshot_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+async def snapshot_for_download(db, snapshot_id, user):
     row = await db.get(ExportSnapshot, snapshot_id)
     if row is None: raise HTTPException(404, '冻结导出不存在')
     await scoped_project(db, row.project_id, user.tenant_id)
+    return row
+
+
+async def snapshot_archive(row):
+    storage = get_storage()
+    filename = f'snapshot_{row.id}_{row.export_format}.zip'
     try:
-        stream = await get_storage().get_file(row.blob_path)
+        if isinstance(storage, LocalStorage):
+            path = storage.resolve_path(row.blob_path)
+            if not path.is_file():
+                raise FileNotFoundError
+            return FileResponse(path, filename=filename, media_type='application/zip',
+                                headers={'Cache-Control': 'private, no-store'})
+        stream = await storage.get_file(row.blob_path)
     except (FileNotFoundError, ValueError):
         raise HTTPException(404, '冻结导出文件不存在')
-    return package_response(stream, f'snapshot_{row.id}_{row.export_format}.zip')
+    return package_response(stream, filename)
+
+
+@router.get('/snapshots/{snapshot_id}/download')
+async def download_snapshot(snapshot_id: UUID, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    return await snapshot_archive(await snapshot_for_download(db, snapshot_id, user))
+
+
+@router.post('/snapshots/{snapshot_id}/browser-download', status_code=204)
+async def authorize_snapshot_download(snapshot_id: UUID, request: Request,
+                                      db: AsyncSession = Depends(get_db), user: User = Depends(get_current_superuser)):
+    row = await snapshot_for_download(db, snapshot_id, user)
+    if not await get_storage().file_exists(row.blob_path):
+        raise HTTPException(404, '冻结导出文件不存在')
+    lifetime = timedelta(hours=2)
+    ticket = create_access_token({'snapshot_download': str(row.id), 'download_user_id': user.id,
+                                  'tenant_id': user.tenant_id}, lifetime)
+    response = Response(status_code=204, headers={'Cache-Control': 'no-store'})
+    response.set_cookie('snapshot_download', ticket, max_age=int(lifetime.total_seconds()),
+                        path=request.url.path, secure=request.url.scheme == 'https',
+                        httponly=True, samesite='strict')
+    return response
+
+
+@router.get('/snapshots/{snapshot_id}/browser-download')
+async def browser_snapshot_download(snapshot_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    cookie = request.cookies.get('snapshot_download')
+    ticket = decode_access_token(cookie) if cookie else None
+    if not ticket or ticket.get('snapshot_download') != str(snapshot_id) or not ticket.get('download_user_id'):
+        raise HTTPException(401, '下载授权已失效，请从冻结版本列表重新下载')
+    user = await db.get(User, ticket['download_user_id'])
+    if user is None or not user.is_active or user.role != 'admin' or user.tenant_id != ticket.get('tenant_id'):
+        raise HTTPException(403, '当前账号无权下载此冻结版本')
+    return await snapshot_archive(await snapshot_for_download(db, snapshot_id, user))
 
 
 @router.delete('/snapshots/{snapshot_id}', status_code=204)
