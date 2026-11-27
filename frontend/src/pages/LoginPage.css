@@ -1,0 +1,110 @@
+.login-screen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-inline: clamp(24px, 6vw, 104px);
+  background: var(--ui-background);
+}
+
+.login-masthead,
+.login-layout {
+  width: min(100%, 1360px);
+  margin-inline: auto;
+}
+
+.login-masthead {
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.login-masthead .platform-brand {
+  height: 88px;
+  padding: 0;
+}
+
+.login-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  grid-template-areas: "example form";
+  align-items: center;
+  gap: clamp(40px, 6.5vw, 112px);
+  padding-block: clamp(40px, 7vh, 88px);
+}
+
+.login-card {
+  grid-area: form;
+  width: min(100%, 380px);
+  justify-self: center;
+}
+
+.login-card h1 {
+  margin: 0 0 24px;
+  font-size: clamp(28px, 2.5vw, 36px);
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.login-card .ant-input-affix-wrapper {
+  min-height: 46px;
+  background: var(--ui-surface);
+}
+
+.login-card .ant-input-prefix {
+  margin-inline-end: 10px;
+  color: var(--ui-muted);
+}
+
+.login-card .ant-btn-primary {
+  height: 46px;
+  font-weight: 600;
+}
+
+.login-example {
+  grid-area: example;
+  overflow: hidden;
+  margin: 0;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+}
+
+.login-example-image {
+  position: relative;
+}
+
+.login-example-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.login-example-box {
+  position: absolute;
+  inset: 22.5% 25% 26% 40%;
+  border: 2px solid #93c4ff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 45%);
+}
+
+.login-example-box > span {
+  position: absolute;
+  bottom: 100%;
+  left: -2px;
+  padding: 2px 9px;
+  background: #93c4ff;
+  color: #0b2039;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 800px) {
+  .login-masthead .platform-brand { height: 72px; }
+  .login-layout {
+    width: min(100%, 440px);
+    flex: none;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "form" "example";
+    gap: 36px;
+    padding-block: 36px;
+  }
+  .login-card { width: 100%; }
+}

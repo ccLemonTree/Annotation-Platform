@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Button, Card, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Input, Modal, Popconfirm, Space, Table, Tag } from 'antd';
 import { isAxiosError } from 'axios';
 import { getModelServices, getPromptDefaults, isModelOffline, type ModelService } from '../api/modelServices';
 import type { AttributeSchema } from '../api/objectAttributes';
@@ -74,9 +74,6 @@ export default function WorkflowTemplatesPage() {
         </Button>
       }
     >
-      <Typography.Paragraph type="secondary">
-        模板供本租户的项目复用，支持保存模型推理、内置功能规则、条件分流与 Python 安全脚本。项目内载入模板后可重新选择输入图片。
-      </Typography.Paragraph>
       {error && <Alert showIcon type="error" title={error} style={{ marginBottom: 16 }} />}
       <Table
         rowKey="id"

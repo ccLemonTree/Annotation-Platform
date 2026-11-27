@@ -147,10 +147,10 @@ export default function DeviceCapturePage(){
       <div className="smarteye-page-header-row">
         <div>
           <h1>{vectorTest?'选择抓图设备':'设备抓图与场景'}</h1>
-          <p>{vectorTest?'每轮拉取所选设备最新成功的抓图，供当前项目的向量检索测试使用。':'同步设备时自动补取最近一张成功抓图，已有本地代表图则复用；取图后按图片分类，取不到则按设备名称分类，可人工修正。设备后续图片继承场景；定时拉图每轮仅取设备最新成功的一张入库并关联项目，沿用已有场景，不更新设备代表图或自动重新分类。'}</p>
+          {vectorTest && <p>所选设备的最新抓图将用于当前项目的向量检索测试。</p>}
         </div>
         <Space wrap>
-          {!vectorTest&&<Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':'同步在线平台设备'}</Button>}
+          {!vectorTest&&<Button loading={busy} disabled={emptyPlatformScope} onClick={()=>execute('/devices/sync','POST',{platform_ids:syncPlatformIds})}>{filters.platform_id?'同步当前平台设备':onlineOnly?'同步在线平台设备':'同步全部启用平台设备'}</Button>}
           <Button loading={loading} onClick={()=>{void Promise.all([loadDevices(),loadPlatforms()]).catch(report);}}>刷新设备</Button>
         </Space>
       </div>
@@ -183,7 +183,7 @@ export default function DeviceCapturePage(){
       {scheduleCount>1&&<span>定时拉图将自动拆成 {scheduleCount} 条计划，每条最多 1,000 台。{!vectorTest&&'所选设备分类每次仍最多 1,000 台。'}</span>}
       {!vectorTest&&!classificationEnabled&&<span>自动场景分类未启用，请先配置分类模型与候选场景。</span>}
     </Space>
-    {!vectorTest&&<p>同步与批量分类的平台范围：{platformScope}。设备搜索、场景、分类状态和图片筛选仅影响列表；业务场景按所选方式匹配，与摄像机位筛选取交集。启用自动分类后，新设备自动入队；已完成结果保留；定时抓图不触发分类，重新分类请手动操作。</p>}
+    {!vectorTest&&<p className="smarteye-destination-note">同步与整平台分类范围：{platformScope}。设备筛选仅影响列表。</p>}
     <Drawer title="同步与分类进度" open={progressOpen} size={560} onClose={()=>setProgressOpen(false)}>
     <section aria-label="同步与分类进度" style={{minWidth:0,overflowWrap:'anywhere'}}>
 
@@ -233,7 +233,6 @@ export default function DeviceCapturePage(){
       {title:'操作',render:(_,row)=><Space><Button size="small" disabled={busy||row.running} onClick={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}/run`)}>立即拉取</Button><Button size="small" disabled={busy} onClick={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}/${row.enabled?'stop':'start'}`)}>{row.enabled?'暂停':'启用'}</Button><Popconfirm title="删除此定时任务？" onConfirm={()=>execute(`/device-capture/schedules/${encodeURIComponent(row.sched_id)}`,'DELETE')}><Button danger size="small" disabled={busy||row.running}>删除任务</Button></Popconfirm></Space>},
     ]}/>
     {!vectorTest&&<><h2 style={{marginTop:24}}>平台设备与分类概况</h2>
-    <p>已处理 = 分类成功 + 未匹配场景 + 分类失败；分类成功需有场景标签，空结果单独统计。下方执行记录保留各次任务的处理结果。</p>
     <Table<ManagedPlatform> rowKey="plat_id" dataSource={visiblePlatforms.filter(platform=>!filters.platform_id||platform.plat_id===filters.platform_id)} scroll={{x:950}} pagination={{pageSize:10,showSizeChanger:false}} columns={[
       {title:'平台',dataIndex:'platform_name'},
       {title:'连接状态',render:(_,row)=><Tag color={row.connection_status==='online'?'success':'default'}>{row.connection_status==='online'?'在线':row.connection_status==='error'?'连接异常':'未检测'}</Tag>},
@@ -247,7 +246,7 @@ export default function DeviceCapturePage(){
       {title:'操作',render:(_,row)=><Button size="small" disabled={!row.scene_failed_count} onClick={()=>{setFilters(previous=>({...previous,platform_id:row.plat_id,q:'',scene:[],scene_status:'failed',has_image:'',page:1}));document.getElementById('device-list')?.scrollIntoView({behavior:'smooth'});}}>查看失败设备</Button>},
     ]}/></>}
     <h2 id="device-capture-records" style={{marginTop:24}}>执行记录（按平台查看明细）</h2>
-    <p>{vectorTest?'点击“查看明细”查看本次拉图的设备和失败原因。':'先看处理摘要；点击“查看明细”查看平台、设备及失败原因。设备同步和分类作用于共享设备，项目筛选仅作用于抓图记录。'}</p>
+    {!vectorTest && projectFilter && <p className="smarteye-destination-note">项目筛选仅适用于抓图记录。设备同步与分类记录跨项目共享。</p>}
     <Table<ManagementTask> rowKey="task_id" dataSource={tasks.filter(task=>task.kind!=='device-capture'||task.check_task_id||!projectFilter||task.project_id===projectFilter).sort((a,b)=>Number(activeCaptureBatches.includes(b))-Number(activeCaptureBatches.includes(a))||(b.created_at||'').localeCompare(a.created_at||''))} scroll={{x:1100}}
       expandable={{expandRowByClick:true,expandIcon:({expanded,onExpand,record})=><Button type="link" size="small" onClick={event=>{event.stopPropagation();onExpand(record,event);}}>{expanded?'收起明细':'查看明细'}</Button>,columnWidth:100,expandedRowRender:row=><div>
         <p>任务编号：{row.task_id}；最近更新：{row.updated_at?new Date(row.updated_at).toLocaleString('zh-CN'):'旧记录未记录时间'}</p>

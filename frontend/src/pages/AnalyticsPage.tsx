@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, DatePicker, Empty, Progress, Row, Select, Space, Statistic, Table, Typography } from 'antd';
+import { Alert, Button, Card, Col, DatePicker, Empty, Popover, Progress, Row, Select, Space, Statistic, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { getAnalytics } from '../api/analytics';
 import type { Analytics, AnalyticsFilters, EfficiencyUser } from '../api/analytics';
@@ -69,8 +69,15 @@ export default function AnalyticsPage() {
             onChange={date => setEnd(date ? date.format('YYYY-MM-DD') : '')} />
         </Space>
         <Button type="primary" loading={loading} onClick={apply}>查询统计</Button>
+        <Popover trigger="click" content={<div style={{ maxWidth: 'min(360px, 75vw)', maxHeight: '55dvh', overflowY: 'auto' }}>
+          <p>按本地时区统计，包含结束当天。日期留空时显示全部时间。</p>
+          <p>当前状态按最新标注的创建日期筛选，工作量按操作发生日期筛选。</p>
+          {data && <>
+            <p>{data.definitions.quality} 负样本仅计明确的空框列表，类别分布取最新版本检测框。</p>
+            <p>{data.definitions.workload}</p><p>{data.definitions.timing}</p><p>{data.definitions.efficiency}</p>
+          </>}
+        </div>}><Button type="text">统计口径</Button></Popover>
       </Space>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>日期按浏览器本地时区、包含结束当天；不填为全部时间。当前状态按最新版本创建日期筛选，工作量按事件发生日期筛选。</Typography.Paragraph>
     </Card>
     {projectError && <Alert type="warning" showIcon title={projectError} />}
     {error && <Alert type="error" showIcon title={error} />}
@@ -83,11 +90,10 @@ export default function AnalyticsPage() {
           ['待审核', q.pending], ['负样本图片', q.negative_samples],
         ].map(([title, value]) => <Col key={title} xs={12} md={4}><Statistic title={title} value={value} /></Col>)}</Row>
         <Typography.Paragraph style={{ marginTop: 16 }}>流程通过率（通过 / 已审核）：{q.process_pass_rate === null ? '尚无已审核数据' : `${(q.process_pass_rate*100).toFixed(1)}%`}</Typography.Paragraph>
-        {q.process_pass_rate !== null && <Progress percent={Number((q.process_pass_rate*100).toFixed(1))} />}
+        {q.process_pass_rate !== null && <Progress percent={Number((q.process_pass_rate*100).toFixed(1))} showInfo={false} />}
         <Typography.Paragraph>最新版本来源：人工 {q.sources.manual} · 模型 {q.sources.model} · 未知 {q.sources.unknown} · 项目复用 {q.sources.reuse||0}；审核来源：人工 {q.review_origins.human} · 自动 {q.review_origins.automatic} · 未知 {q.review_origins.unknown}</Typography.Paragraph>
         <Table size="small" rowKey="label" dataSource={q.categories} pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无检测框类别' }}
           columns={[{ title: '类别', dataIndex: 'label' }, { title: '框数', dataIndex: 'boxes' }, { title: '涉及图片数', dataIndex: 'assets' }]} />
-        <Typography.Paragraph type="secondary">{data?.definitions.quality} 负样本仅统计明确的空 boxes 列表；类别分布按最新版本检测框统计。</Typography.Paragraph>
       </>}
     </Card>
     <Card title="工作量与人工效率" loading={loading}>
@@ -116,7 +122,6 @@ export default function AnalyticsPage() {
           { title: '人工标注效率', dataIndex: 'annotation_per_hour', render: rate },
           { title: '人工审核效率', dataIndex: 'review_per_hour', render: rate },
         ]} />
-        <Typography.Paragraph type="secondary">{data?.definitions.workload}<br />{data?.definitions.timing}<br />{data?.definitions.efficiency}</Typography.Paragraph>
       </>}
     </Card>
   </Space>;

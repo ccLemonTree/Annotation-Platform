@@ -210,9 +210,6 @@ const SmartSearchPage: React.FC = () => {
                             <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
                                 智搜数据下载
                             </h1>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">
-                                多平台数据批量搜索 + 打包下载，支持跨平台一键检索图片数据。
-                            </p>
                         </div>
                         <button
                             onClick={handleSync}

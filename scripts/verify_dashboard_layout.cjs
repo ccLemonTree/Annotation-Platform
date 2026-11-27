@@ -1,8 +1,9 @@
 async page => {
-  const checks = [], errors = [], requests = [];
+  const checks = [], errors = [], requests = [], unexpected = [];
   let phase = 'normal';
-  const project = { id: '11111111-1111-4111-8111-111111111111', project_name: '误报复核验收项目', task_type: 'detection', total_assets: 20, annotated_count: 12, reviewed_count: 8, created_at: '2026-10-16T08:00:00Z' };
-  const images = Array.from({ length: 4 }, (_, i) => ({ id: `image-${i}`, original_name: `场景-${i + 1}.jpg`, collection_names: ['车间图片集'], scene_labels: ['车间作业'], scene_status: 'completed', created_at: project.created_at }));
+  let role = 'admin';
+  const project = { id: '11111111-1111-4111-8111-111111111111', project_name: '误报复核验收项目', task_type: 'detection', total_assets: 200, annotated_count: 200, reviewed_count: 199, created_at: '2026-10-16T08:00:00Z' };
+  const images = Array.from({ length: 4 }, (_, i) => ({ id: `image-${i}`, original_name: `场景-${i + 1}.webp`, collection_names: ['车间图片集'], scene_labels: ['车间作业'], scene_status: 'completed', created_at: project.created_at }));
   const servers = [{ id: 'server-1', name: '验收服务器', enabled: true }];
   const snapshot = { server_name: '验收服务器', collected_at: '2026-10-16T09:00:00Z', cached: false, warnings: [], processes_complete: true,
     gpus: [{ index: 0, uuid: 'gpu-0', name: '验收GPU', utilization_percent: 61, memory_used_mib: 12698, memory_total_mib: 24576, temperature_c: 58 },
@@ -16,11 +17,12 @@ async page => {
     const req = route.request(), path = new URL(req.url()).pathname;
     requests.push({ path, method: req.method() });
     if (req.method() !== 'GET') return route.fulfill({ status: 405, json: { detail: 'UI验证禁止写入' } });
-    if (path.endsWith('/content')) return route.fulfill({ path: `output/ui-redesign/assets/sample-${Number(path.match(/image-(\d)/)?.[1] || 0) + 1}.jpg` });
+    if (images.some(image => path === `/api/images/${image.id}/content`)) return route.fulfill({ path: 'frontend/src/assets/warehouse-forklift.webp', contentType: 'image/webp' });
     if (phase === 'error' && ['/api/stats/dashboard', '/api/images', '/api/validation/runs'].includes(path)) return route.fulfill({ status: 503, json: { detail: '受控读取失败' } });
     let data;
-    if (path === '/api/projects') data = pagination(phase === 'empty' ? [] : [project]);
-    else if (path === '/api/stats/dashboard') data = { projects_overview: { total: phase === 'empty' ? 0 : 1 }, assets_overview: { total: phase === 'empty' ? 0 : 80, project_references: phase === 'empty' ? 0 : 120 }, annotations_overview: { total: phase === 'empty' ? 0 : 60, approved: phase === 'empty' ? 0 : 40, pending_review: phase === 'empty' ? 0 : 20 } };
+    if (path === '/api/auth/me') data = { id: role === 'admin' ? 1 : 2, tenant_id: 1, username: '界面验收', role };
+    else if (path === '/api/projects') data = pagination(phase === 'empty' || role !== 'admin' ? [] : [project]);
+    else if (path === '/api/stats/dashboard') data = { projects_overview: { total: phase === 'empty' ? 0 : 4 }, assets_overview: { total: phase === 'empty' ? 0 : 300, project_references: phase === 'empty' ? 0 : 640 }, annotations_overview: { total: phase === 'empty' ? 0 : 580, approved: phase === 'empty' ? 0 : 440, pending_review: phase === 'empty' ? 0 : 140 } };
     else if (path === '/api/images') data = pagination(phase === 'empty' ? [] : images);
     else if (path === '/api/automation/jobs') data = pagination(phase === 'empty' ? [] : [{ id: 'auto-1', project_id: project.id, kind: 'preannotate', status: 'running', total: 10, processed: 4, created_at: '2026-10-16T10:00:00Z' }]);
     else if (path === '/api/image-semantics/jobs') data = phase === 'empty' ? [] : [{ id: 'sem-1', total: 10, counts: { completed: 6, running: 1, pending: 3 }, created_at: '2026-10-16T09:00:00Z' }];
@@ -28,24 +30,24 @@ async page => {
     else if (path === '/api/training/runs') data = pagination([]);
     else if (path === '/api/gpu-resources/servers') data = phase === 'empty' ? [] : servers;
     else if (path === '/api/gpu-resources/servers/server-1/resources') data = snapshot;
-    else return route.fulfill({ status: 404, json: { detail: `未配置的验收接口 ${path}` } });
+    else {
+      unexpected.push(path);
+      return route.fulfill({ status: 404, json: { detail: `未配置的验收接口 ${path}` } });
+    }
     return route.fulfill({ json: data });
   });
-  await page.goto('http://localhost:3000/login');
-  await page.evaluate(() => {
-    localStorage.setItem('token', 'isolated-dashboard-fixture');
-    localStorage.setItem('user', JSON.stringify({ username: '界面验收', role: 'admin' }));
-  });
+  await page.addInitScript(() => localStorage.setItem('token', 'isolated-dashboard-fixture'));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1440, height: 1100 });
   await page.goto('http://localhost:3000/');
   for (const name of ['当前工作', '图片巡览', '处理队列', '算力概况']) await page.getByRole('heading', { name, exact: true }).waitFor({ timeout: 5000 });
   await page.getByText(project.project_name, { exact: true }).waitFor();
-  await page.getByRole('button', { name: '预览 场景-1.jpg', exact: true }).waitFor();
+  const firstPhoto = page.getByRole('button', { name: `预览 ${images[0].original_name}`, exact: true });
+  await firstPhoto.waitFor();
   await page.getByText('12.4 / 24.0 GB', { exact: true }).waitFor();
   assert(await page.locator('.dashboard-metric').count() === 4, 'Four metrics missing');
   assert(await page.locator('.dashboard-metric').nth(3).innerText().then(text => text.includes('60')), 'Unannotated count used library total instead of project references');
-  assert(await page.locator('.dashboard-current').getByText('40%', { exact: true }).count() === 1, 'Current project progress mixed with global annotations');
+  assert(await page.locator('.dashboard-current').getByText('99%', { exact: true }).count() === 1, '199 of 200 reviews must not show completion');
   assert((await page.getByRole('link', { name: '查看待审图片 →', exact: true }).getAttribute('href')).includes('review_status=pending'), 'Review shortcut did not filter pending annotations');
   assert(await page.locator('.dashboard-queue-row').count() === 3, 'Queue did not combine real task sources');
   assert(await page.getByText('最近项目', { exact: true }).count() === 0 && await page.getByText('开始工作', { exact: true }).count() === 0, 'Old dashboard panels remain');
@@ -63,12 +65,13 @@ async page => {
     await page.screenshot({ path: `output/playwright/dashboard-layout-${width}.png`, fullPage: true });
     checks.push(`${width}px layout and no horizontal overflow`);
   }
-  await page.getByRole('button', { name: '预览 场景-1.jpg', exact: true }).click();
-  await page.locator('.asset-paged-preview').waitFor();
+  await firstPhoto.click();
+  const preview = page.locator('.asset-paged-preview');
+  await preview.getByRole('img', { name: images[0].original_name, exact: true }).waitFor();
   await page.keyboard.press('ArrowRight');
-  await page.getByRole('img', { name: '场景-2.jpg', exact: true }).last().waitFor();
+  await preview.getByRole('img', { name: images[1].original_name, exact: true }).waitFor();
   await page.keyboard.press('Escape');
-  await page.locator('.asset-paged-preview').waitFor({ state: 'hidden' });
+  await preview.waitFor({ state: 'hidden' });
   checks.push('existing authenticated image preview, arrow navigation and Escape');
   await page.getByRole('combobox', { name: '概览显卡', exact: true }).click();
   await page.getByTitle('GPU 1 · 未采集GPU', { exact: true }).click();
@@ -82,20 +85,22 @@ async page => {
   assert(await page.locator('.dashboard-queue-row').count() > 0, 'Partial task failure hid successful sources');
   phase = 'normal';
   await page.getByRole('button', { name: '重试概览', exact: true }).click();
-  await page.getByRole('button', { name: '预览 场景-1.jpg', exact: true }).waitFor();
+  await firstPhoto.waitFor();
   checks.push('independent error states, partial task data and overview retry');
   phase = 'empty';
   await page.reload();
   for (const text of ['暂无标注项目', '图片库暂无图片', '暂无处理任务', '暂无已启用的GPU服务器']) await page.getByText(text, { exact: true }).waitFor();
   checks.push('empty states without demo images, jobs or GPU metrics');
   phase = 'normal';
-  await page.evaluate(() => localStorage.setItem('user', JSON.stringify({ username: '普通用户', role: 'user' })));
+  role = 'user';
   const before = requests.length;
   await page.reload();
-  await page.getByText('仅管理员可查看算力状态', { exact: true }).waitFor();
-  assert(!requests.slice(before).some(req => req.path.startsWith('/api/gpu-resources') || req.path.startsWith('/api/training/')), 'Normal user fetched administrator resources');
+  await page.waitForURL('http://localhost:3000/annotations');
+  await page.getByText('暂无分配给你的项目，请联系管理员分配项目', { exact: true }).waitFor();
+  assert(!requests.slice(before).some(req => req.path === '/api/stats/dashboard' || req.path.startsWith('/api/gpu-resources') || req.path.startsWith('/api/training/')), 'Normal user fetched administrator resources');
   assert(!requests.some(req => req.method !== 'GET'), 'Dashboard triggered a write');
   assert(!errors.length, `Runtime errors: ${errors.join('; ')}`);
+  assert(!unexpected.length, `Unexpected API calls: ${unexpected.join(', ')}`);
   checks.push('normal-user permissions; no administrator resource reads, writes or runtime errors');
   return { checks, runtimeErrors: errors, requests: requests.length, writeRequests: 0, scope: 'All APIs mocked; real component rendering and local image bytes; no business or remote writes.' };
 }

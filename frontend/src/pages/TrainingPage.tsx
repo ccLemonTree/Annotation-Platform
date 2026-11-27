@@ -395,8 +395,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
   const checkResult = selected?.inspection as TrainingCheck | undefined;
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
     {context&&!embeddedProject&&<Alert type="info" showIcon title={`使用项目数据：${context.project_name}`} description="本页仅显示本项目任务；创建时已锁定项目，并预选适用训练器。" action={<Link to={`/projects/${context.id}/deliver`}>返回项目导出与训练</Link>}/>}
-    <Alert type="info" showIcon title="先保存配置，再预检查和启动" description="任务不会自动开始。每次训练使用独立输出目录，已有GPU计算进程会阻止启动；状态未知时保留资源占用，需核对或停止。" />
-    {!admin && <Alert type="info" showIcon title="你可以查看任务、配置、日志与产物；创建和执行需要管理员权限。" />}
+    {!admin && <Alert type="info" showIcon title="训练任务只读" />}
     {error && !open && <Alert type="error" showIcon title={error} />}
     {trainersError && <Alert type="warning" showIcon title={`登记训练器读取失败：${trainersError}`} />}
     <Card title="训练任务" extra={<Space wrap><Button onClick={() => setReload(n => n + 1)}>刷新列表</Button>{admin && <><Button onClick={() => setManageTrainers(true)}>管理训练器</Button><Button type="primary" disabled={!catalog.yolo26} onClick={showCreate}>创建训练任务</Button></>}</Space>}>
@@ -442,7 +441,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
         </Row>
         {backend === 'k8s' && k8sError && <Alert type="error" title={k8sError} showIcon />}
         {backend === 'docker' && gpuError && <Alert type="error" title={gpuError} showIcon />}
-        <Alert type="info" showIcon title="使用平台冻结数据训练" description="先选择本项目的冻结版本，再保存配置。冻结版本固定图片、标注和数据划分，训练启动时自动传输。" style={{marginBottom:16}} />
+        <Typography.Title level={5}>使用平台冻结数据训练</Typography.Title>
         {dinov3 && <Alert type="info" showIcon title="DINOv3 电瓶车等目标的监督检测微调" description="使用 dinov3/vits16-ltdetr-coco 完整预训练检测权重；先完成框标注、审核和train/val划分。原始图片不能直接用于本训练器。默认1000步、总batch 4是小数据起点，需用独立验证图片评估；不使用test集训练或选模型。" style={{ marginBottom: 16 }} />}
         {swift?<TrainingPlatformData key={datasetFormat} form={form} projects={context ? [context] : projects} format={datasetFormat} showSwiftBatchNote={!trainer} projectLocked={!!context} onOpenFreeze={()=>setOpen(false)}/>: <Row gutter={16}>
           <Col xs={24} md={12}><Form.Item name="project_id" label="冻结导出所属项目" rules={[{ required: true }]}><Select disabled={!!context} showSearch optionFilterProp="label" options={(context ? [context] : projects).map(p => ({ value: p.id, label: p.project_name }))} onChange={id => { clearLabels(); form.setFieldValue('snapshot_id', undefined); loadSnapshots(id); }} /></Form.Item></Col>
@@ -452,7 +451,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
           {selectedProjectId && !snapshotLoading && !compatibleSnapshots.some(row=>!row.problems.length) && <Alert type="warning" showIcon style={{marginBottom:16}}
             title="没有可用于当前训练器的冻结版本" description={<Space wrap><span>请重新冻结同时包含训练集和验证集的版本。取消勾选「仅审核通过」可纳入待审核标注。</span><Link to={`/annotations?project_id=${selectedProjectId}&review_status=pending`}>查看待审核</Link>{!context&&<Link to={`/projects/${selectedProjectId}/deliver`}>去项目导出</Link>}</Space>}/>}
           {snapshotInfo && <Alert type={snapshotInfo.problems.length ? 'warning' : 'success'} showIcon title={`训练集 ${snapshotInfo.counts.train} · 验证集 ${snapshotInfo.counts.val} · 测试集 ${snapshotInfo.counts.test}；${snapshotInfo.problems.length ? snapshotInfo.problems.join('；') : snapshotInfo.pending ? `待审核 ${snapshotInfo.pending} 张，可用于训练` : '全部已审核通过'}`} style={{ marginBottom: 16 }} />}
-          <Alert type="info" showIcon title="平台自动生成训练配置" description="按所选冻结版本、训练器和标签生成配置及类别映射，无需手写YAML；保留原train/val/test划分。" style={{ marginBottom: 16 }} />
+          <Typography.Text type="secondary">平台自动生成训练配置</Typography.Text>
           <Form.Item name="selected_labels" label="训练标签" rules={datasetLabels.length ? [{ required: true, type: 'array', min: 1, message: '至少选择一个训练标签' }] : []} extra="默认训练全部标签；按原顺序重新编号。未选类别的框被移除，图片保留为背景样本。">
             <Select mode="multiple" disabled={!datasetLabels.length} placeholder="选择冻结版本后可选择训练标签" options={datasetLabels.map(label => ({ value: label, label }))} />
           </Form.Item>
@@ -527,6 +526,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
         </Space>
         {busy && <Space><Spin size="small" /><Typography.Text>{busy === 'start' ? '正在预检查并准备输入，可能需要几分钟；请勿重复启动。' : busy==='download'?'正在校验并下载产物，较大权重需要一些时间，请保持窗口打开…':busy==='delete'?'正在删除平台任务记录…':'正在读取服务器状态…'}</Typography.Text></Space>}
         {(detailError || selected.error) && <Alert type="error" showIcon title={detailError || selected.error} />}
+        {selected.status === 'unknown' && <Alert type="warning" showIcon title="任务状态未知，资源仍被占用。请核对服务器上的任务状态。" />}
         {selected.config.onnx_stage&&<Alert type="info" showIcon title={`导出阶段：${({onnx:'所选服务器使用CPU导出ONNX',transferring:'校验并自动传输ONNX',tensorrt:'目标GPU服务器构建TensorRT'} as const)[selected.inspection.output_phase||'onnx']}`} description={`${selected.config.onnx_stage.server.name}（CPU） → ${selected.server.name}（GPU）；TensorRT允许共享有剩余显存的GPU，完成后在“模型产物”下载ONNX和engine。`}/>}
         <Tabs activeKey={detailTab} onChange={tab => { void readOutput(tab); }} items={[
           { key:'startup',label:'启动进度',children:<TrainingStartup run={selected}/> },

@@ -9,7 +9,6 @@ const styles = getComputedStyle(document.documentElement);
 const theme: ThemeConfig = {
   algorithm: antdTheme.darkAlgorithm,
   token: {
-    motion: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     colorPrimary: styles.getPropertyValue('--ui-primary').trim(),
     colorLink: styles.getPropertyValue('--ui-primary').trim(),
     colorBgLayout: styles.getPropertyValue('--ui-background').trim(),

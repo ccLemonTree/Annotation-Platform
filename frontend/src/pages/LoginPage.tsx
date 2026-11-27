@@ -1,6 +1,5 @@
-// 登录页面
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Form, Input, Tabs } from 'antd';
+import { Alert, Button, Form, Input, Tabs } from 'antd';
 import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons';
 import { isAxiosError } from 'axios';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -8,6 +7,9 @@ import { getCurrentUser, getPublicAuthConfig, login, register } from '../api/aut
 import type { LoginRequest, RegisterRequest } from '../api/auth';
 import { appMessage } from '../ui/appFeedback';
 import { authWindow, currentReturnPath, safeReturnPath } from '../utils/authNavigation';
+import PlatformBrand from '../ui/PlatformBrand';
+import warehouseExample from '../assets/warehouse-forklift.webp';
+import './LoginPage.css';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -16,6 +18,11 @@ export default function LoginPage() {
   const [allowRegister, setAllowRegister] = useState(false);
   const [activeTab, setActiveTab] = useState('login');
   const [errorMessage, setErrorMessage] = useState('');
+  const registering = allowRegister && activeTab === 'register';
+
+  useEffect(() => {
+    document.title = `${registering ? '创建账户' : '登录工作台'} · 图像数据平台`;
+  }, [registering]);
 
   useEffect(() => {
     let mounted = true;
@@ -72,15 +79,15 @@ export default function LoginPage() {
   const loginForm = (
     <Form name="login" onFinish={values => void handleLogin(values)} layout="vertical" size="large">
       <Form.Item name="username" label="用户名" rules={[{ required: true, message: '请输入用户名' }]}>
-        <Input prefix={<UserOutlined />} placeholder="用户名" autoComplete="username" />
+        <Input prefix={<UserOutlined />} autoComplete="username" />
       </Form.Item>
 
       <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-        <Input.Password prefix={<LockOutlined />} placeholder="密码" autoComplete="current-password" />
+        <Input.Password prefix={<LockOutlined />} autoComplete="current-password" />
       </Form.Item>
 
       <Form.Item style={{ marginBottom: 0 }}>
-        <Button type="primary" htmlType="submit" loading={loading} block style={{ height: 40 }}>
+        <Button type="primary" htmlType="submit" loading={loading} block>
           登录
         </Button>
       </Form.Item>
@@ -97,7 +104,7 @@ export default function LoginPage() {
           { min: 3, message: '用户名至少3个字符' },
         ]}
       >
-        <Input prefix={<UserOutlined />} placeholder="用户名" autoComplete="username" />
+        <Input prefix={<UserOutlined />} placeholder="至少 3 个字符" autoComplete="username" />
       </Form.Item>
 
       <Form.Item
@@ -105,7 +112,7 @@ export default function LoginPage() {
         label="邮箱（可选）"
         rules={[{ type: 'email', message: '请输入有效的邮箱' }]}
       >
-        <Input prefix={<MailOutlined />} placeholder="邮箱（可选）" autoComplete="email" />
+        <Input prefix={<MailOutlined />} autoComplete="email" />
       </Form.Item>
 
       <Form.Item
@@ -116,11 +123,11 @@ export default function LoginPage() {
           { min: 6, message: '密码至少6个字符' },
         ]}
       >
-        <Input.Password prefix={<LockOutlined />} placeholder="密码" autoComplete="new-password" />
+        <Input.Password prefix={<LockOutlined />} placeholder="至少 6 个字符" autoComplete="new-password" />
       </Form.Item>
 
       <Form.Item style={{ marginBottom: 0 }}>
-        <Button type="primary" htmlType="submit" loading={loading} block style={{ height: 40 }}>
+        <Button type="primary" htmlType="submit" loading={loading} block>
           注册
         </Button>
       </Form.Item>
@@ -129,32 +136,34 @@ export default function LoginPage() {
 
   return (
     <div className="login-screen">
-      <section className="login-intro">
-        <span className="platform-brand-icon"><UserOutlined /></span>
-        <h1>图像数据平台</h1>
-        <p>从图片拉取到标注审核，在同一个工作台中整理数据，构建可追溯的数据集。</p>
-        <div className="login-steps"><span>01 数据拉取</span><span>02 图片管理</span><span>03 标注审核</span></div>
-      </section>
-      <Card className="login-card">
-        <h2>{allowRegister && activeTab === 'register' ? '创建账户' : '登录工作台'}</h2>
-        <p className="login-caption">使用平台账户继续你的工作</p>
-        {errorMessage && <Alert type="error" showIcon title={errorMessage} style={{ marginBottom: 16 }} />}
-        {allowRegister ? (
-          <Tabs
-            activeKey={activeTab}
-            onChange={key => {
-              setActiveTab(key);
-              setErrorMessage('');
-            }}
-            items={[
-              { key: 'login', label: '登录', children: loginForm },
-              { key: 'register', label: '注册', children: registerForm },
-            ]}
-          />
-        ) : (
-          loginForm
-        )}
-      </Card>
+      <header className="login-masthead"><PlatformBrand /></header>
+      <main className="login-layout">
+        <section className="login-card" aria-labelledby="login-title">
+          <h1 id="login-title">{registering ? '创建账户' : '登录工作台'}</h1>
+          {errorMessage && <Alert type="error" showIcon title={errorMessage} style={{ marginBottom: 16 }} />}
+          {allowRegister ? (
+            <Tabs
+              activeKey={activeTab}
+              onChange={key => {
+                setActiveTab(key);
+                setErrorMessage('');
+              }}
+              items={[
+                { key: 'login', label: '登录', children: loginForm },
+                { key: 'register', label: '注册', children: registerForm },
+              ]}
+            />
+          ) : (
+            loginForm
+          )}
+        </section>
+        <figure className="login-example">
+          <div className="login-example-image">
+            <img src={warehouseExample} width="1200" height="800" alt="标注框圈出了仓储场景中的一辆叉车" />
+            <div className="login-example-box" aria-hidden="true"><span>叉车</span></div>
+          </div>
+        </figure>
+      </main>
     </div>
   );
 }

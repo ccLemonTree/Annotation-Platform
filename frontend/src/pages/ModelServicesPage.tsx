@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link,useSearchParams } from 'react-router-dom';
-import { Alert, App, Button, Card, Checkbox, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, App, Button, Card, Checkbox, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { getCurrentUser } from '../api/auth';
 import { DEFAULT_DETECTION_CONFIDENCE, addDefaultModelServices, createModelService, deleteModelService, getCaptchaModel, getModelServices, getPromptDefaults, getWorkflowModel, predictModelService, saveCaptchaModel, saveWorkflowModel, supportsModelPrompt, testModelService, updateModelService } from '../api/modelServices';
@@ -184,14 +184,24 @@ export default function ModelServicesPage() {
 
   return <>
     {params.get('project_id')&&<div className="platform-related" style={{marginBottom:12}}><Link to={`/projects/${encodeURIComponent(params.get('project_id')!)}/prepare`}>← 返回当前项目的标注准备</Link></div>}
-    <Card title="模型服务" extra={<Space wrap>
-      <Link to="/model-preview">上传图片看检测效果 →</Link>
-      <Button aria-label="刷新" onClick={load} loading={loading} disabled={working || loading}>刷新</Button>
-      {admin && <><Button onClick={() => setDefaultsOpen(true)} disabled={working}>添加默认模型</Button><Button aria-label="添加模型" type="primary" icon={<PlusOutlined />} onClick={() => edit()} disabled={working}>添加模型</Button></>}
-    </Space>}>
-      <Typography.Paragraph type="secondary">统一配置模型接口，试运行只预览结果。普通用户可查看和预测；管理员可修改、启停和连接测试。</Typography.Paragraph>
-      {admin && <Form layout="vertical" style={{marginBottom:16}}>
-        <Form.Item label="验证码识别模型" extra="抓图和数据拉取共用此配置，选择已启用的 OpenAI 图像对话模型。留空时沿用原配置。">
+    <Card>
+      <div className="page-toolbar">
+        <Typography.Title level={4} style={{ margin: 0 }}>模型服务</Typography.Title>
+        <Space wrap>
+          <Link to="/model-preview">预览检测效果</Link>
+          <Button aria-label="刷新" onClick={load} loading={loading} disabled={working || loading}>刷新</Button>
+          {admin && <>
+            <Button onClick={() => setDefaultsOpen(true)} disabled={working}>添加默认模型</Button>
+            <Button aria-label="添加模型" type="primary" icon={<PlusOutlined />} onClick={() => edit()} disabled={working}>添加模型</Button>
+          </>}
+        </Space>
+      </div>
+      {admin && captchaSaved && !loading && !models.some(row=>row.id===captchaSaved&&row.enabled&&row.kind==='caption'&&row.protocol==='openai_chat') &&
+        <Alert type="warning" showIcon title="当前验证码识别模型不可用，请在默认模型配置中重新选择" style={{marginBottom:12}}/>}
+      {admin && workflowSaved && !loading && !models.some(row=>row.id===workflowSaved&&row.enabled&&['llm','caption'].includes(row.kind)&&row.protocol==='openai_chat') &&
+        <Alert type="warning" showIcon title="当前工作流编排模型不可用，请在默认模型配置中重新选择" style={{marginBottom:12}}/>}
+      {admin && <Collapse size="small" style={{marginBottom:16}} items={[{ key:'defaults', label:'默认模型配置', children:<Form layout="vertical">
+        <Form.Item label="验证码识别模型" extra="用于抓图和数据拉取。留空沿用原配置。">
           <Space wrap>
             <Select aria-label="验证码识别模型" allowClear showSearch optionFilterProp="label"
               style={{width:240,maxWidth:'100%'}} placeholder="选择后保存"
@@ -203,9 +213,7 @@ export default function ModelServicesPage() {
               onClick={()=>void saveCaptcha().catch(()=>{})}>保存识别模型</Button>
           </Space>
         </Form.Item>
-        {captchaSaved && !loading && !models.some(row=>row.id===captchaSaved&&row.enabled&&row.kind==='caption'&&row.protocol==='openai_chat') &&
-          <Alert type="warning" showIcon title="当前验证码识别模型不可用，请重新选择" style={{marginBottom:12}}/>}
-        <Form.Item label="默认工作流 AI 编排模型" extra="用于项目批量处理的自然语言工作流编排与 Python 脚本生成，可选择已启用的文本/编排或图像对话 OpenAI 模型。">
+        <Form.Item label="默认工作流 AI 编排模型" extra="用于编排项目工作流和生成 Python 脚本。">
           <Space wrap>
             <Select aria-label="默认工作流 AI 编排模型" allowClear showSearch optionFilterProp="label"
               style={{width:240,maxWidth:'100%'}} placeholder="选择后保存"
@@ -217,9 +225,7 @@ export default function ModelServicesPage() {
               onClick={()=>void saveWorkflow().catch(()=>{})}>保存编排模型</Button>
           </Space>
         </Form.Item>
-        {workflowSaved && !loading && !models.some(row=>row.id===workflowSaved&&row.enabled&&['llm','caption'].includes(row.kind)&&row.protocol==='openai_chat') &&
-          <Alert type="warning" showIcon title="当前默认工作流编排模型不可用，请重新选择"/>}
-      </Form>}
+      </Form> }]}/>}
       {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
       <Table<ModelService> rowKey="id" loading={loading} dataSource={models} pagination={{ pageSize: 10, showSizeChanger: true }} scroll={{ x: 1085 }} columns={[
         { title: 'ID', dataIndex: 'id', width: 80, render: value => <Typography.Text title={value} copyable={{ text: value }} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{value.slice(0, 5)}</Typography.Text> },

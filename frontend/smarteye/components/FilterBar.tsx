@@ -158,7 +158,6 @@ const FilterBar: React.FC<FilterBarProps> = ({ onSearch }) => {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">目标检测结果查询</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">查询内网各业务平台的目标检测记录，支持多平台批量下载。</p>
           </div>
           <button
             onClick={handleSyncPlatforms}

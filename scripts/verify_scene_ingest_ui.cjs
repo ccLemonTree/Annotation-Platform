@@ -69,7 +69,7 @@ async(page)=>{
     const create=page.getByRole('dialog',{name:'新建图片集',exact:true});
     await create.getByRole('textbox',{name:'新图片集名称',exact:true}).fill('empty-new');
     await create.getByRole('button',{name:/创.*建/,exact:true}).click();await create.waitFor({state:'hidden'});
-    await page.locator('p.workspace-help:visible').filter({hasText:'当前图片集：empty-new'}).waitFor();
+    await page.getByText('empty-new（0）',{exact:true}).first().waitFor();
     if(!groups.some(group=>group.name==='empty-new'))throw Error('Empty collection missing');
     checks.push('create empty collection before upload so policy can be configured first');
     return {checks,scope:'all configuration/upload/creation writes intercepted'};

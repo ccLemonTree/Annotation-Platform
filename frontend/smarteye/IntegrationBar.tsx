@@ -81,36 +81,43 @@ export default function IntegrationBar() {
   };
   return <section className="smarteye-destination" aria-label="拉取数据用途">
     <div className="smarteye-destination-fields">
-      <label htmlFor="smarteye-purpose">拉取用途</label>
-      <Select id="smarteye-purpose" aria-label="数据拉取用途" value={choice.purpose}
-        onChange={purpose => change({ ...choice, purpose })}
-        options={[{ value: 'download', label: '仅下载到本地' }, { value: 'annotation', label: '直接用于标注' }]} />
-      {choice.purpose === 'annotation' && <Select aria-label="标注项目" placeholder="请选择标注项目" showSearch
-        optionFilterProp="label" value={choice.projectId || undefined}
-        onChange={projectId => change({ ...choice, projectId })}
-        options={projects.map(p => ({ value: p.id, label: p.project_name }))} />}
+      <div>
+        <label htmlFor="smarteye-purpose">拉取用途</label>
+        <Select id="smarteye-purpose" aria-label="数据拉取用途" value={choice.purpose}
+          onChange={purpose => change({ ...choice, purpose })}
+          options={[{ value: 'download', label: '下载并存入图片库' }, { value: 'annotation', label: '直接用于标注' }]} />
+      </div>
+      {choice.purpose === 'annotation' && <div>
+        <label htmlFor="smarteye-project">标注项目</label>
+        <Select id="smarteye-project" aria-label="标注项目" placeholder="选择项目" showSearch
+          optionFilterProp="label" value={choice.projectId || undefined}
+          onChange={projectId => change({ ...choice, projectId })}
+          options={projects.map(p => ({ value: p.id, label: p.project_name }))} />
+      </div>}
+      <div>
+        <label htmlFor="smarteye-collection">目标图片集</label>
+        <Select id="smarteye-collection" aria-label="拉取目标图片集" allowClear showSearch optionFilterProp="label" placeholder="按平台名自动归类" value={choice.collectionId}
+          onChange={collectionId=>change({...choice,collectionId,minLongEdge:undefined})} options={collections.map(group=>({value:group.id,label:group.name}))}/>
+      </div>
+      <div>
+        <label htmlFor="smarteye-minimum">最小长边（px）</label>
+        <InputNumber id="smarteye-minimum" aria-label="拉取长边阈值" title="0 表示不限长边" min={0} max={32768} precision={0} placeholder="按图片集规则" value={choice.minLongEdge} onChange={value=>change({...choice,minLongEdge:value??undefined})}/>
+      </div>
+    </div>
+    <div className="smarteye-destination-actions">
       <Button onClick={()=>setCreating(true)}>新建项目</Button>
       <Button disabled={choice.purpose!=='annotation'||selectedProject?.task_type!=='detection'} title="请选择检测项目后进行预标注与AI审核" onClick={openAutomation}>预标注与AI审核</Button>
-      <label>目标图片集</label>
-      <Select aria-label="拉取目标图片集" allowClear showSearch optionFilterProp="label" placeholder="按平台名自动归类" value={choice.collectionId}
-        onChange={collectionId=>change({...choice,collectionId,minLongEdge:undefined})} options={collections.map(group=>({value:group.id,label:group.name}))}/>
-      <label htmlFor="smarteye-minimum">本次覆盖长边阈值</label>
-      <InputNumber id="smarteye-minimum" aria-label="拉取长边阈值" min={0} max={32768} precision={0} placeholder="按图片集规则" value={choice.minLongEdge} onChange={value=>change({...choice,minLongEdge:value??undefined})}/>
-      <span>像素（≥，留空按图片集，0关闭）</span>
       <ImageIngestSettings collectionId={choice.collectionId} collectionName={collections.find(group=>group.id===choice.collectionId)?.name} onSaved={()=>{void getImageCollections().then(setCollections).catch(()=>setError('图片集读取失败，请刷新页面'));}}/>
-      <span className="smarteye-destination-note">{choice.purpose === 'annotation' ? '先进入图片库，再自动添加到项目，共享原图' : '下载后进入独立图片库，可稍后筛选并添加到项目'}</span>
+      <Button icon={<UnorderedListOutlined />} onClick={() => setShowTasks(true)}>任务记录</Button>
     </div>
-    <p className="smarteye-destination-note">不指定目标时按各平台图片集规则入库；可先在图片管理创建图片集。原图和场景共享，同集重复图只保留一张。</p>
-    <Button icon={<UnorderedListOutlined />} onClick={() => setShowTasks(true)}>任务记录</Button>
     {choice.purpose === 'annotation' && !choice.projectId && <Alert type="warning" showIcon title="请选择标注项目后再启动拉取任务" />}
     {error && !showTasks && <Alert type="error" showIcon title={error} />}
     {creating&&<CreateProjectDialog onClose={()=>setCreating(false)} onCreated={created}/>}
     <Drawer title="SmartEye 任务记录" open={showTasks} onClose={() => setShowTasks(false)} size={720}
       extra={<Button aria-label="刷新任务记录" icon={<ReloadOutlined />} onClick={refresh} />}>
       {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
-      <p className="smarteye-destination-note">查看任务进度；失败或中断的下载任务可以手动重试。</p>
       <Table rowKey="task_id" dataSource={tasks} loading={loading} size="small" scroll={{ x: 560 }}
-        locale={{ emptyText: <Empty description="暂无拉取任务，启动下载后在这里查看进度" /> }}
+        locale={{ emptyText: <Empty description="暂无拉取任务" /> }}
         pagination={{ pageSize: 8, showTotal: total => `共 ${total} 个任务` }}
         columns={[
           { title: '任务类型', dataIndex: 'kind', width: 110, render: (kind: string) => taskKinds[kind] || kinds[kind] || kind },

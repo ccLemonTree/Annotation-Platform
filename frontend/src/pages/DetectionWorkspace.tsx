@@ -472,9 +472,9 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
       <Button danger disabled={!hasDetection || dirty || readonly || busy || drawing || negativeReviewRestricted} onClick={() => { setRejectComment(''); setRejectOpen(true); }}>驳回</Button>
       <Button aria-label="撤销标注操作" disabled={!draft.past.length || readonly || busy || drawing} onClick={undo}>撤销</Button>
       <Button aria-label="重做标注操作" disabled={!draft.future.length || readonly || busy || drawing} onClick={redo}>重做</Button>
-      <Tag>{dirty ? '未保存' : latest&&hasDetection ? `v${latest.version} · ${{pending:'待审核',approved:'已通过',rejected:'已驳回'}[annotationReviewStatus(latest,'detection')]}` : '待标注'}</Tag>
+      {historical ? <Tag color="warning">v{viewed.version} · 当前为历史版本，只读。</Tag> :
+        <Tag>{dirty ? '未保存' : latest&&hasDetection ? `v${latest.version} · ${{pending:'待审核',approved:'已通过',rejected:'已驳回'}[annotationReviewStatus(latest,'detection')]}` : '待标注'}</Tag>}
     </Space>
-    <p className="workspace-help">滚轮缩放；Ctrl/空格拖动平移。Shift拖动强制画框；重叠处默认选小框，Alt点击循环选择，也可用右侧框列表。坐标按当前标注图片像素保存。{historical && '当前为历史版本，只读。'}</p>
     <div className="workspace-grid" ref={canvasPanels}>
       <div className="workspace-image-column">
         <div style={{position:'relative',display:'flex',flexDirection:'column',flex:1,minHeight:0}} aria-busy={loading}>
@@ -518,11 +518,11 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
         <Button disabled={!asset||readonly||busy||drawing||jumping||showingSource||!label||!labels.length} onClick={()=>{
           change({...draft.present,boxes:[...boxes,{x:0,y:0,width:Math.min(100,width),height:Math.min(100,height),label}],negative:false});
           setSelected(boxes.length);requestAnimationFrame(()=>document.getElementById('box-coordinate-x')?.focus());
-        }}>新增框</Button><p className="workspace-help">新增框后可输入坐标和尺寸。</p>
+        }} style={{marginBottom:8}}>新增框</Button>
         {boxes.map((b, i) => <Button key={i} block style={{ marginBottom: 6 }} type={i === selected ? 'primary' : 'default'} onClick={() => setSelected(i)}><span aria-hidden="true" style={{display:'inline-block',width:12,height:12,background:labelColor(b.label, labels),border:'1px solid #333',marginRight:8}}/>{i + 1} · {b.label}</Button>)}
         {selected >= 0 && boxes[selected] && <Space orientation="vertical">
           <Select aria-label="选中框类别" disabled={readonly} value={boxes[selected].yolo_class_id===undefined?boxes[selected].label:undefined} placeholder={boxes[selected].label} onChange={v => edit('label', v)} options={[...new Set([...labels, ...(boxes[selected].yolo_class_id===undefined?[boxes[selected].label]:[])])].map(l => ({ value: l, label: l, disabled: !labels.includes(l) }))} />
-          {(['x', 'y', 'width', 'height'] as const).map(k => <label key={k}>{k}: <InputNumber id={k==='x'?'box-coordinate-x':undefined} aria-label={`框${k}`} disabled={readonly}
+          {(['x', 'y', 'width', 'height'] as const).map(k => <label key={k}>{{x:'X',y:'Y',width:'宽',height:'高'}[k]}（px） <InputNumber id={k==='x'?'box-coordinate-x':undefined} aria-label={`框${k}`} disabled={readonly}
             value={boxes[selected][k]} min={k === 'x' || k === 'y' ? 0 : 1} onChange={v => edit(k, v)} /></label>)}
           {(boxes[selected].labels?.length ?? 0) > 1 && <div>标签 {boxes[selected].labels?.join('、')}</div>}
           {Object.entries(boxes[selected].attributes ?? {}).map(([name,value]) =>
@@ -618,14 +618,29 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
         placeholder="例如：漏框右侧行人 / 边界框过大" autoSize={{ minRows: 2, maxRows: 4 }}
         onChange={e => setRejectComment(e.target.value)} />
     </Modal>
-    <Modal title="标注快捷键" open={showShortcuts} onCancel={() => setShowShortcuts(false)} footer={null}>
-      <p>Ctrl/Cmd+S 保存；Ctrl/Cmd+Z 撤销；Ctrl/Cmd+Shift+Z 或 Ctrl+Y 重做。</p>
-      <p>Delete/Backspace 删除选中框；B 画框；V 选择；1–9 选择项目类别并修改选中框类别。</p>
-      <p>R 审核通过（有未保存修改时自动先保存再通过）并进入当前筛选的下一张，末张会提示；负样本须管理员审核。标签筛选按最新已保存标注生效，前后切图和序号跳转保持该范围。</p>
-      <p>N 清空当前图片的全部框并标记负样本，可撤销；手动保存或切图时保存。在上一张与下一张之间输入图片序号，回车跳转，有修改时先自动保存。</p>
-      <p>A/D 或左右方向键切换图片（先自动保存，失败不切换）；Tab/Shift+Tab 在聚焦的画布中选择下一个/上一个框，到边缘后继续按可离开画布；Esc 取消拖动或选择。</p>
-      <p>滚轮缩放；Ctrl/空格拖动平移；Shift 拖动在已有框上强制画框；Alt 点击循环选择重叠框。</p>
-      <p>快捷键不打断输入框、类别选择和弹窗。本地撤销最多保留100步；保存/重新加载/查看历史/切换图片后清空。撤销不直接删除服务器历史。</p>
+    <Modal title="标注快捷键" open={showShortcuts} onCancel={() => setShowShortcuts(false)} footer={null}
+      styles={{body:{maxHeight:'65dvh',overflowY:'auto'}}}>
+      <dl className="workspace-shortcuts">
+        {[
+          ['上一张 / 下一张', '← / → 或 A / D'],
+          ['保存标注', 'Ctrl / ⌘ + S'],
+          ['保存、审核通过并切到下一张', 'R'],
+          ['清空框并标记负样本', 'N'],
+          ['撤销', 'Ctrl / ⌘ + Z'],
+          ['重做', 'Ctrl / ⌘ + Shift + Z 或 Ctrl + Y'],
+          ['绘制 / 选择', 'B / V'],
+          ['设置框类别', '1–9'],
+          ['删除选中框', 'Delete / Backspace'],
+          ['在画布上切换选中框', 'Tab / Shift + Tab'],
+          ['取消拖动或选择', 'Esc'],
+          ['缩放', '滚轮'],
+          ['平移', 'Ctrl 或空格 + 拖动'],
+          ['在已有框上画框', 'Shift + 拖动'],
+          ['切换重叠框（默认选小框）', 'Alt + 点击'],
+        ].map(([action, keys]) => <div key={action}><dt>{action}</dt><dd><kbd>{keys}</kbd></dd></div>)}
+      </dl>
+      <p className="workspace-help">切图前自动保存，保存失败时留在当前图片。负样本需管理员审核。</p>
+      <p className="workspace-help">本地撤销保留最近 100 步；保存、重新加载、查看历史或切图会重置撤销记录。</p>
     </Modal>
   </Card>;
 }

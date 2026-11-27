@@ -135,9 +135,6 @@ const ToolTaskPage: React.FC = () => {
         <div className="max-w-7xl mx-auto space-y-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">执行工具任务</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-              批量下载台账图片，支持自定义平台、设备、时间范围和最大页数。
-            </p>
           </div>
 
           {/* Form */}

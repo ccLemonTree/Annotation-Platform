@@ -50,7 +50,7 @@ export default function PlatformManagementPage(){
       <div className="smarteye-page-header-row">
         <div>
           <h1>平台管理</h1>
-          <p>一键检测全部平台（含停用平台，不受搜索或在线筛选影响），仅验证连接及登录，不同步设备、不拉图。设备同步与定时拉图在“设备抓图”中操作。</p>
+          <p>一键检测会检查全部平台的连接和登录，包括停用平台。</p>
         </div>
         <Space wrap>
           <Button onClick={load} loading={loading}>刷新平台</Button>
