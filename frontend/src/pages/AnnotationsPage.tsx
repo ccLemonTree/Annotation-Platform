@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Input, Pagination, Row, Select, Space, Statistic, Table, Tabs, Tag } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Modal, Pagination, Row, Select, Space, Statistic, Table, Tabs, Tag } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { annotationReviewStatus, getAnnotations } from '../api/annotations';
 import type { Annotation } from '../api/annotations';
@@ -10,6 +10,8 @@ import { getAsset } from '../api/assets';
 import type { WorkflowHistoryConfig } from '../api/projectWork';
 import AssetImage from '../components/AssetImage';
 import ContinueAnnotation from '../components/ContinueAnnotation';
+import AnnotationLabelFilter from '../components/AnnotationLabelFilter';
+import JsonView from '../components/JsonView';
 import ProjectWorkflow from '../components/ProjectWorkflow';
 import ProjectAnnotationTools from '../components/ProjectAnnotationTools';
 import ProjectAnnotationScope from '../components/ProjectAnnotationScope';
@@ -27,6 +29,7 @@ const sourceOptions = [
   { label: '手动标注', value: 'manual' },
   { label: '模型自动', value: 'auto' },
   { label: 'YOLO导入', value: 'import_yolo' },
+  { label: 'JSON 导入', value: 'import_json' },
   { label: '项目复用', value: 'reuse' },
 ];
 const annotationContent=(data:ReviewRow['annotation_data'],taskType?:Project['task_type'])=>[
@@ -84,6 +87,7 @@ export default function AnnotationsPage() {
   const unconfiguredLabels = !!project && ['detection', 'classification'].includes(project.task_type) && !configuredLabels.length;
   const [stats,setStats]=useState<Pick<Project,'total_assets'|'annotated_count'|'reviewed_count'>>();
   const [rows, setRows] = useState<ReviewRow[]>([]);
+  const [importDetails, setImportDetails] = useState<ReviewRow>();
   const [total, setTotal] = useState(0), [loading, setLoading] = useState(true);
   const [error, setError] = useState(''), [reload, setReload] = useState(0);
   useEffect(() => {
@@ -99,7 +103,7 @@ export default function AnnotationsPage() {
         getProject(projectId),
         reviewing ? getAnnotations({
           project_id: projectId,
-          scope: 'annotation',
+          scope: annotationSource==='import_json'?'all':'annotation',
           latest_only: true,
           review_status: status,
           q,
@@ -137,7 +141,9 @@ export default function AnnotationsPage() {
   const columns: TableColumnsType<ReviewRow> = [
     { title: '预览', width: 88, render: (_, row) => <AssetImage assetId={row.asset_id} width={56} height={56} style={{ objectFit: 'cover', borderRadius: 4 }} /> },
     { title: '图片名称', width: 260, ellipsis: true, render: (_, row) => row.display_name },
-    { title: '标注内容', width: 240, ellipsis:true, render: (_, row) => annotationContent(row.annotation_data,project?.task_type) },
+    { title: '标注内容', width: 240, ellipsis:true, render: (_, row) => row.annotation_source==='import_json'
+      ? <Button type="link" style={{padding:0}} onClick={()=>setImportDetails(row)}>查看导入标注</Button>
+      : annotationContent(row.annotation_data,project?.task_type) },
     { title: '版本', width: 80, render: (_, row) => <Tag>v{row.version}</Tag> },
     { title: '审核状态', width: 190, render: (_, row) => {
       const tag=(state:Annotation['review_status'],label='')=><Tag color={state==='approved'?'success':state==='rejected'?'error':'default'}>{label}{statuses.find(item=>item.value===state)?.label||state}</Tag>;
@@ -145,7 +151,7 @@ export default function AnnotationsPage() {
         ?<Space wrap size={2}>{tag(row.review_by_kind.detection,'检测 ')}{tag(row.review_by_kind.image,'描述／属性 ')}</Space>
         :tag(annotationReviewStatus(row,kind));
     }},
-    { title: '标注来源', width: 100, render: (_, row) => row.annotation_source === 'manual' ? '手动' : row.annotation_source === 'auto' ? '自动' : row.annotation_source === 'import_yolo' ? 'YOLO导入' : row.annotation_source === 'reuse' ? '项目复用' : row.annotation_source || '—' },
+    { title: '标注来源', width: 100, render: (_, row) => row.annotation_source === 'manual' ? '手动' : row.annotation_source === 'auto' ? '自动' : sourceOptions.find(item=>item.value===row.annotation_source)?.label || row.annotation_source || '—' },
     { title: '更新时间', width: 180, render: (_, row) => new Date(row.updated_at).toLocaleString('zh-CN') },
     { title: '操作', width: 150, fixed: 'right', render: (_, row) => {
       const search=new URLSearchParams(params);search.set('from','review');search.set('kind',kind||(row.annotation_data.boxes?'detection':'image'));
@@ -233,11 +239,8 @@ export default function AnnotationsPage() {
           <Select id="project-review-status" aria-label="项目审核状态" prefix="审核：" showSearch optionFilterProp="label" allowClear disabled={aiPending}
             placeholder="全部状态" value={status} options={statuses} style={{ width: 165, maxWidth: '100%' }}
             onChange={review_status => update({ review_status, page: 1 })} />
-          {!!configuredLabels.length && (
-            <Select aria-label="筛选标注类别" prefix="类别：" showSearch optionFilterProp="label" allowClear
-              placeholder="全部类别" value={label} options={configuredLabels.map(l => ({ label: l, value: l }))}
-              style={{ width: 170, maxWidth: '100%' }} onChange={nextLabel => update({ label: nextLabel, page: 1 })} />
-          )}
+          <AnnotationLabelFilter schema={project?.label_schema} value={label}
+            onChange={nextLabel => update({ label: nextLabel, page: 1 })}/>
           <Select aria-label="筛选标注来源" prefix="来源：" allowClear placeholder="全部来源" value={annotationSource}
             options={sourceOptions} style={{ width: 165, maxWidth: '100%' }}
             onChange={annotation_source => update({ annotation_source, page: 1 })} />
@@ -280,6 +283,10 @@ export default function AnnotationsPage() {
           showTotal={count => `共 ${count} 个项目`} onChange={page => update({ page })} />
       </div>
     </>}
-  </Card></>;
+  </Card>
+    <Modal open={!!importDetails} title={importDetails?.display_name} onCancel={()=>setImportDetails(undefined)} footer={null}>
+      {importDetails&&<JsonView value={importDetails.annotation_data} label="导入标注详情"/>}
+    </Modal>
+  </>;
 }
 

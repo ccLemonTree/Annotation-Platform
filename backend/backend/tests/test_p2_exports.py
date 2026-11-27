@@ -1,9 +1,11 @@
-from io import BytesIO
+from io import BytesIO, StringIO
+import csv
 import hashlib
 import json
 import zipfile
 import pytest
 from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.test_p0_contracts import foreign_annotation
 
 def populate(client, headers, project_id):
@@ -63,6 +65,54 @@ def test_only_approved_latest_and_export_auth(client, auth_headers, test_project
         assert [a['asset_id'] for a in manifest['assets']] == [ids[1][0]]
     result = client.get('/api/export/annotations/' + old['id'] + '/export', headers=auth_headers)
     assert result.status_code == 200
+
+@pytest.mark.parametrize('format', ['json', 'csv'])
+def test_flat_project_export_streams_latest_rows(client, auth_headers, test_project, monkeypatch, format):
+    ids = populate(client, auth_headers, test_project.id)
+    edit = client.put('/api/annotations/' + ids[0][1]['id'], headers=auth_headers,
+        json={'base_version': 1, 'annotation_data': {'boxes': []}})
+    assert edit.status_code == 200
+    raw = BytesIO()
+    Image.new('RGB', (100, 50), 'green').save(raw, format='PNG')
+    third = client.post('/api/assets/upload', headers=auth_headers, params={'project_id': str(test_project.id)},
+        files={'file': ('绿,图.png', raw.getvalue(), 'image/png')})
+    assert third.status_code == 201
+    third_id = third.json()['asset_id']
+    queries = []
+    stream = AsyncSession.stream
+
+    async def capture_stream(session, query, *args, **kwargs):
+        assert query.get_execution_options()['yield_per'] > 0
+        queries.append(str(query))
+        return await stream(session, query, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, 'stream', capture_stream)
+    url = f'/api/export/projects/{test_project.id}/export'
+    for include in (True, False):
+        response = client.get(url, headers=auth_headers, params={'format': format, 'include_annotations': include})
+        assert response.status_code == 200
+        assert response.headers['content-disposition'].endswith(f'_export.{format}')
+        if format == 'json':
+            payload = response.json()
+            assert payload['project']['id'] == str(test_project.id) and payload['export_time']
+            assets = {row['id']: row for row in payload['assets']}
+            assert assets[third_id]['original_name'] == '绿,图.png'
+            assert assets[third_id]['annotations'] == []
+            annotations = assets[ids[0][0]]['annotations']
+            assert [item['version'] for item in annotations] == ([2] if include else [])
+        else:
+            assert response.content.startswith(b'\xef\xbb\xbf')
+            assets = {row['Asset ID']: row for row in csv.DictReader(StringIO(response.content.decode('utf-8-sig')))}
+            assert assets[third_id]['Original Name'] == '绿,图.png'
+            assert assets[third_id]['Annotations Count'] == '0'
+            assert assets[ids[0][0]]['Approved Count'] == '0'
+            assert assets[ids[1][0]]['Approved Count'] == ('1' if include else '0')
+        assert len(assets) == 3
+    assert len(queries) == 2
+    assert 'JOIN annotations' in queries[0] and 'JOIN annotations' not in queries[1]
+    if format == 'csv':
+        assert 'count(' in queries[0] and 'annotation_data' not in queries[0]
+
 
 def test_frozen_export_survives_edit_and_has_explicit_split(client, auth_headers, test_project):
     ids = populate(client, auth_headers, test_project.id)

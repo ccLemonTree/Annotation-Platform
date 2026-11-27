@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -35,14 +36,68 @@ async def test_edge_overshoot_import_keeps_class_and_review_policy(client,auth_h
         assert box['height']==pytest.approx(.3138885*image.height)
 
 
-def queue(client,headers,data,trust=False):
-    created=client.post('/api/image-uploads',headers=headers,json=dict(filename='annotated.zip',size=len(data),
-        chunk_hashes=[hashlib.sha256(data).hexdigest()],collection_name='已标注图片',min_long_edge=0,annotation_format='yolo',trust_annotations=trust))
+def queue(client,headers,data,trust=False,project_id=None,filename='annotated.zip'):
+    created=client.post('/api/image-uploads',headers=headers,json=dict(filename=filename,size=len(data),
+        chunk_hashes=[hashlib.sha256(data).hexdigest()],collection_name='已标注图片',min_long_edge=0,annotation_format='yolo',trust_annotations=trust,
+        project_id=str(project_id) if project_id else None))
     assert created.status_code==200,created.text
     job=created.json();url='/api/image-uploads/'+job['id']
     assert client.put(url+'/parts/0',headers=headers,content=data).status_code==200
     assert client.post(url+'/complete',headers=headers).status_code==200
     return url
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('suffix',['.zip','.tar','.tar.gz','.tgz'])
+async def test_project_yolo_archive_persists_initial_categories_between_images(client,auth_headers,test_project,test_db,test_engine,mock_image_data,suffix):
+    from io import BytesIO
+    from PIL import Image
+    from services.image_uploads import process_one
+
+    test_project.label_schema={'labels':[]};await test_db.commit()
+    other=BytesIO()
+    Image.new('RGB',(64,48),'blue').save(other,format='JPEG')
+    data=archive('zip' if suffix=='.zip' else 'tar',[('classes.txt',b'fire\nsmoke\n'),('data.yaml',b'names: [fire, smoke]'),
+        ('images/train/a.jpg',mock_image_data.getvalue()),('images/train/b.jpg',other.getvalue()),
+        ('labels/train/a.txt',b'0 .5 .5 .5 .5'),('labels/train/b.txt',b'1 .5 .5 .5 .5')])
+    if suffix in ('.tar.gz','.tgz'):data=gzip.compress(data)
+    url=queue(client,auth_headers,data,trust=True,project_id=test_project.id,filename='annotated'+suffix)
+    await process_one(async_sessionmaker(test_engine,expire_on_commit=False,autoflush=False))
+    job=client.get(url,headers=auth_headers).json()
+    assert job['status']=='completed',job
+    project=client.get('/api/projects/'+str(test_project.id),headers=auth_headers).json()
+    assert project['label_schema']['labels']==['fire','smoke']
+    assert project['annotated_count']==project['reviewed_count']==2
+    annotations=client.get('/api/annotations',headers=auth_headers,params={'project_id':str(test_project.id)}).json()['items']
+    assert {row['annotation_data']['boxes'][0]['label'] for row in annotations}=={'fire','smoke'}
+
+
+@pytest.mark.asyncio
+async def test_archive_without_classes_keeps_yolo_ids_for_batch_mapping(client,auth_headers,test_project,test_db,test_engine,mock_image_data):
+    from io import BytesIO
+    from PIL import Image
+    from services.image_uploads import process_one
+
+    test_project.label_schema={'labels':[]};await test_db.commit()
+    other=BytesIO()
+    Image.new('RGB',(64,48),'blue').save(other,format='JPEG')
+    data=archive('tar',[('images/a.jpg',mock_image_data.getvalue()),('labels/a.txt',b'0 .5 .5 .2 .2\n1 .2 .2 .1 .1'),
+        ('images/b.jpg',other.getvalue()),('labels/b.txt',b'')])
+    url=queue(client,auth_headers,data,trust=True,project_id=test_project.id,filename='unmapped.tar')
+    await process_one(async_sessionmaker(test_engine,expire_on_commit=False,autoflush=False))
+    job=client.get(url,headers=auth_headers).json()
+    assert job['status']=='completed' and job['result']['project_annotated']==2,job.get('error')
+    path=f'/api/projects/{test_project.id}/yolo-class-mapping'
+    batch,=client.get(path,headers=auth_headers).json()
+    assert batch['batch_id']==job['id'] and batch['classes']==[{'id':0,'boxes':1},{'id':1,'boxes':1}]
+    listing='/api/annotations';params={'project_id':str(test_project.id)}
+    annotations=client.get(listing,headers=auth_headers,params=params).json()['items']
+    assert all(row['review_status']=='pending' for row in annotations)
+    assert sorted(len(row['annotation_data']['boxes']) for row in annotations)==[0,2]
+    mapped=client.post(path,headers=auth_headers,json={'batch_id':job['id'],'class_labels':{'0':'first','1':'second'}})
+    assert mapped.status_code==200,mapped.text
+    annotations=client.get(listing,headers=auth_headers,params=params).json()['items']
+    assert {box['label'] for row in annotations for box in row['annotation_data']['boxes']}=={'first','second'}
 
 
 def uploaded_image(client,headers):
@@ -197,17 +252,19 @@ def test_yolo_archive_rejects_ambiguous_classes_and_unsafe_paths(tmp_path,rows):
     with pytest.raises(ValueError):list(import_items(path,'annotated.zip',0))
 
 
-def test_shared_label_skips_both_ambiguous_images_and_resume_keeps_later_image(tmp_path):
+@pytest.mark.parametrize('suffix',['.zip','.tar','.tar.gz'])
+def test_shared_label_skips_both_ambiguous_images_and_resume_keeps_later_image(tmp_path,suffix):
     from services.yolo_import import import_items
-    path=tmp_path/'shared.zip'
-    path.write_bytes(archive('zip',[('classes.txt',b'fire'),('images/a.jpg',b'image'),('images/a.png',b'image'),
-        ('labels/a.txt',b''),('images/good.jpg',b'image'),('labels/good.txt',b''),('labels/orphan.txt',b'')]))
+    path=tmp_path/('shared'+suffix)
+    data=archive('zip' if suffix=='.zip' else 'tar',[('classes.txt',b'fire'),('images/a.jpg',b'image'),('images/a.png',b'image'),
+        ('labels/a.txt',b''),('images/good.jpg',b'image'),('labels/good.txt',b''),('labels/orphan.txt',b'')])
+    path.write_bytes(gzip.compress(data) if suffix=='.tar.gz' else data)
     totals=[]
-    items=list(import_items(path,'shared.zip',0,on_total=totals.append))
+    items=list(import_items(path,path.name,0,on_total=totals.append))
     assert totals==[4]
     assert [item[3] for item in items]==['invalid','invalid',None,'ignored']
     assert all('同一TXT' in item[5] for item in items[:2])
-    assert list(import_items(path,'shared.zip',2))==items[2:]
+    assert list(import_items(path,path.name,2))==items[2:]
 
 
 @pytest.mark.asyncio

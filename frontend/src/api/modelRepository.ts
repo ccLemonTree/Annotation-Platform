@@ -58,7 +58,15 @@ export const uploadRepositoryModel = async (input: RepositoryMetadata & { entry_
     onUploadProgress: event => { if (event.total) onProgress(Math.round(event.loaded / event.total * 100)); },
   })).data;
 };
-export const repositoryDownloadUrl = (id: string) => new URL(`${API_BASE_URL.replace(/\/$/, '')}${root}/${encodeURIComponent(id)}/download`, window.location.origin).href;
+const browserDownloadPath = (id: string) => `${root}/${encodeURIComponent(id)}/browser-download`;
+
+export async function repositoryDownloadCommand(model: RepositoryModel): Promise<string> {
+  const { data } = await apiClient.post<{ ticket: string }>(`${root}/${encodeURIComponent(model.id)}/curl-download`, undefined, { skipErrorToast: true });
+  const url = new URL(`${API_BASE_URL.replace(/\/$/, '')}${browserDownloadPath(model.id)}`, window.location.origin).href;
+  const filename = model.files.length > 1 ? `model-${model.id}.zip` : model.entry_file.split('/').pop() || 'model';
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  return `curl --fail --output ${quote(filename)} --cookie ${quote(`repository_download=${data.ticket}`)} ${quote(url)}`;
+}
 
 function triggerNativeBrowserDownload(href: string, filename: string) {
   const link = document.createElement('a');
@@ -100,7 +108,7 @@ async function authorizeAndStreamDownload(
 export async function downloadRepositoryModel(model: RepositoryModel): Promise<void> {
   const filename = model.files.length > 1 ? `${model.name}-${model.version}.zip` : model.entry_file.split('/').pop() || 'model';
   return authorizeAndStreamDownload(
-    `${root}/${encodeURIComponent(model.id)}/browser-download`,
+    browserDownloadPath(model.id),
     filename,
     undefined,
     () => saveRepositoryDownload(config => apiClient.get(`${root}/${model.id}/download`, config), filename),

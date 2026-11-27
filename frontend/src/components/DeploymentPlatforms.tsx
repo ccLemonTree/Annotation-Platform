@@ -6,6 +6,7 @@ import {deploymentBatchAction,getModelReleases} from '../api/modelDeployments';
 import type {BatchResult,DeploymentServer} from '../api/modelDeployments';
 import {getRepositoryModel,getRepositoryModels} from '../api/modelRepository';
 import {deploymentError} from '../utils/modelDeployment';
+import CursorPager from './CursorPager';
 
 type Choice={value:string;label:string;name:string;version:string};
 type PlatformForm=PlatformConfig&{name:string;control_servers:string[]};
@@ -64,7 +65,8 @@ export default function DeploymentPlatforms({servers,onPrepared,initialVersion}:
     {error&&<Alert type="error" showIcon closable title={error} onClose={()=>setError('')}/>} {notice&&<Alert type="success" showIcon title={notice}/>}
     <Typography.Title level={5}>1. 选择本次更新的模型版本</Typography.Title>
     <Space wrap><Input.Search aria-label="搜索更新模型" placeholder="模型名称或版本" allowClear style={{width:240,maxWidth:'100%'}} onSearch={value=>{setQuery(value);setPage(1);}}/>
-      <Space size="small"><Button size="small" disabled={page===1} onClick={()=>setPage(value=>value-1)}>上一页模型</Button><Typography.Text type="secondary">第 {page} 页</Typography.Text><Button size="small" disabled={!more} onClick={()=>setPage(value=>value+1)}>下一页模型</Button></Space>
+      <CursorPager inline itemLabel="模型" page={page} hasMore={more}
+        onPrev={()=>setPage(value=>value-1)} onNext={()=>setPage(value=>value+1)}/>
       {archiveMore&&<Button size="small" onClick={()=>setArchivePage(value=>value+1)}>加载更多完整模型</Button>}</Space>
     <Select aria-label="本次模型版本" style={{width:'100%'}} mode="multiple" showSearch optionFilterProp="label" value={versionKeys} options={available} placeholder="可同时选择多个模型；每个目标目录选择一个版本" onChange={values=>{setVersionKeys(values);setSelectedChoices(available.filter(row=>values.includes(row.value)));setAssignments({});}}/>
     <Typography.Title level={5}>2. 选择平台</Typography.Title>

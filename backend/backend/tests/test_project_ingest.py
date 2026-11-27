@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
@@ -8,7 +9,7 @@ import pytest
 from PIL import Image
 from sqlalchemy import select, update
 
-from models import Annotation, Asset, ProjectUploadKey
+from models import Annotation, Asset, ImageUpload, ProjectUploadKey
 from services import image_uploads
 from schemas.project_work import WorkflowCreate
 from services.project_workflow import create
@@ -39,6 +40,89 @@ async def test_import_reviewed_description_json(client,auth_headers,work_env):
     assert upload([row('1028_1.jpg','车牌模糊或车牌不完整')]).json()['items'][0]['status']=='unchanged'
     assert upload([row('1028_1.jpg','不同答案')]).json()['items'][0]['status']=='conflict'
     assert upload([row('1028_1.jpg','说明'),row('1028_1.JPG','另一个答案')]).json()['items'][0]['status']=='conflict'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('external', [True, False])
+async def test_import_annotation_json(client, auth_headers, work_env, test_engine, external):
+    env = work_env
+    env.project.task_type = 'vector'
+    env.project.label_schema = {}
+    env.asset.original_name = 'original.jpg'
+    env.asset.width = 100
+    env.asset.height = 80
+    crop = Asset(project_id=env.project.id, original_name='crop.jpg', blob_path='crop.jpg',
+                 content_hash='crop', width=40, height=30, file_size=1, source_type='model_crop')
+    env.db.add(crop)
+    for name in ('CROP.JPG', 'bad.jpg', 'dup.jpg', 'DUP.JPG'):
+        env.db.add(Asset(project_id=env.project.id, original_name=name, blob_path=name,
+            content_hash=name, width=40, height=30, file_size=1, source_type='upload'))
+    await env.db.commit()
+    base = f'/api/projects/{env.project.id}'
+    url, headers = base + '/annotation-labels', auth_headers
+    if external:
+        async with test_engine.begin() as conn:
+            await conn.run_sync(ProjectUploadKey.__table__.create)
+        token = client.post(base + '/upload-keys', headers=auth_headers, json={'name': 'fixture'}).json()['token']
+        url, headers = base + '/ingest/annotation-labels', {'Authorization': 'Bearer ' + token}
+        assert client.post(url, headers=auth_headers, files={'file': ('labels.json', b'{}')}).status_code == 401
+        other = f'/api/projects/{uuid4()}/ingest/annotation-labels'
+        assert client.post(other, headers=headers, files={'file': ('labels.json', b'{}')}).status_code == 401
+
+    original = [
+        {'box': [1, 2, 21, 32], 'label': ['车辆', '公交'], 'attribute': {'颜色': '蓝'}, 'description': '蓝色公交'},
+        {'box': [25, 10, 42, 79], 'label': ['行人', '白天'], 'attribute': {}, 'description': '背对镜头'},
+    ]
+    cropped = {'label': ['公交', '车辆'], 'attribute': {'颜色': '蓝', '车牌': ''}, 'description': '车牌不可见'}
+    records = {'bad.jpg': [{'box': [1, 1, 1, 5], 'label': ['无效框类别']}],
+               'incoming/ORIGINAL.JPG': original, 'crop.jpg': cropped, 'missing.jpg': cropped,
+               'crop.png': cropped, 'dup.jpg': original}
+
+    def upload(data):
+        return client.post(url, headers=headers,
+            files={'file': ('labels.json', json.dumps(data, ensure_ascii=False).encode())})
+
+    response = upload(records)
+    assert response.status_code == 200, response.text
+    assert [item['status'] for item in response.json()['items']] == [
+        'invalid', 'imported', 'imported', 'missing', 'missing', 'conflict']
+    assert [item['status'] for item in upload(records).json()['items'][1:3]] == ['unchanged', 'unchanged']
+    for listing_url, id_field in [('/api/assets', 'id'), ('/api/annotations', 'asset_id')]:
+        result = client.get(listing_url, headers=auth_headers, params={'project_id': str(env.project.id), 'label': '公交'})
+        assert result.status_code == 200, result.text
+        assert {row[id_field] for row in result.json()['items']} == {str(env.asset.id), str(crop.id)}
+    neighbors = client.get(f'/api/assets/{env.asset.id}/neighbors', headers=auth_headers, params={'label': '公交'})
+    assert neighbors.json()['total'] == 2
+    filtered = client.get('/api/annotations', headers=auth_headers,
+        params={'project_id': str(env.project.id), 'scope': 'annotation', 'label': '白天'}).json()
+    assert [row['asset_id'] for row in filtered['items']] == [str(env.asset.id)]
+    assert upload({'crop.jpg': {**cropped, 'description': '新描述'}}).json()['items'][0]['status'] == 'conflict'
+    assert upload({'crop.jpg': cropped, 'elsewhere/CROP.JPG': cropped}).json()['items'][0]['status'] == 'conflict'
+    assert client.post(url, headers=headers, files={'file': ('labels.json', b'{"crop.jpg": {}, "crop.jpg": {}}')}).status_code == 422
+    async with env.sessions() as db:
+        project = await db.get(type(env.project), env.project.id)
+        assert set(project.label_schema['labels']) == {'车辆', '公交', '行人'}
+        assert project.label_schema['imported_box_labels'] == ['公交', '白天']
+        annotations = {ann.asset_id: ann for ann in (await db.scalars(select(Annotation).where(
+            Annotation.asset_id.in_([env.asset.id, crop.id])))).all()}
+        assert len(annotations) == 2
+        assert {ann.review_status for ann in annotations.values()} == {'pending'}
+        boxes = annotations[env.asset.id].annotation_data['boxes']
+        assert boxes[0] == {'x': 1, 'y': 2, 'width': 20, 'height': 30, 'label': '车辆',
+                            'labels': ['车辆', '公交'], 'attributes': {'颜色': '蓝'}, 'description': '蓝色公交'}
+        assert [box['description'] for box in boxes] == ['蓝色公交', '背对镜头']
+        image = annotations[crop.id].annotation_data
+        assert image['description'] == '车牌不可见'
+        assert image['labels'] == ['公交', '车辆']
+        assert {field['name']: image['attributes'][field['key']]['value']
+                for field in image['attribute_schema']['fields']} == {'颜色': '蓝', '车牌': None}
+        crop_annotation_id = annotations[crop.id].id
+    response = client.put(f'/api/annotations/{crop_annotation_id}', headers=auth_headers, json={
+        'kind': 'image', 'base_version': 1, 'annotation_data': {'description': '人工核对后更新',
+            'attributes': image['attributes'], 'attribute_schema': image['attribute_schema']},
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()['annotation_data']['labels'] == cropped['label']
 
 
 @pytest.mark.asyncio
@@ -299,6 +383,95 @@ async def test_project_ingest_scopes_key_and_queues_new_images_once(client, auth
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', [
+    'multipart', 'zip', 'tar', 'labels_only', 'zip_only', 'yolo_txt', 'yolo_zip', 'yolo_tar', 'yolo_tar_only',
+])
+async def test_shared_external_ingest(work_env, test_engine, client, auth_headers, monkeypatch, mode):
+    env = work_env
+    yolo = mode.startswith('yolo_')
+    env.project.task_type = 'detection' if yolo else 'vector'
+    labels_only = mode.endswith('_only')
+    if labels_only:
+        env.asset.original_name = 'paired.png'
+        env.asset.source_type = 'upload' if yolo else 'model_crop'
+    await env.db.commit()
+    flow = None
+    if mode in ('multipart', 'zip'):
+        flow, = await create(env.db, env.project, WorkflowCreate(image_kind='crops', follow_uploads=True,
+            steps=[dict(operation='caption', model_id=env.models[1].id)]), env.user.id)
+        from api import project_ingest_routes
+        from services import upload_follow
+        real_enqueue = upload_follow.enqueue_uploads
+        interrupted = False
+
+        async def check_enqueue(db, job, assets, **kwargs):
+            nonlocal interrupted
+            if job is not None and assets:
+                saved = await db.scalars(select(Annotation.annotation_source).where(
+                    Annotation.asset_id.in_([asset.id for asset in assets]), Annotation.is_latest.is_(True)))
+                assert list(saved) == ['import_json']
+                if mode == 'zip' and not interrupted:
+                    interrupted = True
+                    raise asyncio.CancelledError()
+            return await real_enqueue(db, job, assets, **kwargs)
+
+        monkeypatch.setattr(upload_follow, 'enqueue_uploads', check_enqueue)
+        monkeypatch.setattr(project_ingest_routes, 'enqueue_uploads', check_enqueue)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(ProjectUploadKey.__table__.create)
+        # Older databases reserve assets.batch_id for legacy import_batches.
+        await conn.exec_driver_sql("""
+            CREATE TRIGGER legacy_assets_import_batch BEFORE UPDATE OF batch_id ON assets
+            WHEN NEW.batch_id IS NOT NULL
+            BEGIN SELECT RAISE(ABORT, 'legacy import_batches foreign key'); END
+        """)
+    base = f'/api/projects/{env.project.id}'
+    token = client.post(base + '/upload-keys', headers=auth_headers, json={'name': 'fixture'}).json()['token']
+    headers = {'Authorization': f'Bearer {token}'}
+    image = BytesIO()
+    Image.new('RGB', (800, 20) if yolo else (24, 20), 'purple').save(image, 'PNG')
+    raw = image.getvalue()
+    annotations = json.dumps({'paired.png': {'label': ['外部标签'], 'description': '模型描述'}}).encode()
+    kind = 'originals' if yolo else 'crops'
+    if mode in ('multipart', 'labels_only', 'yolo_txt'):
+        files = [] if labels_only else [('files', ('paired.png', raw))]
+        if yolo:
+            files.extend([('labels', ('paired.txt', b'0 0.5 0.5 0.2 0.2')), ('classes', ('classes.txt', b'car'))])
+        else:
+            files.append(('annotations', ('data.json', annotations)))
+        response = client.post(base + '/ingest/images', headers=headers, files=files, data={'image_kind': kind})
+        assert response.status_code == 201, response.text
+        assert response.json()['annotations']['items'][0]['status'] == 'imported'
+        repeated = client.post(base + '/ingest/images', headers=headers, files=files, data={'image_kind': kind}).json()
+        assert repeated['added_count'] == 0 and repeated['annotations']['items'][0]['status'] == 'unchanged'
+    else:
+        archive_kind = mode.removeprefix('yolo_').removesuffix('_only')
+        entries = [('nested/paired.txt', b'0 0.5 0.5 0.2 0.2'), ('classes.txt', b'car')] if yolo else [
+            ('nested/annotations.json', annotations)]
+        data = archive(archive_kind, entries if labels_only else [('nested/paired.png', raw), *entries])
+        response = client.post(base + '/ingest/archives', headers=headers, content=data,
+            params={'filename': f'bundle.{archive_kind}', 'image_kind': kind, 'annotation_format': 'yolo' if yolo else 'json'})
+        assert response.status_code == 202, response.text
+        if mode == 'zip':
+            with pytest.raises(asyncio.CancelledError):
+                await image_uploads.process_one(env.sessions)
+            async with env.sessions() as db:
+                await db.execute(update(ImageUpload).where(ImageUpload.status=='processing').values(status='pending'))
+                await db.commit()
+        assert await image_uploads.process_one(env.sessions)
+        done = client.get(response.headers['location'], headers=headers).json()
+        assert done['status'] == 'completed', done
+        assert done['result']['annotations']['imported'] == 1
+        assert done['result']['added_count'] == int(not labels_only)
+    label = 'car' if yolo else '外部标签'
+    rows = client.get('/api/annotations', headers=auth_headers, params={'project_id': str(env.project.id), 'label': label}).json()
+    assert rows['total'] == 1
+    assert rows['items'][0]['annotation_data'].get('description') == (None if yolo else '模型描述')
+    if flow is not None:
+        assert client.get(f'{base}/work/jobs/{flow.id}', headers=auth_headers).json()['total'] == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ['zip', 'tar'])
 async def test_external_archive_import_attaches_and_queues(work_env, test_engine, client, auth_headers, kind):
     env = work_env
@@ -335,3 +508,85 @@ async def test_external_archive_import_attaches_and_queues(work_env, test_engine
     assert await image_uploads.process_one(env.sessions)
     failed = client.get(rejected.headers['location'], headers=headers).json()
     assert failed['status'] == 'failed' and failed['result']['added_count'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('transport','generate'), [('multipart',True), ('zip',False), ('tar',True)])
+async def test_mixed_json_resolves_image_types_and_optional_crops(work_env, test_engine, client, auth_headers, transport, generate):
+    env = work_env
+    async with test_engine.begin() as conn:
+        await conn.run_sync(ProjectUploadKey.__table__.create)
+    base = f'/api/projects/{env.project.id}'
+    token = client.post(base + '/upload-keys', headers=auth_headers, json={'name':'fixture'}).json()['token']
+    headers = {'Authorization':f'Bearer {token}'}
+    original = BytesIO()
+    Image.new('RGB',(960,200),'blue').save(original,'PNG')
+    crop = BytesIO()
+    Image.new('RGB',(24,20),'purple').save(crop,'PNG')
+    second_box = [10,12,50,60] if transport=='multipart' else [70,12,100,40]
+    second_label = '公交' if transport=='multipart' else '行人'
+    labels = json.dumps({
+        'original.png':[
+            {'box':[10,12,50,60], 'label':['公交','蓝色车辆'], 'attribute':{'颜色':'蓝','车牌':None}, 'description':'框描述'},
+            {'box':second_box, 'label':[second_label], 'attribute':{'帽子':'白'}, 'description':'第二个框'},
+        ],
+        'crop.png':{'label':['公交'], 'description':'整图描述'},
+    },ensure_ascii=False).encode()
+    entries = [('original.png',original.getvalue()),('crop.png',crop.getvalue())]
+    flags = {'image_kind':'originals','crop_from_boxes':str(generate).lower()}
+    if transport=='multipart':
+        response = client.post(base+'/ingest/images',headers=headers,data=flags,
+            files=[('files',entry) for entry in entries]+[('annotations',('annotations.json',labels))])
+        assert response.status_code==201,response.text
+        assert [item['status'] for item in response.json()['annotations']['items']]==['imported','imported']
+    else:
+        response = client.post(base+'/ingest/archives',headers=headers,
+            params={**flags,'filename':f'mixed.{transport}','annotation_format':'json'},
+            content=archive(transport,[*entries,('annotations.json',labels)]))
+        assert response.status_code==202,response.text
+        assert await image_uploads.process_one(env.sessions)
+        done=client.get(response.headers['location'],headers=headers).json()
+        assert done['status']=='completed' and done['result']['annotations']['imported']==2,done
+    async with env.sessions() as db:
+        rows = (await db.scalars(select(Asset).where(Asset.project_id==env.project.id,Asset.id!=env.asset.id))).all()
+        assert len(rows)==2+2*int(generate)
+        by_name={row.original_name:row for row in rows}
+        assert by_name['original.png'].source_type=='upload' and by_name['crop.png'].source_type=='model_crop'
+        derived=[row for row in rows if (row.device_info or {}).get('crop')]
+        if generate:
+            assert len(derived)==2
+            assert {(row.width,row.height) for row in derived}==({(40,48)} if transport=='multipart' else {(40,48),(30,28)})
+            assert all(row.device_info['crop']['parent_asset_id']==str(by_name['original.png'].id) for row in derived)
+            saved = (await db.scalars(select(Annotation).where(Annotation.asset_id.in_([row.id for row in derived])))).all()
+            assert len(saved)==2
+            data={row.annotation_data['description']:row.annotation_data for row in saved}
+            assert data['框描述']['labels']==['公交','蓝色车辆']
+            assert data['第二个框']['labels']==[second_label]
+            assert all(row.review_status=='pending' and 'boxes' not in row.annotation_data for row in saved)
+            attrs={field['name']:data['框描述']['attributes'][field['key']]['value']
+                for field in data['框描述']['attribute_schema']['fields']}
+            assert attrs=={'颜色':'蓝','车牌':None}
+            project=await db.get(type(env.project),env.project.id)
+            assert '蓝色车辆' not in project.label_schema['labels']
+            approved=next(row for row in saved if row.annotation_data['description']=='框描述')
+            missing=next(row for row in saved if row.id!=approved.id)
+            missing_asset_id=missing.asset_id
+            await db.delete(missing)
+            approved.annotation_data={**approved.annotation_data,'description':'人工修订'}
+            approved.review_status='approved'
+            await db.commit()
+            approved_id=approved.id
+            derived_ids=[row.id for row in derived]
+        else:
+            assert not derived
+    if generate:
+        repeated=client.post(base+'/ingest/annotation-labels',headers=headers,data={'crop_from_boxes':'true'},
+            files={'file':('annotations.json',labels)}).json()
+        assert repeated['crop_count']==2
+        assert [item['status'] for item in repeated['items']]==['unchanged','unchanged']
+        async with env.sessions() as db:
+            saved=(await db.scalars(select(Annotation).where(Annotation.asset_id.in_(derived_ids)))).all()
+            assert len(saved)==2
+            current=await db.get(Annotation,approved_id)
+            assert current.review_status=='approved' and current.annotation_data['description']=='人工修订'
+            assert any(row.asset_id==missing_asset_id and row.annotation_data['description']=='第二个框' for row in saved)

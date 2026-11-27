@@ -1,0 +1,11 @@
+FROM aisfh5.com:9091/ai/jashan_train@sha256:670d3b9d2dd94aaf1aa2b71508611669f80e6f2c865e3ae020d9d1b0bed41048
+
+ENV YOLO_OFFLINE=true
+COPY detection_trainers /tmp/detection_trainers
+RUN cp -a /tmp/detection_trainers "$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/" \
+    && rm -rf /tmp/detection_trainers
+COPY yolo11/weights/ /opt/weights/
+RUN cd /opt/weights && sha256sum -c SHA256SUMS
+
+WORKDIR /output
+ENTRYPOINT ["python3", "-I", "-u", "-m", "detection_trainers.yolo11"]

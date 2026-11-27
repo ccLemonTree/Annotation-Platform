@@ -9,6 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 DETECTION_IMAGE='aisfh5.com:9091/ai/jashan_train:yolo-rfdetr'
 SWIFT_IMAGE='modelscope-registry.cn-hangzhou.cr.aliyuncs.com/modelscope-repo/modelscope:ubuntu22.04-cuda13.0.3-py312-torch2.13.0-vllm0.28.0-modelscope1.40.0-swift4.5.3'
 LIGHTLY_IMAGE='lightly/train:latest'
+BUNDLED_DETECTION={
+    'yolo11': dict(
+        image='aisfh5.com:9091/train/yolo11@sha256:705408ada416948a9b630edad433829cf422ecde6d60f65ed1a0a1202d2b2066',
+        module='detection_trainers.yolo11',dataset_formats=('yolo',),
+    ),
+    'damo_yolo': dict(
+        image='aisfh5.com:9091/train/damo-yolo@sha256:fa3bf3ba15164f9a4407bb12e560f84d713b0c39dc5d2e19d2ec4806af7ec5d9',
+        module='detection_trainers.damo_yolo',dataset_formats=('yolo','coco'),
+    ),
+}
 K8S_NFS_ROOT='/adb-ssd-mount/ai/chen/training'
 K8S_WEMM_DATA_ROOT='/adb-ssd-mount/ai/chen/train/wemm/dataset'
 
@@ -50,6 +60,29 @@ class YoloParameters(Parameters):
     patience:int=Field(default=15,ge=0,le=100000)
     save_period:int=Field(default=10,ge=1,le=100000)
     device:str='auto'
+    seed:int=Field(default=42,ge=0,le=2147483647)
+
+
+class Yolo11Parameters(Parameters):
+    size:Literal['n','s','m','l','x']='n'
+    optimizer:Literal['SGD','AdamW']='SGD'
+    epochs:int=Field(default=100,ge=1,le=100000)
+    batch:int=Field(default=8,ge=1,le=65536)
+    imgsz:int=Field(default=640,ge=32,le=4096,multiple_of=32)
+    workers:int=Field(default=4,ge=0,le=128)
+    patience:int=Field(default=15,ge=0,le=100000)
+    save_period:int=Field(default=10,ge=1,le=100000)
+    seed:int=Field(default=42,ge=0,le=2147483647)
+    amp:bool=False
+
+
+class DamoYoloParameters(Parameters):
+    size:Literal['ns','nm','nl','t','s','m','l']='t'
+    epochs:int=Field(default=100,ge=1,le=100000)
+    batch:int=Field(default=8,ge=1,le=65536)
+    workers:int=Field(default=4,ge=0,le=128)
+    save_period:int=Field(default=10,ge=1,le=100000)
+    eval_period:int=Field(default=10,ge=1,le=100000)
     seed:int=Field(default=42,ge=0,le=2147483647)
 
 
@@ -110,6 +143,7 @@ class WemmParameters(SwiftParameters):
 
 
 PARAMETERS={'yolo26':YoloParameters,'rfdetr_medium':RfdetrParameters,'rfdetr_2xlarge':RfdetrXLParameters,
+            'yolo11':Yolo11Parameters,'damo_yolo':DamoYoloParameters,
             'swift_sft':SwiftParameters,'wemm':WemmParameters,'dinov3_vits16_ltdetr':Dinov3Parameters}
 ENVIRONMENT={'MAX_PIXELS':'100352','PYTORCH_CUDA_ALLOC_CONF':'expandable_segments:True',
     'TOKENIZERS_PARALLELISM':'false','NPROC_PER_NODE':'auto','CUDA_VISIBLE_DEVICES':'auto',
@@ -168,7 +202,7 @@ class BuiltinTrainerDefaults(BaseModel):
 class TrainingRunInput(BaseModel):
     model_config=ConfigDict(extra='forbid',str_strip_whitespace=True)
     name:str=Field(min_length=1,max_length=200)
-    kind:Literal['yolo26','rfdetr_medium','rfdetr_2xlarge','swift_sft','wemm','dinov3_vits16_ltdetr','custom']
+    kind:Literal['yolo26','rfdetr_medium','rfdetr_2xlarge','yolo11','damo_yolo','swift_sft','wemm','dinov3_vits16_ltdetr','custom']
     trainer_id:UUID|None=None
     server_id:str=Field(default='default',max_length=36)
     execution_backend:Literal['docker','k8s']='docker'
@@ -202,13 +236,14 @@ class TrainingCreate(TrainingRunInput):
         import re
         cluster=self.execution_backend=='k8s'
         custom=self.kind=='custom'
+        bundled=BUNDLED_DETECTION.get(self.kind)
         if self.repository_model_id and self.kind not in ('swift_sft','wemm'):
             raise ValueError('只有大模型和向量训练支持从模型仓库选择完整模型')
         if custom != bool(self.trainer_id):
             raise ValueError('请选择已登记的训练器')
         if custom and (not self.snapshot_id or self.mounts):
             raise ValueError('登记训练器使用平台冻结数据，禁止附加主机挂载')
-        if custom and PurePosixPath('/output') in (PurePosixPath(self.model_path), *PurePosixPath(self.model_path).parents):
+        if (custom or bundled) and PurePosixPath('/output') in (PurePosixPath(self.model_path), *PurePosixPath(self.model_path).parents):
             raise ValueError('基础权重路径不能覆盖容器输出目录')
         if cluster:
             if self.k8s is None or self.gpu_uuids:raise ValueError('K8s请选择节点和每节点GPU数量，不使用GPU UUID')
@@ -242,9 +277,9 @@ class TrainingCreate(TrainingRunInput):
             if value:
                 absolute_path(value)
                 if PurePosixPath(value).parent==PurePosixPath('/'):raise ValueError('训练数据或权重不能位于根目录，避免挂载整个主机')
-        if custom and self.model_path:
+        if (custom or bundled) and self.model_path:
             self.model_path=str(PurePosixPath(absolute_path(self.model_path)))
-        if (cluster or self.kind not in ('rfdetr_2xlarge','custom')) and not (self.model_path or self.repository_model_id):raise ValueError('请填写服务器已有基础权重绝对路径')
+        if (cluster or not bundled and self.kind not in ('rfdetr_2xlarge','custom')) and not (self.model_path or self.repository_model_id):raise ValueError('请填写服务器已有基础权重绝对路径')
         defaults=dict(learning_rate=2e-5,save_steps=1000) if cluster and self.kind=='wemm' else {}
         defaults.update((info.context or {}).get('parameters',{}))
         if cluster and self.kind!='wemm':
@@ -264,6 +299,8 @@ class TrainingCreate(TrainingRunInput):
         if self.kind=='yolo26':
             used=count*len(self.k8s.nodes) if cluster else count if self.parameters['device']=='auto' else len(self.parameters['device'].split(','))
             if self.parameters['batch']%used:raise ValueError('YOLO总batch必须能被实际使用的GPU数量整除')
+        if bundled and self.parameters['batch']%count:
+            raise ValueError('总批次大小必须能被所选GPU数量整除')
         if self.kind=='dinov3_vits16_ltdetr':
             if self.parameters['batch_size']%len(self.gpu_uuids):raise ValueError('DINOv3总batch必须能被所选GPU数量整除')
             if self.parameters['warmup_steps']>=self.parameters['steps']:raise ValueError('学习率预热步数必须小于总训练步数')
@@ -286,7 +323,9 @@ class TrainingCreate(TrainingRunInput):
             if cluster and val and not val.startswith(data_roots):raise ValueError('K8s验证数据必须位于169的训练数据目录下')
             if self.parameters['eval_strategy']!='no' and not val:raise ValueError('启用评估需要服务器验证JSONL路径')
             if self.parameters['task_type']=='causal_lm' and self.parameters['loss_type']:raise ValueError('向量损失函数只适用于embedding任务')
-        if not custom:
+        if bundled:
+            self.image=self.image or bundled['image']
+        elif not custom:
             self.image=self.image or (LIGHTLY_IMAGE if self.kind=='dinov3_vits16_ltdetr' else SWIFT_IMAGE if self.kind in ('swift_sft','wemm') else DETECTION_IMAGE)
         return self
 

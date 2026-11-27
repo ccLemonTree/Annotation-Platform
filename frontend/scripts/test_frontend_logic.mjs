@@ -267,4 +267,26 @@ test('resolveAssetContentUrl appends ?preview=true by default for library images
   assert.equal(assetImageMod.resolveAssetContentUrl({ contentUrl: '/custom/url' }), '/custom/url');
 });
 
+const pagerElement = (type, props) => ({ type, props });
+const { CursorPager } = loadTsModule('src/components/CursorPager.tsx', {
+  antd: { Button: 'button', Space: 'space' },
+  'react/jsx-runtime': { jsx: pagerElement, jsxs: pagerElement },
+});
+
+test('CursorPager preserves contextual labels and disables unavailable navigation', () => {
+  const onPrev = () => {};
+  const onNext = () => {};
+  const buttons = (page, hasMore, loading = false) =>
+    CursorPager({ page, hasMore, loading, itemLabel: '查询', onPrev, onNext })
+      .props.children.props.children.filter(child => child.type === 'button').map(child => child.props);
+  const [previous, next] = buttons(1, true);
+  assert.equal(previous.children, '上一页查询');
+  assert.equal(next.children, '下一页查询');
+  assert.equal(previous.onClick, onPrev);
+  assert.equal(next.onClick, onNext);
+  assert.deepEqual(buttons(1, true).map(button => button.disabled), [true, false]);
+  assert.deepEqual(buttons(2, false).map(button => button.disabled), [false, true]);
+  assert.deepEqual(buttons(2, true, true).map(button => button.disabled), [true, true]);
+});
+
 console.log(`All ${passed} frontend logic test suites passed.`);

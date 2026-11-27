@@ -21,8 +21,9 @@ from models.training_run import TrainingRun,TrainingGpuHold,TrainingTrainer
 from services import gpu_servers
 from services.storage import get_storage
 from services.snapshot_manifests import read_manifest
+from services.training_executor import MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_GIB
 from services.training_config import effective_config,validate_snapshot,build_script,configure_trainer,PARAMETERS
-from schemas.training_run import TrainingCreate,default_output_root
+from schemas.training_run import BUNDLED_DETECTION,TrainingCreate,default_output_root
 
 ROOT=Path(__file__).resolve().parents[1]
 ACTIVE=('starting','running','stopping','unknown')
@@ -103,7 +104,7 @@ async def remote_direct(db,run,action,**values):
     if run.config.get('execution_backend')=='k8s':
         from services.k8s_training_recipes import build_assets
         payload=dict(action=action,run_id=str(run.id),config=run.config,**values)
-        if action in ('snapshot_cache','unpack','unpack_begin'):
+        if action in ('snapshot_directory','snapshot_cache','unpack','unpack_begin'):
             from services.k8s_training_snapshots import support_code
             payload['snapshot_code']=support_code()
         if action=='start':
@@ -114,8 +115,12 @@ async def remote_direct(db,run,action,**values):
     conn=await connection(db,run)
     server_name='platform_training' if conn else run.server['name']
     payload=dict(action=action,run_id=str(run.id),config=run.config,**values)
+    if run.config.get('snapshot_id') and action in ('snapshot_directory','snapshot_cache','unpack','unpack_begin','start'):
+        payload.update(snapshot_tenant=run.tenant_id,snapshot_hash=run.source['sha256'])
     if run.config.get('kind') in ('model_export','model_merge'):
         if action in ('precheck','start'):payload['output_code']=(ROOT/'services/model_output_runner.py').read_text(encoding='utf-8')
+    elif run.config.get('kind') in BUNDLED_DETECTION:
+        if action in ('precheck','start'):payload['bundled_module']=BUNDLED_DETECTION[run.config['kind']]['module']
     elif action in ('dataset','precheck','start') and run.config.get('kind') not in ('swift_sft','wemm','custom'):
         payload['dataset_code']=(ROOT/'services/training_dataset.py').read_text(encoding='utf-8')
     await _release_clean_db(db)
@@ -200,7 +205,9 @@ async def configuration(db,user,request,saved_trainer=None,previous=None):
         if row.status!='ready' or row.format!='huggingface' or not row.entry_file.endswith('config.json') or row.entry_file.endswith('adapter_config.json') or expected!=request.kind:
             raise HTTPException(422,'请选择同类训练器可用的完整模型')
         source['repository_model_id']=str(row.id)
-    if request.kind!='custom':
+    if request.kind in BUNDLED_DETECTION:
+        config['runtime_dataset']='/output/prepared-dataset/data.yaml' if request.kind=='yolo11' else '/output/prepared-dataset'
+    elif request.kind!='custom':
         config['runtime_dataset']=('/output/dataset/train.jsonl' if request.kind in ('swift_sft','wemm') else
             '/output/dataset/data.yaml' if request.kind=='yolo26' else '/output/dataset/rfdetr')
     if request.execution_backend=='k8s' and request.kind!='wemm':
@@ -372,39 +379,94 @@ async def transfer_snapshot(db,run):
     if run.source['kind']!='snapshot':return
     key=(run.server['id'],run.source['sha256'])
     lock=_snapshot_locks.setdefault(key,asyncio.Lock())
-    async with lock:await transfer_cached_snapshot(db,run)
+    async with lock:
+        if resuming_unpack(run):
+            await prepare_snapshot(db,run)
+        else:
+            await transfer_cached_snapshot(db,run)
 
 
-async def prepare_snapshot(db,run):
+async def prepare_snapshot(db,run,shared_ready=False):
     sha=run.source['sha256']
-    if getattr(run,'config',{}).get('execution_backend')!='k8s':
-        await remote(db,run,'unpack',snapshot_hash=sha)
-        return
-    result=await remote(db,run,'unpack_begin',snapshot_hash=sha)
-    while result.get('state')=='running':
-        await asyncio.sleep(3)
+    k8s=run.config.get('execution_backend')=='k8s'
+    if not k8s and not resuming_unpack(run):
+        message='正在确认共享数据挂载' if shared_ready else '远端正在后台校验并解包，完成后继续启动'
+        await startup_progress(db,run,'unpack',message,async_unpack=True)
+    action='unpack_begin'
+    reconnecting=False
+    while True:
         await ensure_starting(db,run)
-        result=await remote(db,run,'unpack_status',snapshot_hash=sha)
+        try:
+            result=await remote(db,run,action,snapshot_hash=sha)
+        except HTTPException as error:
+            if k8s or error.status_code!=503 or not str(error.detail).startswith(('SSH/MCP执行失败','SSH通信失败')):
+                raise
+            if not reconnecting:
+                await startup_progress(db,run,'unpack','暂无法查询远端解包进度，正在重新连接')
+                reconnecting=True
+        else:
+            state=result.get('state')
+            if state not in ('running','pending'):break
+            if reconnecting:
+                await startup_progress(db,run,'unpack','已重新连接，继续等待远端数据准备')
+                reconnecting=False
+            action='unpack_status' if state=='running' else 'unpack_begin'
+        await asyncio.sleep(3 if k8s else 5)
     await ensure_starting(db,run)
     if result.get('state')!='ready':
         raise HTTPException(503,result.get('error') or '冻结数据准备未完成，请核对任务状态')
 
 
+def resuming_unpack(run):
+    startup=run.inspection.get('startup',{})
+    return (run.config.get('execution_backend')!='k8s' and run.source.get('kind')=='snapshot'
+            and startup.get('phase')=='unpack' and startup.get('async_unpack') is True)
+
+
 async def transfer_cached_snapshot(db,run):
+    k8s=getattr(run,'config',{}).get('execution_backend')=='k8s'
     await ensure_starting(db,run)
-    await startup_progress(db,run,'archive','正在按SHA256检查服务器冻结包缓存及已上传的历史任务')
-    previous=(await db.scalars(select(TrainingRun.output_dir).where(TrainingRun.tenant_id==run.tenant_id,
+    await startup_progress(db,run,'archive','正在按SHA256查找已校验的历史数据和冻结包缓存')
+    matches=select(TrainingRun.output_dir).where(TrainingRun.tenant_id==run.tenant_id,
         TrainingRun.id!=run.id,TrainingRun.source['sha256'].as_string()==run.source['sha256'],
-        TrainingRun.server['id'].as_string()==run.server['id']).order_by(TrainingRun.created_at.desc()).limit(5))).all()
+        TrainingRun.server['id'].as_string()==run.server['id']).order_by(TrainingRun.created_at.desc(),TrainingRun.id.desc())
+    cached=None
+    if run.source.get('id'):
+        history=matches.where(TrainingRun.source['id'].as_string()==run.source['id'],
+                              TrainingRun.status.in_(('completed','canceled','failed')))
+        if not k8s:
+            # Legacy built-in trainers only read the verified input directory.
+            history=matches.where(TrainingRun.source['id'].as_string()==run.source['id'],
+                TrainingRun.status.in_(('running','completed','canceled','failed')),TrainingRun.kind!='custom')
+        offset=0
+        while True:
+            candidates=(await db.scalars(history.limit(20).offset(offset))).all()
+            if not candidates:break
+            await ensure_starting(db,run)
+            result=await remote(db,run,'snapshot_directory',snapshot_hash=run.source['sha256'],legacy_runs=candidates)
+            if result['hit']:
+                cached=result
+                break
+            if len(candidates)<20:break
+            offset+=len(candidates)
     await ensure_starting(db,run)
-    cached=await remote(db,run,'snapshot_cache',snapshot_hash=run.source['sha256'],
-        legacy_archives=[directory+'/input.zip' for directory in previous])
+    if cached is None:
+        previous=(await db.scalars(matches.limit(5))).all()
+        await ensure_starting(db,run)
+        cached=await remote(db,run,'snapshot_cache',snapshot_hash=run.source['sha256'],
+            legacy_archives=[directory+'/input.zip' for directory in previous])
     if cached['hit']:
         steps=[step for step in run.inspection['startup']['steps'] if step!='upload']
-        await startup_progress(db,run,'unpack',('已校验并缓存历史任务冻结包，跳过上传' if cached.get('imported') else
-            '服务器冻结包SHA256缓存命中，跳过上传')+'；正在独立解包及逐张核验',cache_hit=True,steps=steps)
+        if cached.get('shared_ready'):
+            message='共享冻结数据已就绪，直接只读挂载'
+        elif 'shared_ready' in cached:
+            message='已命中共享解包数据，正在准备所选类别'
+        else:
+            source='已校验并缓存历史任务冻结包，跳过上传' if cached.get('imported') else '服务器冻结包SHA256缓存命中，跳过上传'
+            message=source+'；正在准备共享解包数据'
+        await startup_progress(db,run,'unpack',message,cache_hit=True,steps=steps)
         await ensure_starting(db,run)
-        await prepare_snapshot(db,run)
+        await prepare_snapshot(db,run,shared_ready=cached.get('shared_ready',False))
         return
     await startup_progress(db,run,'archive','缓存未命中，正在校验并暂存平台冻结包',cache_hit=False)
     folder=ROOT/'.backups/training-transfer';folder.mkdir(parents=True,exist_ok=True)
@@ -416,7 +478,7 @@ async def transfer_cached_snapshot(db,run):
                 with local.open('wb') as out:
                     for chunk in iter(lambda:inp.read(1024*1024),b''):
                         size+=len(chunk)
-                        if size>40*1024**3:raise HTTPException(400,'冻结包超过40GiB传输上限')
+                        if size>MAX_SNAPSHOT_BYTES:raise HTTPException(400,f'冻结包超过{MAX_SNAPSHOT_GIB}GiB传输上限')
                         out.write(chunk);digest.update(chunk)
                 if digest.hexdigest()!=run.source['sha256']:raise HTTPException(409,'平台冻结包SHA256已变化，禁止训练')
             await asyncio.to_thread(copy)
@@ -425,7 +487,7 @@ async def transfer_cached_snapshot(db,run):
         size=local.stat().st_size
         await startup_progress(db,run,'upload',f'正在传输冻结包（{size/1024**2:.1f} MiB）',archive_bytes=size)
         remote_path=run.output_dir+'/input.zip'
-        if getattr(run,'config',{}).get('execution_backend')=='k8s':
+        if k8s:
             remote_path=cached.get('upload_path')
             suffix=str(PurePosixPath(run.output_dir).relative_to('/adb-ssd-mount/ai'))+'/input.zip'
             if not isinstance(remote_path,str) or not remote_path.startswith('/') or not remote_path.endswith('/'+suffix) or any(p in ('.','..') for p in remote_path.split('/')) or any(c in remote_path for c in ('\0','\r','\n','\\')):
@@ -433,7 +495,7 @@ async def transfer_cached_snapshot(db,run):
         await asyncio.to_thread(bridge,'platform_training' if conn else run.server['name'],
             dict(connection=conn,upload=dict(localPath=str(local),remotePath=remote_path)))
         await ensure_starting(db,run)
-        await startup_progress(db,run,'unpack','传输完成，正在远端校验SHA256并写入缓存、独立解包及逐张核验')
+        await startup_progress(db,run,'unpack','传输完成，正在远端校验SHA256并写入缓存；正在准备共享解包数据')
         await prepare_snapshot(db,run)
 
 
@@ -469,35 +531,42 @@ async def launch(db,run,user):
     return run
 
 
+async def prepare_start_inputs(db,run):
+    await startup_progress(db,run,'precheck','正在重新检查镜像、数据、权重和GPU')
+    checked=await check(db,run)
+    if not checked['ok']:
+        run.status='draft';run.error='预检查未通过，请查看检查结果；未启动容器';await release(db,run);await db.commit()
+        await startup_progress(db,run,'precheck',run.error,state='failed')
+        raise HTTPException(409,'预检查未通过，请查看检查结果；未启动容器')
+    await ensure_starting(db,run)
+    await startup_progress(db,run,'stage','预检查通过，正在准备独立任务目录和配置')
+    await remote(db,run,'stage',script=build_script(run.config))
+    await ensure_starting(db,run)
+    if run.source.get('checkpoint_artifact'):
+        from services.model_output_pipeline import transfer_checkpoint
+        await startup_progress(db,run,'checkpoint','正在下载训练权重并上传到 ONNX 导出服务器')
+        await transfer_checkpoint(db,run)
+    if run.source.get('merge_inputs'):
+        from services.model_output_pipeline import transfer_merge_inputs
+        await startup_progress(db,run,'checkpoint','正在归档模型并准备合并服务器的基础模型和 LoRA')
+        await transfer_merge_inputs(db,run)
+    if run.source.get('repository_model_id'):
+        from services import model_repository
+        from services.model_output_pipeline import transfer_repository_input
+        row=await model_repository.scoped(db,UUID(run.source['repository_model_id']),run.tenant_id)
+        if row.status!='ready':raise HTTPException(409,'模型仓库输入不可用')
+        await startup_progress(db,run,'checkpoint','正在准备训练服务器的基础模型')
+        await transfer_repository_input(db,run,row,'base')
+    await transfer_snapshot(db,run)
+
+
 async def prepare_start(db,run):
     try:
         await ensure_starting(db,run)
-        await startup_progress(db,run,'precheck','正在重新检查镜像、数据、权重和GPU')
-        checked=await check(db,run)
-        if not checked['ok']:
-            run.status='draft';run.error='预检查未通过，请查看检查结果；未启动容器';await release(db,run);await db.commit()
-            await startup_progress(db,run,'precheck',run.error,state='failed')
-            raise HTTPException(409,'预检查未通过，请查看检查结果；未启动容器')
-        await ensure_starting(db,run)
-        await startup_progress(db,run,'stage','预检查通过，正在准备独立任务目录和配置')
-        await remote(db,run,'stage',script=build_script(run.config))
-        await ensure_starting(db,run)
-        if run.source.get('checkpoint_artifact'):
-            from services.model_output_pipeline import transfer_checkpoint
-            await startup_progress(db,run,'checkpoint','正在下载训练权重并上传到 ONNX 导出服务器')
-            await transfer_checkpoint(db,run)
-        if run.source.get('merge_inputs'):
-            from services.model_output_pipeline import transfer_merge_inputs
-            await startup_progress(db,run,'checkpoint','正在归档模型并准备合并服务器的基础模型和 LoRA')
-            await transfer_merge_inputs(db,run)
-        if run.source.get('repository_model_id'):
-            from services import model_repository
-            from services.model_output_pipeline import transfer_repository_input
-            row=await model_repository.scoped(db,UUID(run.source['repository_model_id']),run.tenant_id)
-            if row.status!='ready':raise HTTPException(409,'模型仓库输入不可用')
-            await startup_progress(db,run,'checkpoint','正在准备训练服务器的基础模型')
-            await transfer_repository_input(db,run,row,'base')
-        await transfer_snapshot(db,run)
+        if resuming_unpack(run):
+            await transfer_snapshot(db,run)
+        else:
+            await prepare_start_inputs(db,run)
         await ensure_starting(db,run)
         await startup_progress(db,run,'container','输入准备完成，正在复核资源并创建、启动独立容器')
         result=await remote(db,run,'start')
@@ -542,14 +611,16 @@ async def refresh(db,run):
         status=result['status']
         run.status=status if status not in ('missing','created') else 'unknown'
         startup=run.inspection.get('startup',{})
-        if status in ('missing','created') and run.config.get('execution_backend')=='k8s':
+        if status in ('missing','created'):
             events=startup.get('events',[])
             reason=None
             if startup.get('state') in ('failed','interrupted'):
                 reason=(events[-1].get('message') if events else None) or run.error
-            run.error=reason or result.get('error') or '训练Job/Pod不存在或尚未启动，请点击停止核对'
+            fallback=('训练Job/Pod不存在或尚未启动，请点击停止核对' if run.config.get('execution_backend')=='k8s'
+                else '容器不存在或尚未启动，请点击停止核对并释放占用')
+            run.error=reason or result.get('error') or fallback
         else:
-            run.error=result.get('error') or ('容器不存在或尚未启动，请点击停止核对并释放占用' if status in ('missing','created') else None)
+            run.error=result.get('error')
         if run.status in ('completed','failed','canceled'):await release(db,run)
         run.inspection={**run.inspection,'runtime':result};await db.commit()
         if run.status=='completed' and run.kind=='model_merge':
@@ -663,6 +734,9 @@ async def recover_startups(sessions=None):
         runs=(await db.scalars(select(TrainingRun).where(TrainingRun.status=='starting'))).all()
         for run in runs:
             if run.inspection.get('startup',{}).get('state')=='running':
+                if resuming_unpack(run):
+                    await startup_progress(db,run,'unpack','后台服务已恢复，继续核对远端解包进度',state='queued')
+                    continue
                 run.status='unknown';run.error='后台服务重启，启动准备中断；请核对容器后停止，GPU占用保留，不会自动重复启动';await db.commit()
                 await startup_progress(db,run,run.inspection['startup']['phase'],run.error,state='interrupted')
 

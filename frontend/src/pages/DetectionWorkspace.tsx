@@ -3,6 +3,7 @@ import { isAxiosError } from 'axios';
 import { Link, useNavigate, useParams, useBlocker, useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Checkbox, Input, InputNumber, Select, Space, Tag, Modal, Radio } from 'antd';
 import DetectionCanvas from '../components/DetectionCanvas';
+import AnnotationLabelFilter from '../components/AnnotationLabelFilter';
 import { AnnotationCropLabelSelect, AnnotationImageKindSelect, AnnotationSourceViewer, FullImageStatus, ImagePreviewError } from '../components/AnnotationImageViewer';
 import useAnnotationImage from '../components/useAnnotationImage';
 import type {ImageView} from '../components/useAnnotationImageView';
@@ -226,10 +227,13 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
     if (readonly || busy || drawing) return;
     setDraft(previous => changeDraft(previous, next));
   };
-  const edit = (key: keyof Box, value: number | string | null) => {
+  const edit = (key: 'label'|'x'|'y'|'width'|'height', value: number | string | null) => {
     if (value === null || selected < 0) return;
     const edited = {...boxes[selected], [key]: value};
-    if (key === 'label') delete edited.yolo_class_id;
+    if (key === 'label' && typeof value === 'string') {
+      delete edited.yolo_class_id;
+      if (edited.labels) edited.labels = [value, ...edited.labels.slice(1).filter(label => label !== value)];
+    }
     change({ ...draft.present, boxes: boxes.map((b, i) => i === selected ? edited : b) });
   };
   const removeBox = () => {
@@ -447,9 +451,8 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
       <Select aria-label="筛选图片集" placeholder="全部图片集" allowClear showSearch optionFilterProp="label" value={collectionId}
         onChange={value=>void filterQueue(annotationLabel,reviewStatus,value)} options={collections.map(group=>({value:group.id,label:group.name}))} style={{minWidth:148}}
         disabled={!asset||loading||dirty||busy||drawing||jumping} title={dirty?'请先保存修改再筛选':'按当前项目关联的图片集筛选图片'}/>
-      <Select aria-label="筛选标注标签" prefix="筛选：" placeholder="全部标签" allowClear showSearch optionFilterProp="label" value={annotationLabel}
-        onChange={value=>void filterQueue(value,reviewStatus,collectionId)} options={labels.map(label=>({value:label,label}))} style={{minWidth:148}}
-        disabled={!asset||loading||dirty||busy||drawing||jumping} title={dirty?'请先保存修改再筛选':'按最新已保存标注中的框类别筛选图片'}/>
+      <AnnotationLabelFilter schema={project?.label_schema} value={annotationLabel}
+        onChange={value=>void filterQueue(value,reviewStatus,collectionId)} disabled={!asset||loading||dirty||busy||drawing||jumping}/>
       <Select<Annotation['review_status']|''> aria-label="筛选审核状态" prefix="审核：" value={reviewStatus||''} style={{minWidth:148}} title="按最新已保存标注的审核状态筛选"
         options={[{value:'',label:'全部状态'},{value:'pending',label:'待审核'},{value:'approved',label:'已通过'},{value:'rejected',label:'已驳回'}]}
         onChange={value=>void filterQueue(annotationLabel,value||undefined,collectionId)} disabled={!asset||loading||dirty||busy||drawing||jumping}/>
@@ -521,6 +524,10 @@ export default function DetectionWorkspace({initial,cropLabels,imageView,setImag
           <Select aria-label="选中框类别" disabled={readonly} value={boxes[selected].yolo_class_id===undefined?boxes[selected].label:undefined} placeholder={boxes[selected].label} onChange={v => edit('label', v)} options={[...new Set([...labels, ...(boxes[selected].yolo_class_id===undefined?[boxes[selected].label]:[])])].map(l => ({ value: l, label: l, disabled: !labels.includes(l) }))} />
           {(['x', 'y', 'width', 'height'] as const).map(k => <label key={k}>{k}: <InputNumber id={k==='x'?'box-coordinate-x':undefined} aria-label={`框${k}`} disabled={readonly}
             value={boxes[selected][k]} min={k === 'x' || k === 'y' ? 0 : 1} onChange={v => edit(k, v)} /></label>)}
+          {(boxes[selected].labels?.length ?? 0) > 1 && <div>标签 {boxes[selected].labels?.join('、')}</div>}
+          {Object.entries(boxes[selected].attributes ?? {}).map(([name,value]) =>
+            <div key={name} style={{overflowWrap:'anywhere'}}>{name} · {value || '未提供'}</div>)}
+          {boxes[selected].description && <div style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{boxes[selected].description}</div>}
           <Button danger disabled={readonly} onClick={removeBox}>删除选中框</Button>
         </Space>}
         <h3>标注历史</h3>

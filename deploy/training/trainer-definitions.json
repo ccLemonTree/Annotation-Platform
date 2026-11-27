@@ -1,0 +1,32 @@
+{
+  "yolo11": {
+    "name": "YOLO11",
+    "module": "detection_trainers.yolo11",
+    "dataset_format": "yolo",
+    "sizes": ["n", "s", "m", "l", "x"],
+    "parameters": {
+      "epochs": 100,
+      "batch": 8,
+      "imgsz": 640,
+      "workers": 4,
+      "patience": 15,
+      "save_period": 10,
+      "seed": 42,
+      "amp": false
+    }
+  },
+  "damo-yolo": {
+    "name": "DAMO-YOLO",
+    "module": "detection_trainers.damo_yolo",
+    "dataset_format": "coco",
+    "sizes": ["ns", "nm", "nl", "t", "s", "m", "l"],
+    "parameters": {
+      "epochs": 100,
+      "batch": 8,
+      "workers": 4,
+      "save_period": 10,
+      "eval_period": 10,
+      "seed": 42
+    }
+  }
+}

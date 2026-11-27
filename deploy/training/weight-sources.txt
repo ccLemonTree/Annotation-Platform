@@ -1,0 +1,12 @@
+0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1 yolo11n.pt https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5 yolo11s.pt https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt
+d5ffc1a674953a08e11a8d21e022781b1b23a19b730afc309290bd9fb5305b95 yolo11m.pt https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11m.pt
+9ebd0e09d59811db4b1d61e2bc6730649608b1ac47f8dd01e2da6bca7c20023f yolo11l.pt https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11l.pt
+7bc158aa95c0ebfdd87f70f01653c1131b93e92522dbe15c228bcd742e773a24 yolo11x.pt https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x.pt
+05f576742ce0000c50ba885888835745b24cd8220781e434e131b4ea2581b642 damo-ns.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOns/resolve/27235c10a8cbb83e255a54db1104b638a9326d65/LibreDAMOYOLOns.pt
+ded8f04d0857b501dde73dcbca3123035068bf74b98e06f1a5bce9e9d7b93e7a damo-nm.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOnm/resolve/d913d9e85ca58fdb2dacd42c384715c7c0ec99ac/LibreDAMOYOLOnm.pt
+0e3de8e3c1765f9ad90878cf0d73c7fd175c086fef7e28b3a25ca74633d9ce35 damo-nl.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOnl/resolve/7bc7009a63d56986940aecec0e7e44699b286185/LibreDAMOYOLOnl.pt
+c311589a251410f0d925b259d86f6329a1a12a10ade3ce2dc259caa6b3df66e7 damo-t.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOt/resolve/6e8e2169506f3a1dc7d229098b50c0008b978067/LibreDAMOYOLOt.pt
+78b24a5c81e303a12be2246703e7bbd2f68e8ecc6eae2ef917acd74433f6c735 damo-s.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOs/resolve/2f48b6da94e05a224bf8a4039c93c8d50e5127a9/LibreDAMOYOLOs.pt
+845ff4d16f89400de2ce76a93f3d33b8ab3c46bcde62014e715f3c1964626398 damo-m.pth https://huggingface.co/LibreYOLO/LibreDAMOYOLOm/resolve/7dd8abdc9e8c46e7ad6d9ed39e77760a4bfbde0e/LibreDAMOYOLOm.pt
+333cf1105fee2b7d11e78ec4299de21d69f4471292331df565416ae6a6f403dd damo-l.pth https://huggingface.co/iisc-aim/UVH-26/resolve/4a22412775adb6f97f22735647afee976b4638a0/weights/DAMO-YOLO-L/UVH-26-MV-DAMO-YOLO-L.pth

@@ -117,8 +117,12 @@ async def list_annotations(asset_id: UUID | None = None, project_id: UUID | None
     if asset_id: conditions.append(Annotation.asset_id == asset_id)
     if project_id: conditions.append(Annotation.project_id == project_id)
     if project is not None and scope=='annotation':
-        kind='detection' if project.task_type=='detection' else 'image'
-        conditions.append(Annotation.has_project_format(project.task_type))
+        project_format=Annotation.has_project_format(project.task_type)
+        if label and label.strip() and kind=='all':
+            conditions.append(or_(project_format,Annotation.annotation_data['import_source']['source'].as_string()=='json_labels'))
+        else:
+            kind='detection' if project.task_type=='detection' else 'image'
+            conditions.append(project_format)
     elif kind!='all':conditions.append(Annotation.has_kind(kind))
     if work_job_id or image_kind!='all':
         if not project:raise HTTPException(422,'按批次或图片类型筛选时需要选择项目')

@@ -6,15 +6,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from fastapi import HTTPException
 from models import TrainingRun
 from models.training_run import TrainingGpuHold
+from services.training_runs import transfer_snapshot
 from tests.test_training_runs import training_tables,spec,platform_payload,platform_wemm_payload
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('backend',['docker','k8s'])
 @pytest.mark.parametrize('outcome',['ready','failed','canceled'])
-async def test_k8s_async_unpack_controls_training_start(monkeypatch,outcome):
+async def test_async_unpack_controls_training_start(monkeypatch,backend,outcome):
     from types import SimpleNamespace
     from services import training_runs
-    run=SimpleNamespace(status='starting',config={'execution_backend':'k8s'},source={'sha256':'a'*64},inspection={'startup':{'state':'running','phase':'unpack'}},error=None)
+    run=SimpleNamespace(status='starting',config={'execution_backend':backend},source={'kind':'snapshot','sha256':'a'*64},inspection={'startup':{'state':'running','phase':'unpack'}},error=None)
     class DB:
         async def refresh(self,run): pass
         async def commit(self): pass
@@ -50,14 +52,33 @@ async def test_k8s_async_unpack_controls_training_start(monkeypatch,outcome):
 
 
 @pytest.mark.asyncio
-async def test_docker_snapshot_unpack_remains_synchronous(monkeypatch):
+async def test_docker_unpack_keeps_preparing_during_long_wait_and_lost_replies(monkeypatch):
     from types import SimpleNamespace
     from services import training_runs
     calls=[]
-    async def remote(db,run,action,**values):calls.append((action,values))
+    run=SimpleNamespace(status='starting',config={'execution_backend':'docker'},
+        source={'kind':'snapshot','sha256':'a'*64},inspection={'startup':{}})
+    simulated_seconds=0
+    async def remote(db,run,action,**values):
+        calls.append(action)
+        assert values['snapshot_hash']=='a'*64
+        if len(calls) in (1,52):
+            raise HTTPException(503,'SSH/MCP执行失败，执行状态需要核对')
+        return {'state':'ready' if simulated_seconds>310 else 'running'}
+    async def progress(db,run,phase,message,**values):
+        run.inspection['startup'].update(values,phase=phase)
+    async def ensure(db,run):assert run.status=='starting'
+    async def sleep(seconds):
+        nonlocal simulated_seconds
+        simulated_seconds+=seconds
     monkeypatch.setattr(training_runs,'remote',remote)
-    await training_runs.prepare_snapshot(None,SimpleNamespace(config={'execution_backend':'docker'},source={'sha256':'a'*64}))
-    assert calls==[('unpack',{'snapshot_hash':'a'*64})]
+    monkeypatch.setattr(training_runs,'startup_progress',progress)
+    monkeypatch.setattr(training_runs,'ensure_starting',ensure)
+    monkeypatch.setattr(training_runs.asyncio,'sleep',sleep)
+    await training_runs.prepare_snapshot(None,run)
+    assert calls[:3]==['unpack_begin','unpack_begin','unpack_status']
+    assert calls.count('unpack_begin')==2 and simulated_seconds>310
+    assert run.inspection['startup']['async_unpack'] is True
 
 
 @pytest.mark.asyncio
@@ -132,6 +153,32 @@ async def test_recovery_does_not_relaunch_an_interrupted_start(client,auth_heade
 
 
 @pytest.mark.asyncio
+async def test_recovery_resumes_docker_unpack_without_reupload(client,auth_headers,test_engine,platform_payload,monkeypatch):
+    from services import training_runs
+    run=client.post('/api/training/runs',headers=auth_headers,json=dict(platform_payload)).json()
+    client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
+    key=UUID(run['id'])
+    sessions=async_sessionmaker(test_engine,expire_on_commit=False)
+    async with sessions() as db:
+        current=await db.get(TrainingRun,key)
+        current.inspection={'startup':{**current.inspection['startup'],'state':'running',
+            'phase':'unpack','async_unpack':True}}
+        await db.commit()
+    calls=[]
+    async def remote(db,run,action,**values):
+        calls.append(action)
+        return {'state':'ready'} if action=='unpack_begin' else {'status':'running'}
+    monkeypatch.setattr(training_runs,'remote',remote)
+    monkeypatch.setattr(training_runs,'transfer_snapshot',transfer_snapshot)
+    await training_runs.recover_startups(sessions)
+    await training_runs.process_start(key,sessions)
+    current=client.get('/api/training/runs/'+run['id'],headers=auth_headers).json()
+    assert current['status']=='running'
+    assert calls==['unpack_begin','start']
+    async with sessions() as db:assert await db.scalar(select(func.count()).select_from(TrainingGpuHold))==1
+
+
+@pytest.mark.asyncio
 async def test_refresh_during_preparation_never_marks_a_missing_container_unknown(client,auth_headers,monkeypatch,platform_payload):
     from services import training_runs
     async def no_remote(*args,**kwargs):raise AssertionError('preparation is not a missing-container failure')
@@ -168,6 +215,7 @@ async def test_inflight_refresh_does_not_overwrite_resumed_preparation(monkeypat
     ('k8s',{'state':'failed','events':[{'phase':'stage','message':'SSH/MCP通信失败'}]},'容器不存在','missing','SSH/MCP通信失败'),
     ('k8s',{'state':'interrupted','events':[]},'启动准备中断','created','启动准备中断'),
     ('k8s',{},None,'missing','训练Job/Pod不存在或尚未启动，请点击停止核对'),
+    ('docker',{'state':'failed','events':[{'phase':'unpack','message':'冻结包哈希不匹配'}]},None,'missing','冻结包哈希不匹配'),
     ('docker',{},None,'missing','容器不存在或尚未启动，请点击停止核对并释放占用'),
 ])
 async def test_refresh_missing_preserves_startup_error_and_uses_backend_name(monkeypatch,backend,startup,previous_error,remote_status,expected):
@@ -235,7 +283,7 @@ async def test_worker_claims_durable_queue_without_an_http_background_task(clien
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('cache_hit',[False,True])
+@pytest.mark.parametrize('cache_hit',[False,True,'shared'])
 async def test_snapshot_start_records_transfer_and_verification_before_container(client,auth_headers,test_engine,test_project,tmp_path,monkeypatch,cache_hit):
     from pathlib import Path
     from services import training_runs
@@ -247,10 +295,16 @@ async def test_snapshot_start_records_transfer_and_verification_before_container
     async def remote(db,run,action,**values):
         calls.append(action)
         if action=='precheck':return dict(ok=True,checks=[])
+        if action=='snapshot_directory':
+            assert cache_hit=='shared' and values['legacy_runs']==[legacy['output_dir']]
+            assert values['snapshot_hash']==snapshot['content_hash']
+            return dict(hit=True,shared_ready=True)
         if action=='snapshot_cache':
+            assert cache_hit!='shared'
             assert values['legacy_archives']==[legacy['output_dir']+'/input.zip']
             assert values['snapshot_hash']==snapshot['content_hash']
             return dict(hit=cache_hit,imported=False)
+        if action=='unpack_begin':return dict(state='ready')
         return dict(status='running') if action=='start' else dict(ok=True)
     def upload(server,value):
         assert Path(value['upload']['localPath']).is_file()
@@ -258,17 +312,24 @@ async def test_snapshot_start_records_transfer_and_verification_before_container
     monkeypatch.setattr(training_runs,'remote',remote);monkeypatch.setattr(training_runs,'bridge',upload)
     monkeypatch.setattr(training_runs,'ROOT',tmp_path)
     legacy=client.post('/api/training/runs',headers=auth_headers,json=spec(snapshot_id=snapshot['id'],dataset_path='',output_root='/data/old-runs').model_dump(mode='json')).json()
+    if cache_hit=='shared':
+        async with async_sessionmaker(test_engine,expire_on_commit=False)() as db:
+            row=await db.get(training_runs.TrainingRun,UUID(legacy['id']))
+            row.status='running'
+            await db.commit()
     run=client.post('/api/training/runs',headers=auth_headers,json=spec(snapshot_id=snapshot['id'],dataset_path='').model_dump(mode='json')).json()
     client.post('/api/training/runs/'+run['id']+'/start',headers=auth_headers)
     await training_runs.process_start(UUID(run['id']),async_sessionmaker(test_engine,expire_on_commit=False))
     current=client.get('/api/training/runs/'+run['id'],headers=auth_headers).json()
     assert current['status']=='running',current
-    assert calls==['precheck','stage','snapshot_cache']+([] if cache_hit else ['upload'])+['unpack','start']
+    probe='snapshot_directory' if cache_hit=='shared' else 'snapshot_cache'
+    assert calls==['precheck','stage',probe]+([] if cache_hit else ['upload'])+['unpack_begin','start']
     progress=current['inspection']['startup']
-    assert progress['cache_hit'] is cache_hit
+    assert progress['cache_hit'] is bool(cache_hit)
     if cache_hit:
         assert 'upload' not in progress['steps']
-        assert any('跳过上传' in row['message'] for row in progress['events'])
+        message='直接只读挂载' if cache_hit=='shared' else '跳过上传'
+        assert any(message in row['message'] for row in progress['events'])
     else:
-        assert [row['phase'] for row in progress['events']]==['queued','precheck','stage','archive','archive','upload','unpack','container','complete']
+        assert [row['phase'] for row in progress['events']]==['queued','precheck','stage','archive','archive','upload','unpack','unpack','container','complete']
         assert progress['archive_bytes']>0

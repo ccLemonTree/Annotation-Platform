@@ -547,7 +547,7 @@ def _reencode_crop_with_label(raw: bytes, project_id, asset_id, region, label: s
     return encoded, hashlib.sha256(encoded).hexdigest()
 
 
-async def _persist_derived_crops(db, project, asset, work, item, raw_crops):
+async def persist_derived_crops(db, project, asset, raw_crops, *, expansion=0.0, model=None, job_id=None):
     if not raw_crops:
         return [], []
     storage = get_storage()
@@ -563,8 +563,9 @@ async def _persist_derived_crops(db, project, asset, work, item, raw_crops):
         crop_info = dict(
             parent_asset_id=str(asset.id), parent_image_id=str(asset.image_id) if asset.image_id else None,
             parent_blob_path=asset.blob_path, parent_content_hash=asset.content_hash,
-            region=region, box=box, expansion=work['options'].get('expansion', 0.0),
-            model_id=work['model'].get('id'), revision=work['model'].get('revision', 0), job_id=str(item.job_id),
+            region=region, box=box, expansion=expansion,
+            model_id=(model or {}).get('id'), revision=(model or {}).get('revision', 0),
+            job_id=str(job_id) if job_id else None,
             depth=parent_crop.get('depth', 1 if asset.source_type == 'model_crop' else 0) + 1,
             root_region=[parent_region[0] + region[0], parent_region[1] + region[1],
                          parent_region[0] + region[2], parent_region[1] + region[3]],
@@ -745,7 +746,8 @@ async def finish(sessions,work,result,error):
                 filtered_count=result.get('filtered_count',0)
                 source_annotation={}
                 crop_boxes=[crop['box'] for crop in result['crops'] if crop.get('box')]
-                ids, derived_assets = await _persist_derived_crops(db, project, asset, work, item, result['crops'])
+                ids, derived_assets = await persist_derived_crops(db, project, asset, result['crops'],
+                    expansion=work['options'].get('expansion', 0.0), model=work['model'], job_id=item.job_id)
                 if project.task_type=='detection' and work['options'].get('save_input_boxes') and result.get('source_boxes'):
                     source_annotation=await save_crop_source_boxes(db,asset,result['source_boxes'],work['user_id'])
                 elif project.task_type=='detection' and work['options'].get('workflow_id') and crop_boxes:
@@ -772,7 +774,8 @@ async def finish(sessions,work,result,error):
                     result['skipped_annotated_count']=len(existing)
                 record_event(db,asset,work['user_id'],'crop',result)
             elif work['operation']=='img_transform':
-                ids, _ = await _persist_derived_crops(db, project, asset, work, item, result.pop('crops', []))
+                ids, _ = await persist_derived_crops(db, project, asset, result.pop('crops', []),
+                    expansion=work['options'].get('expansion', 0.0), model=work['model'], job_id=item.job_id)
                 result = dict(asset_ids=ids, detected_count=len(ids), reason=result.get('reason', ''))
                 record_event(db, asset, work['user_id'], 'img_transform', result)
             elif work['operation']=='box_clean':
@@ -788,7 +791,8 @@ async def finish(sessions,work,result,error):
                         label = entry.get('label') or 'script'
                         box = entry.get('box') if isinstance(entry.get('box'), dict) else {'label': label, 'x': 0, 'y': 0, 'width': w, 'height': h}
                         raw_derived.append({'content': entry['content'], 'width': w, 'height': h, 'region': [0, 0, w, h], 'box': box, 'label': label})
-                    ids, _ = await _persist_derived_crops(db, project, asset, work, item, raw_derived)
+                    ids, _ = await persist_derived_crops(db, project, asset, raw_derived,
+                        expansion=work['options'].get('expansion', 0.0), model=work['model'], job_id=item.job_id)
                     result['asset_ids'] = ids
                     result['detected_count'] = len(ids)
                 else:

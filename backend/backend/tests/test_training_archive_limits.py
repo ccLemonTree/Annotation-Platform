@@ -8,7 +8,7 @@ import pytest
 from services import k8s_training_snapshots, training_executor
 
 
-@pytest.mark.parametrize('count,accepted', [(100000, True), (100001, False)])
+@pytest.mark.parametrize('count,accepted', [(161036, True), (200000, True), (200001, False)])
 def test_archive_entry_limit_before_extraction(monkeypatch, tmp_path, count, accepted):
     row = SimpleNamespace(file_size=0, filename='image.jpg', external_attr=0)
     class Archive:
@@ -18,11 +18,11 @@ def test_archive_entry_limit_before_extraction(monkeypatch, tmp_path, count, acc
     monkeypatch.setattr(training_executor.zipfile, 'ZipFile', lambda *args: Archive())
     def checked_path(*args): raise RuntimeError('entry limit passed')
     monkeypatch.setattr(training_executor, 'safe_child', checked_path)
-    with pytest.raises(RuntimeError if accepted else ValueError, match='entry limit passed' if accepted else '100000'):
+    with pytest.raises(RuntimeError if accepted else ValueError, match='entry limit passed' if accepted else '200000'):
         training_executor.unpack_snapshot(tmp_path / 'source.zip', tmp_path / 'dataset', 'yolo26')
 
 
-@pytest.mark.parametrize('count,accepted', [(100000, True), (100001, False)])
+@pytest.mark.parametrize('count,accepted', [(161036, True), (200000, True), (200001, False)])
 def test_snapshot_support_uses_updated_entry_limit(monkeypatch, tmp_path, count, accepted):
     namespace = {}
     exec(k8s_training_snapshots.support_code(), namespace)
@@ -34,19 +34,30 @@ def test_snapshot_support_uses_updated_entry_limit(monkeypatch, tmp_path, count,
     monkeypatch.setattr(namespace['zipfile'], 'ZipFile', lambda *args: Archive())
     def checked_path(*args): raise RuntimeError('entry limit passed')
     namespace['safe_child'] = checked_path
-    with pytest.raises(RuntimeError if accepted else ValueError, match='entry limit passed' if accepted else '100000'):
+    with pytest.raises(RuntimeError if accepted else ValueError, match='entry limit passed' if accepted else '200000'):
         namespace['unpack_snapshot'](tmp_path / 'source.zip', tmp_path / 'dataset', 'yolo26')
 
 
-def test_expanded_size_limit_remains_40_gib(monkeypatch, tmp_path):
-    row = SimpleNamespace(file_size=40 * 1024 ** 3 + 1)
+@pytest.mark.parametrize('gib,extra,accepted', [(68, 0, True), (100, 0, True), (100, 1, False)])
+@pytest.mark.parametrize('k8s', [False, True])
+def test_expanded_size_limit(monkeypatch, tmp_path, gib, extra, accepted, k8s):
+    row = SimpleNamespace(file_size=gib * 1024 ** 3 + extra, filename='image.jpg', external_attr=0)
     class Archive:
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def infolist(self): return [row]
     monkeypatch.setattr(training_executor.zipfile, 'ZipFile', lambda *args: Archive())
-    with pytest.raises(ValueError, match='40GiB'):
-        training_executor.unpack_snapshot(tmp_path / 'source.zip', tmp_path / 'dataset', 'yolo26')
+    def checked_path(*args): raise RuntimeError('size limit passed')
+    if k8s:
+        namespace = {}
+        exec(k8s_training_snapshots.support_code(), namespace)
+        namespace['safe_child'] = checked_path
+        unpack = namespace['unpack_snapshot']
+    else:
+        monkeypatch.setattr(training_executor, 'safe_child', checked_path)
+        unpack = training_executor.unpack_snapshot
+    with pytest.raises(RuntimeError if accepted else ValueError, match='size limit passed' if accepted else '100GiB'):
+        unpack(tmp_path / 'source.zip', tmp_path / 'dataset', 'yolo26')
 
 
 def test_traversal_and_bad_image_hash_remain_rejected(tmp_path):

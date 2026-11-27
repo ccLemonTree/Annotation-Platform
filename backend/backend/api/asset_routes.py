@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import StringConstraints
-from sqlalchemy import and_, select, update, func, case, cast, or_, String
+from sqlalchemy import and_, select, update, func, case, cast, or_, DateTime, String, literal
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -303,7 +303,11 @@ async def asset_neighbors(asset_id: UUID, response:Response,label:str|None=Query
     if review_status:response.headers['X-Annotation-Review-Filter']='1'
     if collection_id:response.headers['X-Asset-Collection-Filter']='1'
     if scene:response.headers['X-Asset-Scene-Filter']='1'
-    anchor_created = asset.created_at if asset.created_at is not None else select(Asset.created_at).where(Asset.id == asset.id).correlate(None).scalar_subquery()
+    if asset.created_at is None:
+        anchor_created = select(Asset.created_at).where(Asset.id == asset.id).correlate(None).scalar_subquery()
+    else:
+        # Existing databases can use timestamptz even when the ORM column is timezone-naive.
+        anchor_created = literal(asset.created_at, type_=DateTime(timezone=asset.created_at.tzinfo is not None))
     ahead = or_(Asset.created_at > anchor_created, and_(Asset.created_at == anchor_created, Asset.id > asset.id))
     behind = or_(Asset.created_at < anchor_created, and_(Asset.created_at == anchor_created, Asset.id < asset.id))
     is_matched = (await db.scalar(select(Asset.id).where(*conditions, Asset.id == asset.id).limit(1))) is not None

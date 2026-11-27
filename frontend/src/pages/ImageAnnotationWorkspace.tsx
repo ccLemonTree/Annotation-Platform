@@ -1,5 +1,6 @@
 import { useEffect,useMemo,useRef,useState } from 'react';
 import JsonView from '../components/JsonView';
+import AnnotationLabelFilter from '../components/AnnotationLabelFilter';
 import { Link,useBlocker,useNavigate,useSearchParams } from 'react-router-dom';
 import { Alert,App,AutoComplete,Button,Card,Checkbox,Input,InputNumber,Modal,Radio,Select,Space,Tag,Typography } from 'antd';
 import { isAxiosError } from 'axios';
@@ -31,7 +32,7 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
   const navigate=useNavigate(),writing=useRef(false);
   const navigationRequest=useRef(0);
   const classification=project.task_type==='classification';
-  const annotationLabel=classification?params.get('label')||undefined:undefined,collectionId=params.get('collection_id')||undefined;
+  const annotationLabel=params.get('label')||undefined,collectionId=params.get('collection_id')||undefined;
   const cropLabel=useMemo(()=>params.getAll('crop_label'),[params]);
   const workJobId=params.get('work_job_id')||undefined;
   const imageKind=readAssetImageKind(params.get('image_kind'));
@@ -49,8 +50,9 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
   const [descriptionCollapsed,setDescriptionCollapsed]=useState(false);
   const [attributesCollapsed,setAttributesCollapsed]=useState(false);
   const savedData=current?.annotation_data;
+  const importedLabels:string[]=!classification&&savedData?.import_source?.source==='json_labels'?savedData.labels||[]:[];
   const hasImageAnnotation=!!savedData&&(!!savedData.skipped||(classification?!!savedData.labels?.length:
-    !!savedData.description?.trim()||!!savedData.attributes));
+    !!savedData.description?.trim()||!!savedData.attributes||!!importedLabels.length));
   const [original,setOriginal]=useState(''),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const [neighbors,setNeighbors]=useState<AssetNeighbors>(),[comment,setComment]=useState('');
   const [showShortcuts,setShowShortcuts]=useState(false);
@@ -108,7 +110,8 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
     const updated=await reviewAnnotation(current.id,{kind:'image', approved,review_comment:comment});setCurrent(updated);setVersions(rows=>rows.map(a=>a.id===updated.id?updated:a));
   }catch(error){fail(error);}finally{writing.current=false;setBusy(false);}};
   const go=(id:string,query=params)=>navigate(`/annotate/${id}?${query}`);
-  const canApproveNext=!loading&&!busy&&!jumping&&(!!draft.skipped||(classification?!!draft.labels.length:!!draft.attributes||!!draft.description.trim()));
+  const canApproveNext=!loading&&!busy&&!jumping&&(!!draft.skipped||(classification?!!draft.labels.length:
+    !!draft.attributes||!!draft.description.trim()||!!importedLabels.length));
   const approveNext=async()=>{
     if(!canApproveNext||writing.current)return;
     writing.current=true;setBusy(true);setError('');
@@ -234,7 +237,8 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
         disabled={loading||dirty||busy||jumping} onChange={value=>void filterQueue({image_kind:value==='all'?undefined:value})}/>
       <Select aria-label="筛选图片集" placeholder="全部图片集" allowClear showSearch optionFilterProp="label" value={collectionId} options={collections.map(row=>({value:row.id,label:row.name}))} style={{minWidth:170}} disabled={loading||dirty||busy||jumping} onChange={value=>void filterQueue({collection_id:value})}/>
       <AnnotationCropLabelSelect labels={cropLabels} value={cropLabel} disabled={loading||dirty||busy||jumping} onChange={crop_label=>void filterQueue({crop_label,...(crop_label.length&&imageKind==='originals'?{image_kind:'crops'}:{})})}/>
-      {classification&&<Select aria-label="筛选标注标签" prefix="筛选：" placeholder="全部标签" allowClear showSearch optionFilterProp="label" value={annotationLabel} options={labels.map(label=>({value:label,label}))} style={{minWidth:160}} disabled={loading||dirty||busy||jumping} onChange={value=>void filterQueue({label:value})}/>}
+      <AnnotationLabelFilter schema={project.label_schema} value={annotationLabel}
+        disabled={loading||dirty||busy||jumping} onChange={value=>void filterQueue({label:value})}/>
       <Select<Annotation['review_status']|''> aria-label="筛选审核状态" prefix="审核：" value={reviewStatus||''} style={{minWidth:170}} disabled={loading||dirty||busy||jumping} options={[{value:'',label:'全部状态'},{value:'pending',label:'待审核'},{value:'approved',label:'已通过'},{value:'rejected',label:'已驳回'}]} onChange={value=>void filterQueue({review_status:value||undefined})}/>
       {neighbors?.previous_id&&<Link aria-disabled={busy||jumping} onClick={event=>{if(busy||jumping)event.preventDefault();}} to={`/annotate/${neighbors.previous_id}?${params}`}>上一张</Link>}
       {neighbors&&<Space size={6}><InputNumber aria-label="跳转图片序号" min={1} max={neighbors.total||1} precision={0} value={jumpPosition} placeholder={neighbors.matched===false?'未匹配':''} style={{width:88}} disabled={loading||busy||jumping||!neighbors.total} onChange={setJumpPosition} onPressEnter={()=>void jump()} title="输入图片序号，按回车跳转"/><Typography.Text aria-live="polite">{neighbors.matched===false?`未匹配 / ${neighbors.total} 张`:`第 ${neighbors.position} / ${neighbors.total} 张`}</Typography.Text></Space>}
@@ -256,6 +260,8 @@ export default function ImageAnnotationWorkspace({asset,project,cropLabels,sugge
       <Checkbox data-annotation-skip checked={!!draft.skipped} disabled={loading||busy} onChange={e=>setDraft(e.target.checked?{labels:[],description:'',skipped:true}:{...empty})}>无法判断 / 跳过（不作负样本）</Checkbox>
       {draft.skipped&&<Typography.Text type="secondary">R：保存跳过并审核通过，进入下一张，不作负样本。直接切图仅保存跳过；保存或审核失败时留在当前图。</Typography.Text>}
       {suggestionsError&&<Alert type="warning" showIcon title={suggestionsError}/>}
+      {!draft.skipped&&!!importedLabels.length&&<Space wrap><Typography.Text>整图标签</Typography.Text>
+        {importedLabels.map(label=><Tag key={label}>{label}</Tag>)}</Space>}
       {imageFields}
       {attributeMode&&(draft.attribute_schema&&draft.attributes?<>
         <div className="image-annotation-attribute-heading">

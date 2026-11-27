@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
+from starlette.responses import JSONResponse
 from config.settings import settings
 from sqlalchemy import select,func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from services import model_repository as service,training_runs
 from services.auth import create_access_token,decode_access_token
 
 router=APIRouter()
+MODEL_DOWNLOAD_LIFETIME=timedelta(hours=2)
 _batch_tickets:dict[str,tuple[float,list[UUID]]]={}
 
 
@@ -185,17 +187,26 @@ async def download(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Dep
     return await service.download(snap)
 
 
-@router.post('/{id}/browser-download',status_code=204)
-async def authorize_model_download(id:UUID,request:Request,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+async def model_download_ticket(id:UUID,db:AsyncSession,user:User)->str:
     user_id,tenant_id=user.id,user.tenant_id
     row=await service.scoped(db,id,tenant_id)
     if row.status!='ready':raise HTTPException(409,'模型尚未入库完成')
     model_id=str(row.id)
     await db.rollback()
-    lifetime=timedelta(hours=2)
-    ticket=create_access_token({'repository_download':model_id,'download_user_id':user_id,'tenant_id':tenant_id},lifetime)
+    return create_access_token({'repository_download':model_id,'download_user_id':user_id,'tenant_id':tenant_id},MODEL_DOWNLOAD_LIFETIME)
+
+
+@router.post('/{id}/curl-download')
+async def authorize_curl_download(id:UUID,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+    ticket=await model_download_ticket(id,db,user)
+    return JSONResponse({'ticket':ticket},headers={'Cache-Control':'no-store'})
+
+
+@router.post('/{id}/browser-download',status_code=204)
+async def authorize_model_download(id:UUID,request:Request,db:AsyncSession=Depends(get_db_session),user:User=Depends(get_current_user)):
+    ticket=await model_download_ticket(id,db,user)
     response=Response(status_code=204,headers={'Cache-Control':'no-store'})
-    response.set_cookie('repository_download',ticket,max_age=int(lifetime.total_seconds()),
+    response.set_cookie('repository_download',ticket,max_age=int(MODEL_DOWNLOAD_LIFETIME.total_seconds()),
         path=request.url.path,secure=request.url.scheme=='https',httponly=True,samesite='strict')
     return response
 

@@ -12,8 +12,9 @@ import ImageIngestSettings from './ImageIngestSettings';
 import ProjectYoloLabelUpload from './ProjectYoloLabelUpload';
 import ProjectDescriptionUpload from './ProjectDescriptionUpload';
 
-type Row={file:File;key:string;transferred:number;done?:boolean;active?:boolean;failed?:boolean;result?:UploadResult};
-const accepted=/\.(jpe?g|png|bmp|webp|zip|tar|tar\.gz|tgz)$/i;
+type Row={file:File;key:string;transferred:number;prepared?:number;preparing?:boolean;done?:boolean;active?:boolean;failed?:boolean;result?:UploadResult};
+const archiveExtensions=['.zip','.tar','.tar.gz','.tgz'];
+const imageExtensions=['.jpg','.jpeg','.png','.bmp','.webp'];
 const parallelFiles=16;
 const completionPercent=(completed:number,total:number)=>total?Math.floor(completed*1000/total)/10:0;
 function ArchiveProgress({progress}:{progress:ArchiveImportProgress}){
@@ -80,9 +81,10 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
     return()=>{active=false;recordRequest.current++;clearTimeout(timer);};
   },[open,refresh]);
   const resetRows=()=>{setBatchId(undefined);setRows(current=>current.map(({file,key})=>({file,key,transferred:0})));};
+  const uploadExtensions=annotated?archiveExtensions:[...imageExtensions,...archiveExtensions];
   const add=(files:File[])=>{
-    const valid=files.filter(file=>annotated?/\.zip$/i.test(file.name):accepted.test(file.name));
-    if(valid.length<files.length)setNotice(`已忽略 ${files.length-valid.length} 个非图片/压缩包文件`);
+    const valid=files.filter(file=>uploadExtensions.some(ext=>file.name.toLowerCase().endsWith(ext)));
+    if(valid.length<files.length)setNotice(`已忽略 ${files.length-valid.length} 个不支持的文件`);
     const names=new Set(valid.map(file=>file.webkitRelativePath||file.name));
     const newBatch=rows.length>0&&rows.every(row=>row.done);
     if(newBatch)setBatchId(undefined);
@@ -132,10 +134,12 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
           if(!row.done)update(index,{done:true,failed:false,transferred:row.file.size});
           continue;
         }
-        update(index,{active:true,failed:false});
+        update(index,{active:true,failed:false,preparing:true,prepared:0});
         try{
           const result=await uploadResumable(row.file,collection,minimum,config,controller.signal,
-            transferred=>{if(!controller.signal.aborted)update(index,{transferred});},annotated?{annotation_format:'yolo',trust_annotations:trust}:undefined,projectId,projectId?imageKind:undefined,
+            (bytes,phase)=>{
+              if(!controller.signal.aborted)update(index,phase==='preparing'?{prepared:bytes}:{preparing:false,transferred:bytes});
+            },annotated?{annotation_format:'yolo',trust_annotations:trust}:undefined,projectId,projectId?imageKind:undefined,
             {batch_id:savedBatchId,file_key:fileKeys[index]});
           const imported=projectId&&!result.result.project_association_complete?await attachUpload(result,controller.signal):result.result;
           update(index,{done:true,active:false,transferred:row.file.size,result:imported});
@@ -185,9 +189,14 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
   const policy=savedPolicy?.name===name.trim()?savedPolicy.config:selectedCollection
     ?selectedCollection.ingest_config||defaults:defaults&&{...defaults,classification_enabled:false};
   let completed=0,active=0,failed=0,imported=0,duplicates=0,filtered=0,invalid=0,added=0,queued=0,annotatedCount=0;
+  let totalBytes=0,preparedBytes=0,transferredBytes=0,preparing=false;
   let queueWarning='',importWarning='';
   for(const row of rows){
     if(row.done)completed++;if(row.active)active++;if(row.failed)failed++;
+    totalBytes+=row.file.size;
+    preparedBytes+=row.done?row.file.size:row.prepared??0;
+    transferredBytes+=row.transferred;
+    if(row.active&&row.preparing)preparing=true;
     if(row.result){
       imported+=row.result.imported;duplicates+=row.result.duplicates;filtered+=row.result.filtered;invalid+=row.result.invalid;
       added+=row.result.added_count||0;queued+=row.result.queued_count||0;annotatedCount+=row.result.annotated||0;
@@ -243,12 +252,13 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
       onChange={event=>{setImageKind(event.target.value);resetRows();}}/></Space>
       {imageKind==='crops'&&<p className="workspace-help">按裁剪图入库，可直接标注。上传文件没有原图关联时，仅显示裁剪图。</p>}</div>}
     <Space wrap>
-      <Checkbox checked={annotated} disabled={busy||!!projectId&&taskType!=='detection'} onChange={event=>{setAnnotated(event.target.checked);setBatchId(undefined);setRows([]);setError('');setNotice('');}}>同时导入 YOLO 标注（ZIP）</Checkbox>
+      <Checkbox checked={annotated} disabled={busy||!!projectId&&taskType!=='detection'} onChange={event=>{setAnnotated(event.target.checked);setBatchId(undefined);setRows([]);setError('');setNotice('');}}>同时导入 YOLO 标注（ZIP/TAR）</Checkbox>
       {projectId&&taskType==='detection'&&<ProjectYoloLabelUpload key={projectId} projectId={projectId} disabled={busy} onImported={()=>void onImported(name.trim())}/>}
-      {projectId&&taskType==='caption'&&<ProjectDescriptionUpload key={projectId} projectId={projectId} disabled={busy} onImported={()=>void onImported(name.trim())}/>}
+      {projectId&&<ProjectDescriptionUpload key={`annotations-${projectId}`} projectId={projectId} disabled={busy} onImported={()=>void onImported(name.trim())}/>}
+      {projectId&&taskType==='caption'&&<ProjectDescriptionUpload key={`descriptions-${projectId}`} projectId={projectId} disabled={busy} reviewedDescriptions onImported={()=>void onImported(name.trim())}/>}
     </Space>
     {annotated&&<Space orientation="vertical" style={{width:'100%',margin:'12px 0'}}>
-      <Alert type="info" showIcon title={projectId?'标注入库后关联当前检测项目':'标注保存在图片库，不绑定项目'} description="ZIP包含 images/、labels/ 和 data.yaml（names）或 classes.txt；支持平铺同名图片/TXT。仅检测框，空TXT表示负样本，缺失TXT报错。之后添加到任意检测项目时可选择带入标注，各项目独立编辑。"/>
+      <Alert type="info" showIcon title={projectId?'标注入库后关联当前检测项目':'标注保存在图片库，不绑定项目'} description="支持 ZIP、TAR、TAR.GZ 和 TGZ。包内可用 images/ 和 labels/，或平铺同名图片和 TXT。类别表可选，未提供时保留 YOLO 编号，导入为待审核，可在标注页按批次设置类别。空 TXT 表示负样本，缺失 TXT 的图片会报错。"/>
       <Checkbox checked={trust} disabled={busy||!admin} onChange={event=>{setTrust(event.target.checked);resetRows();}}>信任已有标注，直接用于训练/验证（管理员）</Checkbox>
       <span className="workspace-help">{trust?'完整兼容的标注带入后直接可用；类别过滤或目标包含新类别时仍待审核，并保留管理员导入确认。':'带入项目后保持待审核，通过审核后可用于训练/验证。'} 验证数据仍需与训练数据独立。</span>
     </Space>}
@@ -266,7 +276,7 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
       <InputNumber aria-label="本次上传长边阈值" placeholder={projectId&&imageKind==='crops'?'默认不限制':'按图片集规则'} min={0} max={32768} precision={0} value={minimum} disabled={busy}
         onChange={value=>{if((value??undefined)!==minimum){setMinimum(value??undefined);resetRows();}}}/>
       <span>任一边 ≥，0关闭过滤</span></Space>
-    <input type="file" multiple hidden ref={picker} accept={annotated?'.zip':'.jpg,.jpeg,.png,.bmp,.webp,.zip,.tar,.tar.gz,.tgz'} aria-label="上传图片或压缩包"
+    <input type="file" multiple hidden ref={picker} accept={uploadExtensions.join(',')} aria-label="上传图片或压缩包"
       onChange={event=>{add(Array.from(event.target.files||[]));event.target.value='';}}/>
     <input type="file" multiple hidden ref={element=>{folder.current=element;element?.setAttribute('webkitdirectory','');}} aria-label="上传图片文件夹"
       onChange={event=>{add(Array.from(event.target.files||[]));event.target.value='';}}/>
@@ -276,13 +286,20 @@ export default function ImageUploadDialog({open,initialName,collections,onClose,
     <div onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();if(!busy)add(Array.from(event.dataTransfer.files));}}
       style={{padding:12,border:'1px dashed var(--ui-border)',borderRadius:8,marginBottom:12}}>也可拖入图片或压缩包；文件夹请使用“选择文件夹”按钮。</div>
     {!!rows.length&&<section aria-label="本批上传进度">
+      {busy&&preparing&&<div>
+        <strong>正在校验文件</strong>
+        <Progress aria-label="文件校验进度" percent={completionPercent(preparedBytes,totalBytes)} status="active"/>
+      </div>}
+      {(busy||transferredBytes>0)&&<div>
+        <strong>文件传输</strong>
+        <Progress aria-label="文件传输进度" percent={completionPercent(transferredBytes,totalBytes)}/>
+      </div>}
       <strong>本批入库进度</strong>
       {savedBatch?.archive_progress&&completed<rows.length?<ArchiveProgress progress={savedBatch.archive_progress}/>:
         <Progress aria-label="本批入库进度" percent={completionPercent(progressCompleted,rows.length)}
           status={progressFailed?'exception':busy?'active':undefined}/>}
       <p className="workspace-help" role="status">已完成 {progressCompleted} / {rows.length} 个文件 · {savedProgress?
-        `剩余 ${savedProgress.remaining}`:`处理中 ${active} · 待处理 ${rows.length-completed-active-failed}`} · 失败 {progressFailed}
-        {rows.length===1&&busy?` · 文件传输 ${completionPercent(rows[0].transferred,rows[0].file.size)}%`:''}</p>
+        `剩余 ${savedProgress.remaining}`:`处理中 ${active} · 待处理 ${rows.length-completed-active-failed}`} · 失败 {progressFailed}</p>
       {!!completed&&<p className="workspace-help">
         {projectId?`项目新增 ${added} 张 · 已入工作流 ${queued} 张`:`图片库新增 ${imported} 张`} · 重复 {duplicates} 张 · 尺寸过滤 {filtered} 张 · 无效 {invalid} 张
         {annotated?` · 导入标注 ${annotatedCount} 张`:''}

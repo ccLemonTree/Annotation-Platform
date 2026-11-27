@@ -3,9 +3,10 @@ import json
 from pathlib import Path
 from fastapi import HTTPException
 from pydantic import ValidationError
-from schemas.training_run import PARAMETERS,ENVIRONMENT,DETECTION_IMAGE,SWIFT_IMAGE,LIGHTLY_IMAGE,absolute_path,trainer_parameters
+from schemas.training_run import BUNDLED_DETECTION,PARAMETERS,ENVIRONMENT,DETECTION_IMAGE,SWIFT_IMAGE,LIGHTLY_IMAGE,absolute_path,trainer_parameters
 
 NAMES={'yolo26':'YOLO26','rfdetr_medium':'RF-DETR Medium','rfdetr_2xlarge':'RF-DETR 2XLarge',
+       'yolo11':'YOLO11','damo_yolo':'DAMO-YOLO',
        'swift_sft':'Swift 大模型SFT','wemm':'WeMM 向量微调','dinov3_vits16_ltdetr':'DINOv3 ViT-S/16 · LTDETR 检测微调'}
 
 
@@ -13,7 +14,9 @@ def catalog(overrides=None):
     overrides=overrides or {}
     return {kind:dict(name=NAMES[kind],schema=model.model_json_schema(),
         defaults={**model().model_dump(),**overrides.get(kind,{})},overrides=overrides.get(kind,{}),
-        image=LIGHTLY_IMAGE if kind=='dinov3_vits16_ltdetr' else SWIFT_IMAGE if kind in ('swift_sft','wemm') else DETECTION_IMAGE,
+        image=BUNDLED_DETECTION[kind]['image'] if kind in BUNDLED_DETECTION else
+            LIGHTLY_IMAGE if kind=='dinov3_vits16_ltdetr' else SWIFT_IMAGE if kind in ('swift_sft','wemm') else DETECTION_IMAGE,
+        **({'dataset_formats':BUNDLED_DETECTION[kind]['dataset_formats']} if kind in BUNDLED_DETECTION else {}),
         environment=ENVIRONMENT if kind in ('swift_sft','wemm') else {'CUDA_VISIBLE_DEVICES':'auto'})
         for kind,model in PARAMETERS.items()}
 
@@ -91,8 +94,9 @@ def validate_snapshot(kind,format,manifest,parameters=None):
         if format!=expected or training.get('format')!=expected or training.get('samples',0)<1:
             raise HTTPException(400,'冻结数据格式与训练任务/损失函数不匹配，或没有可用训练样本')
         return
-    if format not in ('yolo','coco') or (kind=='yolo26' and format!='yolo'):
-        raise HTTPException(400,'所选冻结导出格式不适用于此训练器；YOLO需YOLO格式，RF-DETR/DINOv3支持YOLO/COCO')
+    formats=BUNDLED_DETECTION.get(kind,{}).get('dataset_formats',('yolo',) if kind=='yolo26' else ('yolo','coco'))
+    if format not in formats:
+        raise HTTPException(400,'所选训练器支持的冻结数据格式：'+'、'.join(value.upper() for value in formats))
     assets=manifest.get('assets',[])
     splits={a.get('split') for a in assets}
     if not {'train','val'}<=splits or splits-{'train','val','test'}:
@@ -108,6 +112,17 @@ def validate_snapshot(kind,format,manifest,parameters=None):
 
 
 def build_script(config):
+    if config['kind'] in BUNDLED_DETECTION:
+        kind=config['kind']
+        helper=Path(__file__).with_name('training_dataset.py').read_text(encoding='utf-8')
+        module=BUNDLED_DETECTION[kind]['module']
+        return '\n'.join([helper,'import subprocess, sys',"if __name__ == '__main__':",
+            '    source = Path("/output/dataset")',
+            '    if (source / "rfdetr").is_dir(): source = source / "rfdetr"',
+            *(['    source = source / "data.yaml"'] if kind=='yolo11' else []),
+            f'    prepare_detection(str(source), "/output/prepared-dataset", {("yolo26" if kind=="yolo11" else kind)!r}, {config.get("selected_labels")!r})',
+            f'    subprocess.run([sys.executable, "-I", "-u", "-m", {module!r}, "--config", "/output/run_config.json"], check=True)',
+            ''])
     if config['kind']=='custom':
         format=config['trainer']['dataset_format']
         lines=['import subprocess, sys', "if __name__ == '__main__':"]
@@ -115,7 +130,7 @@ def build_script(config):
             helper=Path(__file__).with_name('training_dataset.py').read_text(encoding='utf-8')
             lines.insert(0,helper)
             source,kind=('/output/dataset/data.yaml','yolo26') if format=='yolo' else ('/output/dataset/rfdetr','coco')
-            lines.append(f'    prepare_detection({source!r}, "/output/prepared-dataset", {kind!r}, {config.get("selected_labels")!r})')
+            lines.append(f'    prepare_detection(frozen_detection_source({source!r}), "/output/prepared-dataset", {kind!r}, {config.get("selected_labels")!r})')
         lines.append(f'    subprocess.run([sys.executable, "-I", "-u", "-m", {config["trainer"]["module"]!r}, "--config", "/output/run_config.json"], check=True)')
         return '\n'.join(lines)+'\n'
     if config['kind'] in ('model_export','model_merge'):
@@ -131,7 +146,7 @@ def build_script(config):
     if config.get('snapshot_id') and kind not in ('swift_sft','wemm'):
         helper=Path(__file__).with_name('training_dataset.py').read_text(encoding='utf-8')
         lines=[helper,*lines]
-        lines.append(f'    dataset = prepare_detection({dataset!r}, "/output/prepared-dataset", {kind!r}, {config.get("selected_labels")!r})')
+        lines.append(f'    dataset = prepare_detection(frozen_detection_source({dataset!r}), "/output/prepared-dataset", {kind!r}, {config.get("selected_labels")!r})')
     elif kind not in ('swift_sft','wemm'):
         if kind=='dinov3_vits16_ltdetr':
             lines=[Path(__file__).with_name('training_dataset.py').read_text(encoding='utf-8'),*lines]

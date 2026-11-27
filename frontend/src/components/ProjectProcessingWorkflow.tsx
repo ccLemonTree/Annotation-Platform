@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import CursorPager from './CursorPager';
 import {
   Alert,
   App,
@@ -950,13 +951,8 @@ export default function ProjectProcessingWorkflow({
               </Card>
             ))}
           </Space>
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-            <Space size="small">
-              <Button size="small" disabled={page === 1} onClick={() => setPage(value => value - 1)}>上一页</Button>
-              <Typography.Text type="secondary">第 {page} 页</Typography.Text>
-              <Button size="small" disabled={runs.length < 10} onClick={() => setPage(value => value + 1)}>下一页</Button>
-            </Space>
-          </div>
+          <CursorPager page={page} hasMore={runs.length >= 10}
+            onPrev={() => setPage(value => value - 1)} onNext={() => setPage(value => value + 1)} />
         </Card>
       )}
 

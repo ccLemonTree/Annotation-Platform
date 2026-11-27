@@ -20,6 +20,7 @@ export interface ManagementTask {
   task_id:string;kind:string;status:string;progress?:number;message?:string;project_id?:string;
   platform_results?:TaskResult[];device_results?:TaskResult[];
   vector_test?:boolean;
+  stage?:string;check_task_id?:string;
   name?:string;created_at?:string;updated_at?:string;processed_count?:number;failed_count?:number;skipped_count?:number;unmatched_count?:number;
 }
 export interface TaskResult {plat_id:string;platform_name?:string;device_id?:string;device_name?:string;status:string;error?:string;count?:number;device_total?:number;image_count?:number;image_reused_count?:number;image_missing_count?:number;image_failed_count?:number;downloaded_count?:number;downloaded?:number;filtered?:number;skipped?:number;processed_count?:number;success_count?:number;failed_count?:number;skipped_count?:number;unmatched_count?:number;device_results?:TaskResult[]}

@@ -1,4 +1,5 @@
-export type Box = { x: number; y: number; width: number; height: number; label: string; yolo_class_id?: number };
+export type Box = { x: number; y: number; width: number; height: number; label: string; yolo_class_id?: number;
+  labels?: string[]; attributes?: Record<string,string|null>; description?: string };
 export type Draft = { boxes: Box[]; negative: boolean;description?:string };
 export type DraftHistory = { past: Draft[]; present: Draft; future: Draft[] };
 export type View = { x: number; y: number; width: number; height: number };

@@ -51,6 +51,9 @@ export default function ProjectsPage() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [pagination, setPagination] = useState({ page: 1, page_size: 10, total: 0 });
+  const [searchText, setSearchText] = useState('');
+  const [composingSearch, setComposingSearch] = useState(false);
+  const [keyword, setKeyword] = useState('');
   const [revision, setRevision] = useState(0);
   const [form] = Form.useForm();
   const configuredLabels: string[] = Form.useWatch('labels', form) || [];
@@ -74,6 +77,16 @@ export default function ProjectsPage() {
   }, [modalVisible, editingProject]);
 
   useEffect(() => {
+    const next = searchText.trim();
+    if (composingSearch || next === keyword) return;
+    const timer = window.setTimeout(() => {
+      setKeyword(next);
+      setPagination(previous => ({ ...previous, page: 1 }));
+    }, next ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [composingSearch, searchText, keyword]);
+
+  useEffect(() => {
     let pending = false;
     const load = async (quiet = false) => {
       if (pending || quiet && document.hidden) return;
@@ -92,7 +105,7 @@ export default function ProjectsPage() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [pagination.page, pagination.page_size, revision, projectId]);
+  }, [pagination.page, pagination.page_size, revision, projectId, keyword]);
 
   const fetchProjects = async (quiet = false) => {
     const request = ++projectRequest.current;
@@ -101,6 +114,7 @@ export default function ProjectsPage() {
       const response = projectId ? {items:[await getProject(projectId)], total:1} : await getProjects({
         page: pagination.page,
         page_size: pagination.page_size,
+        q: keyword || undefined,
       });
       if (request !== projectRequest.current) return;
       setLoadError(false);
@@ -192,9 +206,19 @@ export default function ProjectsPage() {
         </Card>
       </> : loading ? <Spin/> : null : <>
         <div className="page-toolbar"><p className="workspace-help">选择项目继续工作，或创建项目后添加第一批图片。</p>
-          <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>新建项目</Button></div>
+          <div className="page-toolbar-actions">
+            <Input type="search" aria-label="搜索项目名称" placeholder="按项目名称搜索" allowClear maxLength={200}
+              style={{width:260,maxWidth:'100%'}} value={searchText} onChange={event=>setSearchText(event.target.value)}
+              onCompositionStart={()=>setComposingSearch(true)} onCompositionEnd={event=>{
+                setSearchText(event.currentTarget.value);
+                setComposingSearch(false);
+              }} />
+            <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>新建项目</Button>
+          </div>
+        </div>
         <Spin spinning={loading}>
-          {!projects.length&&!loading&&!loadError ? <Empty description="还没有项目，从项目名称开始"><Button type="primary" onClick={handleCreate}>创建第一个项目</Button></Empty> : <div className="project-card-grid">
+          {!projects.length&&!loading&&!loadError ? (keyword ? <Empty description="未找到匹配的项目" /> :
+            <Empty description="还没有项目，从项目名称开始"><Button type="primary" onClick={handleCreate}>创建第一个项目</Button></Empty>) : <div className="project-card-grid">
             {projects.map(project=><Link key={project.id} className="project-card-link" to={`/projects/${project.id}/images`} aria-label={`进入项目 ${project.project_name}`}>
               <Card className="project-card" hoverable role="article" aria-label={project.project_name}
                 title={project.project_name}

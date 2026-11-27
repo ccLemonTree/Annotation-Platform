@@ -54,6 +54,65 @@ def test_existing_task_archive_can_seed_cache_without_modifying_source(package,t
     assert executor.file_hash(executor.SNAPSHOT_CACHE_ROOT/sha/'input.zip')==sha
 
 
+def test_docker_registers_verified_history_and_binds_it_readonly(package,tmp_path,monkeypatch):
+    archive,sha=package
+    old=payload(tmp_path,sha)
+    old['config']['snapshot_id']='version'
+    source,_=executor.run_directory(old)
+    executor.unpack_snapshot(archive,source/'dataset','rfdetr_medium')
+    (source/'.dataset-ready').write_text(sha)
+    (source/'run_config.json').write_text(json.dumps(old['config']))
+    def short_lock(path):
+        assert path.name!='docker-1', 'a cache lookup must not wait for extraction'
+        return contextlib.nullcontext()
+    monkeypatch.setattr(executor,'run_lock',short_lock)
+    task=payload(tmp_path,sha,'other-runs')
+    task['config'].update(snapshot_id='version', mounts=[], environment={}, parameters={}, shm_size_gb=2, gpu_uuids=['GPU-a'])
+    task['snapshot_tenant']=1
+    assert executor.execute(dict(task,action='snapshot_directory',legacy_runs=[str(source)]))['hit']
+    monkeypatch.setattr(executor,'run_lock',lambda path:contextlib.nullcontext())
+    executor.execute(dict(task,action='unpack'))
+    assert executor.execute(dict(task,action='snapshot_directory',legacy_runs=[]))['hit']
+    assert not executor.execute(dict(task,action='snapshot_directory',snapshot_tenant=2,legacy_runs=[]))['hit']
+    assert not (executor.SNAPSHOT_CACHE_ROOT/sha/'input.zip').exists()
+    commands=[]
+    monkeypatch.setattr(executor,'precheck',lambda _: dict(ok=True,image_digest='sha256:fixture'))
+    monkeypatch.setattr(executor,'container_state',lambda _: None)
+    monkeypatch.setattr(executor,'docker',commands.append)
+    assert executor.execute(dict(task,action='start'))['status']=='running'
+    assert f'type=bind,src={source/"dataset"},dst=/output/dataset,readonly' in commands[0]
+    assert f'type=bind,src={Path(task["config"]["output_root"])/task["run_id"]},dst=/output' in commands[0]
+
+
+@pytest.mark.parametrize('format,kind',[
+    ('swift_sft','swift_sft'),('infonce','wemm'),('contrastive','custom'),
+    ('online_contrastive','wemm'),('cosine_similarity','custom'),
+])
+def test_supported_text_image_formats_use_one_docker_dataset(package,tmp_path,format,kind):
+    archive,_=package
+    with zipfile.ZipFile(archive,'w') as data:
+        data.writestr('images/a.jpg',b'image')
+        data.writestr('train.jsonl',json.dumps(dict(images=['images/a.jpg']))+'\n')
+        data.writestr('manifest.json',json.dumps(dict(training=dict(format=format,samples=1),
+            assets=[dict(image='images/a.jpg',content_hash=hashlib.sha256(b'image').hexdigest())])))
+    sha=executor.file_hash(archive)
+    first=payload(tmp_path,sha)
+    second=payload(tmp_path,sha,'second-runs')
+    for run in (first,second):
+        run.update(snapshot_tenant=1)
+        run['config'].update(kind=kind,snapshot_id='version')
+    directory,_=executor.run_directory(first)
+    (directory/'input.zip').write_bytes(archive.read_bytes())
+    executor.execute(dict(first,action='unpack'))
+    entry=executor.SNAPSHOT_CACHE_ROOT/sha
+    (entry/'input.zip').unlink()
+    assert executor.execute(dict(second,action='snapshot_cache'))['hit']
+    assert executor.execute(dict(second,action='unpack'))['ok']
+    dataset=entry/'docker-1/dataset'
+    assert json.loads((dataset/'train.jsonl').read_text())['images']==['/output/dataset/images/a.jpg']
+    assert not (directory/'dataset').exists()
+
+
 def test_corrupt_cache_and_failed_upload_are_never_used(package,tmp_path):
     archive,sha=package;task=payload(tmp_path,sha)
     entry=executor.SNAPSHOT_CACHE_ROOT/sha;entry.mkdir(parents=True)
@@ -125,7 +184,7 @@ async def test_parallel_tasks_on_same_server_upload_only_once(tmp_path,monkeypat
         nonlocal cached
         await asyncio.sleep(.01)
         if action=='snapshot_cache':return dict(hit=cached)
-        if action=='unpack':cached=True;return dict(ok=True)
+        if action=='unpack_begin':cached=True;return dict(state='ready')
         raise AssertionError(action)
     async def connection(db,run):return None
     def upload(server,value):uploads.append(value['upload']['remotePath'])
@@ -137,7 +196,7 @@ async def test_parallel_tasks_on_same_server_upload_only_once(tmp_path,monkeypat
     class DB:
         async def scalars(self,query):return SimpleNamespace(all=lambda:[])
     runs=[SimpleNamespace(id=uuid4(),tenant_id=1,status='starting',server=dict(id='same',name='fixture'),
-        source=dict(kind='snapshot',sha256=sha,blob_path='fixture'),output_dir=f'/output/{index}',
+        config={},source=dict(kind='snapshot',sha256=sha,blob_path='fixture'),output_dir=f'/output/{index}',
         inspection=dict(startup=dict(steps=['archive','upload','unpack']))) for index in range(2)]
     await asyncio.gather(*(training_runs.transfer_snapshot(DB(),run) for run in runs))
     assert len(uploads)==1 and runs[1].inspection['startup']['cache_hit'] is True

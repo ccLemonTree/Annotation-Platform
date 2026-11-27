@@ -62,6 +62,15 @@ def test_engine_pool_and_pg_timeout_options():
     assert "connect_args" not in sqlite_opts
 
 
+def test_annotation_project_validation_uses_postgres_key_share():
+    from services.annotations import _lock_project_shared
+
+    dialect = postgresql.dialect()
+    db = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=dialect))
+    sql = str(_lock_project_shared(select(Project.id), db).compile(dialect=dialect))
+    assert sql.endswith("FOR KEY SHARE")
+
+
 def test_models_init_exports_all_orm_tables():
     registered = set(Base.metadata.tables.keys())
     expected = {

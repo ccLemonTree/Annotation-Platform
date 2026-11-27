@@ -4,6 +4,7 @@ import { Alert,Button,Card,Collapse,Drawer,Form,Input,Modal,Popconfirm,Result,Se
 import { useCurrentUser } from '../components/currentUser';
 import ModelDeployment,{DeploymentFields} from '../components/ModelDeployment';
 import DeploymentPlatforms from '../components/DeploymentPlatforms';
+import CursorPager from '../components/CursorPager';
 import DeploymentLogs,{DeploymentSshLinks} from '../components/DeploymentLogs';
 import {deploymentBusy,deploymentError,deploymentNames} from '../utils/modelDeployment';
 import { archiveModel,createDeploymentBatch,deploymentBatchAction,getDeployment,getDeployments,getDeploymentServers,getDistributionSources,getModelReleases,getServerTargets,inspectServerTarget,retryModelArchive,saveServerTarget,getDeploymentBatch,deleteDeployments } from '../api/modelDeployments';
@@ -135,7 +136,8 @@ export default function ModelDeploymentsPage(){
     if(batch&&batchPreview.length&&batchPreview.every(row=>deleted.has(row.id)))setBatch(undefined);
     setBatchPreview(values=>values.filter(row=>!deleted.has(row.id)));setRecordPage(1);setNotice(`已删除 ${result.deleted.length} 条未生效记录。`);
   });
-  const pager=(page:number,more:boolean,set:(page:number)=>void)=><div style={{display:'flex',justifyContent:'flex-end'}}><Space size="small"><Button size="small" disabled={page===1} onClick={()=>set(page-1)}>上一页</Button><Typography.Text type="secondary">第 {page} 页</Typography.Text><Button size="small" disabled={!more} onClick={()=>set(page+1)}>下一页</Button></Space></div>;
+  const pager=(page:number,more:boolean,set:(page:number)=>void)=><CursorPager page={page} hasMore={more}
+    onPrev={()=>set(page-1)} onNext={()=>set(page+1)}/>;
   const selectedSource=sources.find(row=>row.id===selectedRun);
   const readyReleases=[...new Map([...releases.filter(row=>row.status==='ready'&&row.runtime!=='triton_plan'),...(release?[release]:[])].map(row=>[row.id,row])).values()];
   const repositoryChoices=[...new Map([...(repositoryModel?[repositoryModel]:[]),...repositoryModels].map(row=>[row.id,row])).values()];

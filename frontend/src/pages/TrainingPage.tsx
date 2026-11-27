@@ -120,10 +120,14 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
     }
   };
   const dinov3 = kind === 'dinov3_vits16_ltdetr';
+  const allowedFormats = catalog[kind]?.dataset_formats;
+  const modelSize = catalog[kind]?.schema.properties.size;
   const taskType=Form.useWatch(['parameters','task_type'],form),lossType=Form.useWatch(['parameters','loss_type'],form);
   const selectedSnapshotId=Form.useWatch('snapshot_id',form) as string | undefined;
   const selectedProjectId=Form.useWatch('project_id',form) as string | undefined;
-  const compatibleSnapshots=useMemo(()=>snapshots.filter(s => trainer ? s.format===trainer.dataset_format : s.format==='yolo'||kind!=='yolo26'&&s.format==='coco').map(snapshot=>({snapshot,...snapshotSummary(snapshot)})),[snapshots,kind,trainer]);
+  const compatibleSnapshots=useMemo(()=>snapshots.filter(s => trainer ? s.format===trainer.dataset_format :
+    allowedFormats ? allowedFormats.some(format => format === s.format) : s.format==='yolo'||kind!=='yolo26'&&s.format==='coco'
+  ).map(snapshot=>({snapshot,...snapshotSummary(snapshot)})),[snapshots,kind,trainer,allowedFormats]);
   const selectedSnapshot=compatibleSnapshots.find(row=>row.snapshot.id===selectedSnapshotId);
   const snapshotInfo=selectedSnapshot;
   const datasetFormat=trainer?.dataset_format || (taskType==='embedding'?(lossType||'infonce'):'swift_sft');
@@ -194,10 +198,11 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
     const controller = new AbortController();
     getTrainingDefaults(serverId, kind, controller.signal).then(values => {
       if (controller.signal.aborted) return;
-      for (const key of ['model_path', 'output_root'] as const) if (!form.getFieldValue(key)) form.setFieldValue(key, values[key]);
+      if (!allowedFormats && !form.getFieldValue('model_path')) form.setFieldValue('model_path', values.model_path);
+      if (!form.getFieldValue('output_root')) form.setFieldValue('output_root', values.output_root);
     }).catch(cause => { if (!controller.signal.aborted) setError(errorText(cause)); });
     return () => controller.abort();
-  }, [open, serverId, kind, admin, form, backend]);
+  }, [open, serverId, kind, admin, form, backend, allowedFormats]);
   useEffect(() => {
     if (!open || !admin || backend !== 'k8s') return;
     const controller = new AbortController(); setK8sError('');
@@ -260,6 +265,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
     form.resetFields();
     const values = structuredClone(run.config) as TrainingInput & { adapter_version?: number; runtime_dataset?: string };
     delete values.adapter_version; delete values.runtime_dataset;
+    if (run.kind === 'yolo11' && values.parameters.optimizer === undefined) values.parameters.optimizer = catalog.yolo11?.defaults.optimizer;
     const sameFormat = !copy || currentTrainer?.dataset_format === registration?.dataset_format;
     const trainerParameters = copy && currentTrainer
       ? Object.fromEntries(Object.entries(currentTrainer.parameters).map(([key, value]) => [
@@ -427,6 +433,9 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
             ...Object.entries(catalog).filter(([value]) => backend === 'docker' || k8sKinds.includes(value)).map(([value, template]) => ({ value, label: template.name })),
             ...(backend === 'docker' ? [...trainers.filter(row => row.id !== savedTrainer?.id), ...(savedTrainer ? [savedTrainer] : [])].map(row => ({ value: row.id, label: `${row.name} · ${row.dataset_format}` })) : []),
           ]} /></Form.Item></Col>
+          {modelSize && <Col xs={24} md={12}><Form.Item name={['parameters','size']} label="模型尺寸" rules={[{ required: true }]}>
+            <ParameterInput name="size" field={modelSize} />
+          </Form.Item></Col>}
           {backend === 'docker' ? <><Col xs={24} md={12}><Form.Item name="server_id" label="训练服务器" rules={[{ required: true }]} extra={!trainingServers.length?<Link to="/gpu-servers">前往服务器管理指定训练服务器</Link>:undefined}><Select onChange={id => { setServerId(id); setGpuLoading(true); setGpuError(''); setGpus([]); form.setFieldsValue({ gpu_uuids: [], model_path: undefined, output_root: undefined }); }} placeholder="选择已指定的训练服务器" options={serverChoices.map(s => ({ value: s.id, label: s.name }))} /></Form.Item></Col>
           <Col xs={24} md={12}><Form.Item name="gpu_uuids" label="物理GPU（明确分配）" rules={[{ required: true, message: '请选择至少一张物理GPU' }]}><Select mode="multiple" loading={gpuLoading} placeholder="选择GPU；启动前再次检查占用" options={gpus.map(g => ({ value: g.uuid, label: `${g.index} · ${g.name} · 空闲${Math.round((g.memory_free_mib || 0) / 1024)}GiB` }))} /></Form.Item></Col>
           </> : <><Col xs={24} md={12}><Form.Item name={['k8s','nodes']} label="训练节点" rules={[{required:true,type:'array',min:1,message:'请选择至少一个节点'}]}><Select mode="multiple" options={(k8sInfo?.nodes || []).map(n=>({value:n.name,label:`${n.name} · ${n.ready ? 'Ready' : '未就绪'} · 可用 ${n.gpu_available}/${n.gpu_capacity} 卡`,disabled:!n.ready}))} /></Form.Item></Col><Col xs={24} md={12}><Form.Item name={['k8s','gpus_per_node']} label="每节点GPU数" rules={[{required:true,type:'number',min:1}]}><InputNumber min={1} precision={0} style={{width:'100%'}} /></Form.Item></Col><Col span={24}><Typography.Paragraph>总卡数：{(nodes?.length || 0) * (gpusPerNode || 0)}（{nodes?.length || 0} 节点 × {gpusPerNode || 0} 卡）；输出默认位于 {k8sInfo?.output_root || '/adb-ssd-mount/ai/chen/training/runs'}。冻结数据自动传输到训练PV；基础模型须预先放在同一PV中。</Typography.Paragraph></Col></>}
@@ -437,7 +446,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
         {dinov3 && <Alert type="info" showIcon title="DINOv3 电瓶车等目标的监督检测微调" description="使用 dinov3/vits16-ltdetr-coco 完整预训练检测权重；先完成框标注、审核和train/val划分。原始图片不能直接用于本训练器。默认1000步、总batch 4是小数据起点，需用独立验证图片评估；不使用test集训练或选模型。" style={{ marginBottom: 16 }} />}
         {swift?<TrainingPlatformData key={datasetFormat} form={form} projects={context ? [context] : projects} format={datasetFormat} showSwiftBatchNote={!trainer} projectLocked={!!context} onOpenFreeze={()=>setOpen(false)}/>: <Row gutter={16}>
           <Col xs={24} md={12}><Form.Item name="project_id" label="冻结导出所属项目" rules={[{ required: true }]}><Select disabled={!!context} showSearch optionFilterProp="label" options={(context ? [context] : projects).map(p => ({ value: p.id, label: p.project_name }))} onChange={id => { clearLabels(); form.setFieldValue('snapshot_id', undefined); loadSnapshots(id); }} /></Form.Item></Col>
-          <Col xs={24} md={12}><Form.Item name="snapshot_id" label="冻结版本" rules={[{ required: true }]} extra={<Space wrap><span>选择同时包含训练集和验证集的冻结版本。</span><Button type="link" size="small" disabled={!form.getFieldValue('project_id')} loading={snapshotLoading} onClick={()=>loadSnapshots(form.getFieldValue('project_id'))}>重新读取冻结版本</Button></Space>}><Select loading={snapshotLoading} onChange={id => { clearLabels(); const available = snapshots.find(s => s.id === id)?.manifest.labels || []; setDatasetLabels(available); form.setFieldValue('selected_labels', available.length ? available : null); }} options={compatibleSnapshots.map(({snapshot:s,problems}) => ({ value: s.id, disabled: !!problems.length, label: `${s.version_label ? s.version_label+' · ' : ''}${s.format.toUpperCase()} · ${new Date(s.created_at).toLocaleString('zh-CN')} · ${s.id.slice(0, 8)}${problems.length ? ' · ' + problems.join('、') : ''}` }))} /></Form.Item></Col>
+          <Col xs={24} md={12}><Form.Item name="snapshot_id" label="冻结版本" rules={[{ required: true }]} extra={<Space wrap><span>{kind === 'damo_yolo' ? '支持 YOLO 和 COCO 冻结版本。YOLO 在训练启动时转换。' : '选择同时包含训练集和验证集的冻结版本。'}</span><Button type="link" size="small" disabled={!form.getFieldValue('project_id')} loading={snapshotLoading} onClick={()=>loadSnapshots(form.getFieldValue('project_id'))}>重新读取冻结版本</Button></Space>}><Select loading={snapshotLoading} onChange={id => { clearLabels(); const available = snapshots.find(s => s.id === id)?.manifest.labels || []; setDatasetLabels(available); form.setFieldValue('selected_labels', available.length ? available : null); }} options={compatibleSnapshots.map(({snapshot:s,problems}) => ({ value: s.id, disabled: !!problems.length, label: `${s.version_label ? s.version_label+' · ' : ''}${s.format.toUpperCase()} · ${new Date(s.created_at).toLocaleString('zh-CN')} · ${s.id.slice(0, 8)}${problems.length ? ' · ' + problems.join('、') : ''}` }))} /></Form.Item></Col>
         </Row>}
         {!swift && <>
           {selectedProjectId && !snapshotLoading && !compatibleSnapshots.some(row=>!row.problems.length) && <Alert type="warning" showIcon style={{marginBottom:16}}
@@ -458,7 +467,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
             options={repositoryChoices.map(row=>({value:row.id,label:`${row.name} · ${row.version.slice(0,8)}`}))}/>
         </Form.Item>}
         <Form.Item noStyle shouldUpdate>{()=>form.getFieldValue('repository_model_id')?null:
-          <Form.Item name="model_path" label={dinov3?'服务器DINOv3完整检测权重路径':'服务器基础权重文件或模型目录'} rules={[{required:!trainer}]}><Input placeholder="填写所选服务器上的绝对路径"/></Form.Item>}</Form.Item>
+          <Form.Item name="model_path" label={dinov3?'服务器DINOv3完整检测权重路径':allowedFormats?'服务器基础权重文件（可选）':'服务器基础权重文件或模型目录'} rules={[{required:!trainer&&!allowedFormats}]}><Input placeholder={allowedFormats?'留空时使用镜像内对应尺寸的预训练权重':'填写所选服务器上的绝对路径'}/></Form.Item>}</Form.Item>
         <Form.Item name="image" label="训练镜像" rules={[{ required: true }]} extra={trainer ? '使用登记的训练镜像。' : '需要已在服务器就绪；平台不会重复拉取镜像。'}><Input readOnly={!!trainer} /></Form.Item>
         <Row gutter={16}>
           <Col xs={24} md={12}><Form.Item name="output_root" label="服务器输出根目录" rules={[{ required: true }]} extra="默认按北京时间生成，可修改；不存在时自动创建，每任务再增加独立UUID目录。"><Input placeholder="/ai/chen/training/runs/年月日-时分秒" /></Form.Item></Col>
@@ -470,7 +479,7 @@ export default function TrainingPage({ embeddedProject }: { embeddedProject?: Pr
           <Input.TextArea rows={4} spellCheck={false} />
         </Form.Item> : <>
         <Typography.Title level={5}>训练参数</Typography.Title>
-        <Row gutter={16}>{Object.entries(catalog[kind]?.schema.properties || {}).map(([key, field]) => {
+        <Row gutter={16}>{Object.entries(catalog[kind]?.schema.properties || {}).filter(([key]) => key !== 'size').map(([key, field]) => {
           const schema = field.anyOf?.find(v => v.type !== 'null') || field;
           return <Col xs={24} sm={12} md={8} key={kind + key}><Form.Item name={['parameters', key]} label={dinov3 && key === 'batch_size' ? '总批次大小（全部GPU）' : parameterLabels[key] || key} extra={key} valuePropName={schema.type === 'boolean' ? 'checked' : 'value'}>{backend === 'k8s' && ((kind === 'yolo26' && key === 'device') || (kind.startsWith('rfdetr_') && key === 'devices')) ? <Input value="auto" disabled /> : <ParameterInput name={key} field={field} />}</Form.Item></Col>;
         })}</Row>

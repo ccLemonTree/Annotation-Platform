@@ -77,6 +77,32 @@ def test_yolo_missing_negative_label_stays_a_background_sample(source,tmp_path):
     assert '' in [p.read_text() for p in (tmp_path/'prepared/train/labels').glob('*.txt')]
 
 
+def test_damo_converts_frozen_yolo_with_filtered_classes_and_backgrounds(source,tmp_path):
+    from PIL import Image
+    from services.training_dataset import prepare_detection
+
+    shutil.copytree(source/'valid', source/'test')
+    with (source/'data.yaml').open('a') as config:
+        config.write('test: test/images\n')
+    for image in source.glob('*/images/*.jpg'):
+        Image.new('RGB', (200, 100)).save(image)
+    (source/'train/labels/negative.txt').unlink()
+    before={file.relative_to(source):file.read_bytes() for file in source.rglob('*') if file.is_file()}
+    output=tmp_path/'prepared'
+    assert prepare_detection(str(source),str(output),'damo_yolo',['star','smoke'])==str(output)
+    for split in ('train','valid','test'):
+        folder=output/split
+        data=json.loads((folder/'_annotations.coco.json').read_text(encoding='utf-8'))
+        assert data['categories']==[dict(id=0,name='smoke'),dict(id=1,name='star')]
+        assert len(data['images'])==2
+        assert all((folder/i['file_name']).is_file() and (i['width'],i['height'])==(200,100) for i in data['images'])
+        assert [a['category_id'] for a in data['annotations']]==[0,1]
+        assert data['annotations'][0]['bbox']==pytest.approx([70,35,20,10])
+        assert data['annotations'][0]['area']==pytest.approx(200)
+        assert {a['image_id'] for a in data['annotations']}=={data['images'][0]['id']}
+    assert before=={file.relative_to(source):file.read_bytes() for file in source.rglob('*') if file.is_file()}
+
+
 def test_coco_filter_preserves_images_splits_and_remaps_categories(tmp_path,monkeypatch):
     from services.training_dataset import prepare_detection,inspect_detection
     monkeypatch.setattr(Path,'symlink_to',lambda self,target:shutil.copyfile(target,self))

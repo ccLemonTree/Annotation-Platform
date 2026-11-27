@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link,useSearchParams } from 'react-router-dom';
 import { Alert, Badge, Button, Card, Checkbox, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Modal, Pagination, Popover, Progress, Select, Space, Spin, Table, Tag, Typography, Upload } from 'antd';
 import { CopyOutlined, DownloadOutlined, EllipsisOutlined, RightOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { useCurrentUser } from '../components/currentUser';
 import { getTrainingRun } from '../api/training';
-import { downloadRepositoryBatch, downloadRepositoryModel, getRepositoryArtifacts, getRepositoryConfig, getRepositoryGroups, getRepositoryModels, getRepositorySources, importRepositoryModel, repositoryBatchLabel, repositoryConfigPath, repositoryDownloadUrl, retryRepositoryModel, updateRepositoryModel, uploadRepositoryModel } from '../api/modelRepository';
+import { downloadRepositoryBatch, downloadRepositoryModel, getRepositoryArtifacts, getRepositoryConfig, getRepositoryGroups, getRepositoryModels, getRepositorySources, importRepositoryModel, repositoryBatchLabel, repositoryConfigPath, repositoryDownloadCommand, retryRepositoryModel, updateRepositoryModel, uploadRepositoryModel } from '../api/modelRepository';
 import type { RepositoryArtifact, RepositoryDownloadFilters, RepositoryFormat, RepositoryGroup, RepositoryMetadata, RepositoryModel, RepositorySource, RepositoryUpdate } from '../api/modelRepository';
 import { deploymentError } from '../utils/modelDeployment';
+import { appMessage, appModal } from '../ui/appFeedback';
 import './ModelRepositoryPage.css';
 
 const formats = [{ value: 'pt', label: 'PT' }, { value: 'onnx', label: 'ONNX' }, { value: 'tensorrt', label: 'TensorRT' }, { value:'python',label:'Python backend' }, {value:'huggingface',label:'Hugging Face 完整模型'}];
@@ -53,6 +54,7 @@ export default function ModelRepositoryPage() {
   const [files, setFiles] = useState<File[]>([]), [sources, setSources] = useState<RepositorySource[]>([]), [sourcePage, setSourcePage] = useState(1), [sourceMore, setSourceMore] = useState(false), [sourceLoading, setSourceLoading] = useState(false);
   const [artifacts, setArtifacts] = useState<RepositoryArtifact[]>([]), [artifactLoading, setArtifactLoading] = useState(false), [truncated, setTruncated] = useState(false);
   const [openGroup,setOpenGroup]=useState<string>();
+  const versionDrawer = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<RepositoryModel>(), [busyId, setBusyId] = useState('');
   const [downloadingIds, setDownloadingIds] = useState<string[]>([]);
   const [editing, setEditing] = useState(false), [editSaving, setEditSaving] = useState(false), [editError, setEditError] = useState('');
@@ -174,16 +176,38 @@ export default function ModelRepositoryPage() {
     finally { setEditSaving(false); }
   };
   const copyDownload = async (row: RepositoryModel) => {
-    try {
-      const url = repositoryDownloadUrl(row.id);
-      if (navigator.clipboard) await navigator.clipboard.writeText(url);
-      else {
-        const input = document.createElement('textarea'); input.value = url; input.style.cssText = 'position:fixed;top:0;left:0;opacity:0'; document.body.appendChild(input);
-        try { input.select(); if (!document.execCommand('copy')) throw Error('Copy failed'); }
-        finally { input.remove(); }
-      }
-      setNotice('下载接口已复制。');
-    } catch { setError('复制失败，请检查浏览器剪贴板权限。'); }
+    let command: string;
+    try { command = await repositoryDownloadCommand(row); }
+    catch (cause) { appMessage.error(deploymentError(cause)); return; }
+    if (navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(command);
+        appMessage.success('curl 下载命令已复制。');
+        return;
+      } catch { /* Try selecting the address inside the open drawer. */ }
+    }
+    const container = versionDrawer.current;
+    if (container) {
+      const input = document.createElement('textarea');
+      input.value = command;
+      input.readOnly = true;
+      input.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      container.appendChild(input);
+      try {
+        input.focus({ preventScroll: true });
+        input.select();
+        if (document.activeElement === input && document.execCommand('copy')) {
+          appMessage.success('curl 下载命令已复制。');
+          return;
+        }
+      } catch { /* The browser can block both clipboard methods. */ }
+      finally { input.remove(); }
+    }
+    appModal.info({
+      title: '请手动复制 curl 下载命令',
+      content: <Input.TextArea aria-label="curl 下载命令" value={command} readOnly rows={4} onFocus={event => event.target.select()} />,
+      okText: '关闭',
+    });
   };
 
   const renderVersion=(row:RepositoryModel)=><Card key={row.id} className="repository-version-card" role="article" aria-label={`${row.name} ${row.version}`}>
@@ -194,7 +218,7 @@ export default function ModelRepositoryPage() {
     <div className="repository-cell"><span>{row.source?.kind === 'training' || row.run_id ? '训练产物' : '直接上传'}</span><small>{new Date(row.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false })}</small></div>
     <Space size={2}><Button aria-label={row.files.length > 1 ? '下载 ZIP' : '下载'} icon={<DownloadOutlined />} disabled={row.status !== 'ready' || downloadingIds.includes(row.id)} loading={downloadingIds.includes(row.id)} onClick={() => void download(row)}>下载{row.files.length > 1 ? ' ZIP' : ''}</Button>
             {admin && <Button type="text" aria-label="编辑" disabled={row.status === 'importing'} onClick={() => openDetails(row, true)}>编辑</Button>}
-            {row.status === 'ready' && <Dropdown trigger={['click']} menu={{ items:[{ key:'copy',icon:<CopyOutlined aria-hidden="true" />,label:'复制下载接口',onClick:()=>void copyDownload(row) },...(admin && row.format === 'tensorrt' ? [{ key:'deploy',label:<Link to={`/model-deployments?repository_id=${row.id}`}>选择服务器更新</Link> }] : [])] }}><Button type="text" aria-label="更多操作" icon={<EllipsisOutlined />} /></Dropdown>}
+            {row.status === 'ready' && <Dropdown trigger={['click']} menu={{ items:[{ key:'copy',icon:<CopyOutlined aria-hidden="true" />,label:'复制 curl 下载命令',onClick:()=>void copyDownload(row) },...(admin && row.format === 'tensorrt' ? [{ key:'deploy',label:<Link to={`/model-deployments?repository_id=${row.id}`}>选择服务器更新</Link> }] : [])] }}><Button type="text" aria-label="更多操作" icon={<EllipsisOutlined />} /></Dropdown>}
             {admin && row.run_id && ['failed', 'interrupted'].includes(row.status) && <Button size="small" disabled={!!busyId} onClick={() => void retry(row)}>重试入库</Button>}</Space>
   </Card>;
 
@@ -204,7 +228,7 @@ export default function ModelRepositoryPage() {
     {notice && <Alert type="success" showIcon closable onClose={() => setNotice('')} title={notice} />}
     <Card className="repository-list">
       <div className="repository-list-heading"><div><h2>模型分组 <span>{total} 组 · {versionTotal} 个版本</span></h2><p>按模型组集中管理组件，展开查看 PT、ONNX、TensorRT 和 Python backend 版本。</p></div>
-        <Popover trigger="click" title="下载接口说明" content={<p className="repository-api-help">下载接口使用 Authorization: Bearer 请求头认证；复制的地址不包含凭据。浏览器下载会暂存文件，超大模型建议复制接口后在服务器下载。</p>}><Button type="text">下载接口说明</Button></Popover>
+        <Popover trigger="click" title="下载接口说明" content={<p className="repository-api-help">在模型版本的更多操作中复制 curl 下载命令，可直接在终端执行。命令里的授权仅适用于所选模型版本，2 小时内有效。</p>}><Button type="text">下载接口说明</Button></Popover>
       </div>
       <div className="page-toolbar">
         <Space wrap>
@@ -230,8 +254,10 @@ export default function ModelRepositoryPage() {
       </div>
       <Drawer className="repository-drawer" title={openGroup} open={openGroup!==undefined} size="90vw" styles={{wrapper:{maxWidth:'100vw'}}} destroyOnHidden onClose={()=>setOpenGroup(undefined)}
         extra={<Button icon={<DownloadOutlined />} disabled={batchDownloading} onClick={()=>openBatchDownload(openGroup)}>批量下载{selectedIds.length?`（${selectedIds.length}）`:''}</Button>}>
-        {error&&<Alert type="error" showIcon closable onClose={()=>setError('')} title={error} />}
-        {openGroup!==undefined&&<RepositoryVersions key={`${openGroup}/${q}/${format}/${gpu}`} group={openGroup} q={q} format={format} gpu={gpu} reload={reload} renderModel={renderVersion} />}
+        <div ref={versionDrawer}>
+          {error&&<Alert type="error" showIcon closable onClose={()=>setError('')} title={error} />}
+          {openGroup!==undefined&&<RepositoryVersions key={`${openGroup}/${q}/${format}/${gpu}`} group={openGroup} q={q} format={format} gpu={gpu} reload={reload} renderModel={renderVersion} />}
+        </div>
       </Drawer>
     </Card>
     <Modal open={downloadOpen} title="批量下载模型" width={620} footer={null} closable={!batchDownloading} mask={{closable:!batchDownloading}} onCancel={()=>{if(!batchDownloading)setDownloadOpen(false);}}>

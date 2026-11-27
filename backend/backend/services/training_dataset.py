@@ -123,7 +123,13 @@ def inspect_lightly_model(source):
     return dict(version=lightly_train.__version__,model=name)
 
 
-def prepare_detection(source,destination,kind,selected_labels=None):
+def frozen_detection_source(source):
+    if Path(source).exists():
+        return source
+    return '/output/dataset/rfdetr/data.yaml' if source.endswith('/data.yaml') else '/output/dataset/data.yaml'
+
+
+def prepare_detection(source,destination,kind,selected_labels=None,link_image=None):
     data=_description(source);names=data['labels']
     selected=names if selected_labels is None else selected_labels
     if not selected or set(selected)-set(names):raise ValueError('选择的训练标签不存在或为空')
@@ -144,7 +150,9 @@ def prepare_detection(source,destination,kind,selected_labels=None):
     for split,folder in data['splits'].items():
         target=output/('valid' if split=='val' else split);target.mkdir()
         if data['format']=='yolo':
-            (target/'images').mkdir();(target/'labels').mkdir()
+            coco=dict(images=[],annotations=[],categories=[dict(id=i,name=name) for i,name in enumerate(labels)]) if kind=='damo_yolo' else None
+            (target/'images').mkdir()
+            if coco is None:(target/'labels').mkdir()
             images=_images(folder);counts[split]=len(images)
             for index,image in enumerate(images):
                 parts=list(image.parts)
@@ -159,10 +167,15 @@ def prepare_detection(source,destination,kind,selected_labels=None):
                     if len(values)!=5 or not 0<=cid<len(names) or any(not math.isfinite(float(v)) or not 0<=float(v)<=1 for v in values[1:]):
                         raise ValueError('需要有效的YOLO检测框标注：'+str(label))
                     if cid in mapping:
-                        lines.append(str(mapping[cid])+' '+' '.join(values[1:]));objects[split]+=1
+                        lines.append([str(mapping[cid]),*values[1:]]);objects[split]+=1
                 name=f'{index:08d}_{image.name}'
-                (target/'images'/name).symlink_to(image.resolve())
-                (target/'labels'/Path(name).with_suffix('.txt')).write_text('\n'.join(lines)+('\n' if lines else ''))
+                _link_image(image.resolve(),target/'images'/name,link_image)
+                if coco is None:
+                    (target/'labels'/Path(name).with_suffix('.txt')).write_text(''.join(' '.join(line)+'\n' for line in lines))
+                else:
+                    _append_coco_image(coco,image,name,lines)
+            if coco is not None:
+                (target/'_annotations.coco.json').write_text(json.dumps(coco,ensure_ascii=False),encoding='utf-8')
         else:
             if kind=='yolo26':raise ValueError('YOLO训练需要YOLO格式数据')
             document=json.loads((folder/'_annotations.coco.json').read_text())
@@ -172,7 +185,7 @@ def prepare_detection(source,destination,kind,selected_labels=None):
             for index,image in enumerate(document['images']):
                 original=_inside(folder,image['file_name'])
                 if not original.is_file():raise ValueError('COCO图片不存在：'+str(original))
-                name=f'{index:08d}_{original.name}';(target/name).symlink_to(original)
+                name=f'{index:08d}_{original.name}';_link_image(original,target/name,link_image)
                 image['file_name']=name
             annotations=[]
             for annotation in document['annotations']:
@@ -184,7 +197,7 @@ def prepare_detection(source,destination,kind,selected_labels=None):
             (target/'_annotations.coco.json').write_text(json.dumps(document,ensure_ascii=False))
             counts[split]=len(document['images']);objects[split]=len(annotations)
     if not objects.get('train') or not objects.get('val'):raise ValueError('所选标签在train和val中都必须有标注')
-    if data['format']=='yolo':
+    if data['format']=='yolo' and kind!='damo_yolo':
         (output/'data.yaml').write_text(json.dumps(dict(path=str(output),nc=len(labels),names=labels,
             train='train/images',val='valid/images',test='test/images' if 'test' in data['splits'] else []),ensure_ascii=False))
     receipt.write_text(json.dumps(dict(labels=labels,original_labels=names,
@@ -192,3 +205,26 @@ def prepare_detection(source,destination,kind,selected_labels=None):
     if kind.startswith('rfdetr'):
         os.environ['PLATFORM_PREPARED_DETECTION']=signature+hashlib.sha256(receipt.read_bytes()).hexdigest()
     return str(output/'data.yaml') if kind=='yolo26' else str(output)
+
+
+def _append_coco_image(coco,image,name,lines):
+    from PIL import Image
+
+    with Image.open(image) as opened:
+        width,height=opened.size
+    image_id=len(coco['images'])+1
+    coco['images'].append(dict(id=image_id,file_name=f'images/{name}',width=width,height=height))
+    for category,cx,cy,bw,bh in lines:
+        cx,cy,bw,bh=map(float,(cx,cy,bw,bh))
+        x=max(0.,(cx-bw/2)*width)
+        y=max(0.,(cy-bh/2)*height)
+        w=min(width,(cx+bw/2)*width)-x
+        h=min(height,(cy+bh/2)*height)-y
+        if w<=0 or h<=0:raise ValueError('YOLO检测框的宽高必须大于零：'+str(image))
+        coco['annotations'].append(dict(id=len(coco['annotations'])+1,image_id=image_id,
+            category_id=int(category),bbox=[x,y,w,h],area=w*h,iscrowd=0,segmentation=[]))
+
+
+def _link_image(source,destination,link_image):
+    if link_image is None:destination.symlink_to(source)
+    else:link_image(source,destination)

@@ -4,6 +4,7 @@ import { Alert,Button,Card,Select,Space,Table,Tag,Typography } from 'antd';
 import { createMatchReviewBatch,getMatchQueries,getWorkJobs,reviewMatch,type MatchQuery,type MatchHit,type WorkJob } from '../api/projectWork';
 import { getModelServices,isModelOffline,type ModelService } from '../api/modelServices';
 import AssetImage from './AssetImage';
+import CursorPager from './CursorPager';
 import JsonView from './JsonView';
 import { useCurrentUser } from './currentUser';
 import PromptEditor from './PromptEditor';
@@ -71,8 +72,7 @@ export default function MatchReviews({projectId}:{projectId:string}){
         {title:'审核状态',width:110,render:(_,row)=><Tag color={needsManual(row.hit)?'warning':row.hit.review_status==='approved'?'success':'default'}>{needsManual(row.hit)?'待人工复核':statuses[row.hit.review_status||'pending']}</Tag>},
         {title:'审核操作',width:180,render:(_,row)=><Space size="small"><Button size="small" aria-label="通过匹配审核" disabled={!!busy||row.hit.review_status==='approved'} loading={busy===row.key} onClick={()=>review(row.query,row.hit,true)}>通过</Button><Button size="small" aria-label="驳回匹配审核" danger disabled={!!busy||row.hit.review_status==='rejected'} onClick={()=>review(row.query,row.hit,false)}>驳回</Button></Space>},
       ]}/>
-    <div style={{marginTop:16,display:'flex',justifyContent:'flex-end'}}>
-      <Space size="small" wrap><Button size="small" disabled={loading||!!busy||page===1} onClick={()=>changePage(page-1)}>上一页</Button><Typography.Text type="secondary">第 {page} 页 · 每页最多 20 条查询</Typography.Text><Button size="small" disabled={loading||!!busy||queries.length<20} onClick={()=>changePage(page+1)}>下一页</Button></Space>
-    </div>
+    <CursorPager page={page} hasMore={queries.length>=20} loading={loading||!!busy} pageDetail="每页最多 20 条查询"
+      onPrev={()=>changePage(page-1)} onNext={()=>changePage(page+1)}/>
   </Card>;
 }

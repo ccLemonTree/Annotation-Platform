@@ -5,6 +5,7 @@ import { isAxiosError } from 'axios';
 import type { Project } from '../api/projects';
 import { deleteWorkJob,followWorkUploads,getWork,getWorkJobs,workAction,type WorkJob,type WorkDetail } from '../api/projectWork';
 import AssetImage from './AssetImage';
+import CursorPager from './CursorPager';
 
 const operations={crop:'检测切图',caption:'生成描述',index:'建立向量索引',detect_attributes:'检测切图并预标注属性',attributes:'大模型预标注属性',quality:'图片质量检查'};
 const workLabels={...operations,match_review:'匹配大模型审核',detect:'目标检测筛选',preannotate:'目标检测预标注',ai_review:'AI 审核',filter:'大模型筛选',branch:'条件分流',img_filter:'图像基础规则过滤',box_clean:'检测框规则清洗',img_transform:'图像变换与脱敏',script:'Python 脚本处理'};
@@ -108,9 +109,8 @@ export default function ProjectAnnotationTools({project,onRefresh}:{project:Proj
             <Link to={`/projects/${project.id}/images?work_job_id=${row.id}`}>查看裁剪结果</Link>
             <Link to={`/projects/${project.id}/prepare?source_job_id=${row.id}`}>用于新工作流</Link>
           </Space>}</Space>}]}/>
-      <div style={{display:'flex',justifyContent:'flex-end'}}>
-        <Space size="small"><Button size="small" disabled={jobPage===1} onClick={()=>setJobPage(v=>v-1)}>上一页</Button><Typography.Text type="secondary">第 {jobPage} 页</Typography.Text><Button size="small" disabled={jobs.length<20} onClick={()=>setJobPage(v=>v+1)}>下一页</Button></Space>
-      </div>
+      <CursorPager page={jobPage} hasMore={jobs.length>=20}
+        onPrev={()=>setJobPage(v=>v-1)} onNext={()=>setJobPage(v=>v+1)}/>
       <Drawer open={detailsOpen} size={780} styles={{wrapper:{maxWidth:'100vw'}}} destroyOnHidden
         title={detail?`${workLabels[detail.operation]} · 批次明细`:'批次明细'} loading={!detail&&!error}
         onClose={()=>{setJobId(undefined);setError('');}}>

@@ -31,6 +31,7 @@ export interface ParameterField {
 }
 export interface TrainingTemplate {
   name: string; image: string; defaults: Record<string, unknown>; environment: Record<string, string>;
+  dataset_formats?: TrainerDatasetFormat[];
   overrides?: Record<string, unknown>;
   schema: { properties: Record<string, ParameterField> };
 }

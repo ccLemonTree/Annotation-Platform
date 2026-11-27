@@ -4,8 +4,8 @@ from datetime import datetime,timedelta
 from pathlib import Path,PurePosixPath,PureWindowsPath
 from uuid import UUID
 from fastapi import HTTPException,UploadFile
-from sqlalchemy import select,update,func
-from models import ImageUpload,ImageUploadItem,ImageCollection,ImageCollectionMember,User
+from sqlalchemy import select,update,func,or_
+from models import Asset,ImageUpload,ImageUploadItem,ImageCollection,ImageCollectionMember,User
 from models.image_upload import ImageUploadBatchFile
 from config.settings import settings
 
@@ -109,7 +109,7 @@ def check_archive(path,kind):
                 raise ValueError(f'压缩包展开大小超过限制：已检查{total}字节，上限{settings.MAX_IMAGE_ARCHIVE_EXPANDED_SIZE}字节')
     return count
 
-def import_items(path,filename,cursor,checked=False,*,on_total=None):
+def import_items(path,filename,cursor,checked=False,*,on_total=None,annotation_format=None):
     kind='zip' if filename.lower().endswith('.zip') else 'tar' if filename.lower().endswith(ARCHIVES[1:]) else None
     if kind is None:
         if cursor==0:
@@ -122,6 +122,9 @@ def import_items(path,filename,cursor,checked=False,*,on_total=None):
         for index,item in enumerate(members(file,kind)):
             name,size,directory=member_info(item,kind)
             if index<cursor:continue
+            if not directory and (annotation_format=='json' and name.lower().endswith('.json')
+                    or annotation_format=='yolo' and name.lower().endswith(('.txt','.yaml','.yml'))):
+                continue
             if directory or not name.lower().endswith(IMAGES):yield index,name,None,'ignored';continue
             if size>settings.MAX_UPLOAD_SIZE:yield index,name,None,'invalid';continue
             try:
@@ -133,6 +136,50 @@ def import_items(path,filename,cursor,checked=False,*,on_total=None):
 
 def next_item(iterator):
     return next(iterator,None)
+
+
+def read_annotation_json(path, filename):
+    kind = 'zip' if filename.lower().endswith('.zip') else 'tar'
+    with open_archive(path, kind) as package:
+        matches, named = [], []
+        for entry in members(package, kind):
+            name, size, directory = member_info(entry, kind)
+            if not directory and name.lower().endswith('.json'):
+                matches.append((size, entry))
+                if PurePosixPath(name).name.lower() == 'annotations.json':
+                    named.append((size, entry))
+        choices = named or matches
+        if len(choices) != 1:
+            raise ValueError('压缩包须包含一个 annotations.json 或唯一的 JSON 标注文件')
+        size, entry = choices[0]
+        if size > settings.MAX_UPLOAD_SIZE:
+            raise ValueError('压缩包内标注文件超过上传大小限制')
+        reader = package.open(entry) if kind == 'zip' else package.extractfile(entry)
+        with reader:
+            return reader.read(settings.MAX_UPLOAD_SIZE + 1)
+
+
+async def external_archive_annotations(db, job, path, records):
+    from api.asset_routes import scoped_project
+    from services.annotation_json_import import apply_annotations
+    from services.yolo_import import import_label_files
+
+    project = await scoped_project(db, job.project_id, job.tenant_id)
+    if job.annotation_format == 'json':
+        response = await apply_annotations(db, project, records, None, commit=False,
+            crop_from_boxes=bool(job.result.get('crop_from_boxes')))
+    else:
+        with path.open('rb') as file:
+            response = await import_label_files(db, project, None, None,
+                UploadFile(file, filename=job.filename), None, job.id, allow_tar=True)
+    counts = dict(imported=0, unchanged=0, conflict=0, missing=0, invalid=0, errors=[])
+    if 'crop_count' in response:counts['crop_count']=response['crop_count']
+    for row in response['items']:
+        counts[row['status']] += 1
+        if row['status'] not in ('imported','unchanged') and len(counts['errors']) < 20:
+            counts['errors'].append({key: row[key] for key in ('filename','status','message') if key in row})
+    return counts
+
 
 async def process_one(sessions):
     async with sessions() as db:
@@ -152,10 +199,20 @@ async def process_one(sessions):
 
     try:
         path=staging(id)/'assembled' if job.user_id is None else await asyncio.to_thread(assemble,job)
-        if job.annotation_format:
+        external_labels=job.annotation_format if job.user_id is None else None
+        records, annotation_kinds = [], {}
+        if external_labels=='json':
+            from services.annotation_json_import import annotation_image_kinds,parse_annotation_records
+            kind='zip' if job.filename.lower().endswith('.zip') else 'tar'
+            archive_total=await asyncio.to_thread(check_archive,path,kind)
+            raw=await asyncio.to_thread(read_annotation_json,path,job.filename)
+            records=parse_annotation_records(raw)
+            annotation_kinds=annotation_image_kinds(records)
+        if job.annotation_format and job.user_id is not None:
             from services import yolo_import
             iterator=yolo_import.import_items(path,job.filename,job.cursor,on_total=set_archive_total)
-        else:iterator=import_items(path,job.filename,job.cursor,on_total=set_archive_total)
+        else:iterator=import_items(path,job.filename,job.cursor,checked=archive_total is not None,
+            on_total=set_archive_total,annotation_format=external_labels)
         while True:
             read=asyncio.create_task(asyncio.to_thread(next_item,iterator))
             try:item=await asyncio.shield(read)
@@ -179,7 +236,10 @@ async def process_one(sessions):
                     from api.asset_routes import read_upload
                     from services.image_ingest import ResolutionFiltered
                     from services.image_library import register_image,assign_collection
-                    try:values=await read_upload(UploadFile(filename=PurePosixPath(name).name,file=io.BytesIO(content)),current.min_long_edge)
+                    filename=PurePosixPath(name).name
+                    image_kind=annotation_kinds.get(filename.lower(),current.image_kind)
+                    minimum=0 if external_labels=='json' and image_kind=='crops' else current.min_long_edge
+                    try:values=await read_upload(UploadFile(filename=filename,file=io.BytesIO(content)),minimum)
                     except ResolutionFiltered:result['filtered']+=1
                     except HTTPException:
                         result['invalid']+=1
@@ -194,13 +254,13 @@ async def process_one(sessions):
                                     raise ValueError('上传用户已停用或租户变化')
                                 db.info['current_user']={'id':actor.id,'role':actor.role,'tenant_id':actor.tenant_id}
                             project=await scoped_project(db,current.project_id,current.tenant_id)
-                            follow=await lock_follow_job(db,current.project_id)
+                            follow=None if external_labels else await lock_follow_job(db,current.project_id)
                         image=await register_image(db,current.tenant_id,values,str(id))
                         member=await db.get(ImageCollectionMember,(current.collection_id,image.id))
                         result['duplicates' if member else 'imported']+=1
                         group=await db.get(ImageCollection,current.collection_id)
                         await assign_collection(db,current.tenant_id,[image.id],group.name)
-                        if current.annotation_format:
+                        if current.annotation_format and not external:
                             from services.yolo_import import save
                             await save(db,current,image,item[4],result)
                         if await db.get(ImageUploadItem,(id,image.id)) is None:
@@ -208,29 +268,54 @@ async def process_one(sessions):
                                 from services.image_library import attach_images
                                 from services.upload_follow import enqueue_uploads,find_streaming_follow_job
                                 try:
-                                    assets,created=await attach_images(db,current.project_id,current.tenant_id,[image.id],image_kind=current.image_kind)
+                                    assets,created=await attach_images(db,current.project_id,current.tenant_id,[image.id],image_kind=image_kind)
                                 except HTTPException as exc:
                                     if exc.status_code!=409:raise
                                     result['project_conflicts']=result.get('project_conflicts',0)+1
                                     if len(result['errors'])<20:result['errors'].append(name[:255]+'：'+str(exc.detail))
                                 else:
-                                    if current.annotation_format and project.task_type=='detection':
+                                    if current.annotation_format and not external and project.task_type=='detection':
                                         from services.yolo_import import copy_to_project
                                         imported=await copy_to_project(db,assets,actor)
                                         for key,value in imported.items():result['project_'+key]=result.get('project_'+key,0)+value
                                     result['added_count']=result.get('added_count',0)+len(created)
                                     result['project_duplicates']=result.get('project_duplicates',0)+int(not created)
-                                    crop_entry_locked=follow is not None
-                                    if follow is None and created:follow=await find_streaming_follow_job(db,current.project_id)
-                                    queued,warning=await enqueue_uploads(db,follow,created,crop_entry_locked=crop_entry_locked)
-                                    result['queued_count']=result.get('queued_count',0)+queued
-                                    if warning:result['queue_warning']=warning
+                                    if external_labels:
+                                        for asset in created:
+                                            asset.device_info={**(asset.device_info or {}),'archive_upload_id':str(id)}
+                                    else:
+                                        crop_entry_locked=follow is not None
+                                        if follow is None and created:follow=await find_streaming_follow_job(db,current.project_id)
+                                        queued,warning=await enqueue_uploads(db,follow,created,crop_entry_locked=crop_entry_locked)
+                                        result['queued_count']=result.get('queued_count',0)+queued
+                                        if warning:result['queue_warning']=warning
                             db.add(ImageUploadItem(upload_id=id,image_id=image.id))
                 current.result=result;current.cursor=index+1;current.updated_at=datetime.utcnow()
                 await db.commit()
         async with sessions() as db:
-            current=await db.scalar(select(ImageUpload).where(ImageUpload.id==id).with_for_update())
+            active=select(ImageUpload).where(ImageUpload.id==id,ImageUpload.status=='processing',ImageUpload.attempt==attempt)
+            current=await db.scalar(active.with_for_update().execution_options(populate_existing=True))
+            if current and external_labels and 'annotations' not in current.result:
+                summary=await external_archive_annotations(db,current,path,records)
+                current.result={**current.result,'annotations':summary,'archive_total':archive_total}
+                current.cursor=archive_total
+                await db.commit()
+                current=await db.scalar(active.with_for_update().execution_options(populate_existing=True))
             if current and current.status=='processing' and current.attempt==attempt:
+                if external_labels and current.result['added_count']:
+                    from services.upload_follow import enqueue_uploads,lock_follow_job
+                    follow=await lock_follow_job(db,current.project_id)
+                    if follow is not None:
+                        result=dict(current.result)
+                        query=select(Asset).join(ImageUploadItem,ImageUploadItem.image_id==Asset.image_id).where(
+                            Asset.project_id==current.project_id,ImageUploadItem.upload_id==id,
+                            or_(Asset.device_info['archive_upload_id'].as_string()==str(id),Asset.batch_id==id)).order_by(Asset.id)
+                        stream=await db.stream_scalars(query.execution_options(yield_per=500))
+                        async for assets in stream.partitions():
+                            queued,warning=await enqueue_uploads(db,follow,assets)
+                            result['queued_count']+=queued
+                            if warning:result['queue_warning']=warning
+                        current.result=result
                 current.unique_count=await db.scalar(select(func.count()).select_from(ImageUploadItem).where(ImageUploadItem.upload_id==id))
                 current.status='completed';current.error=None
                 await db.execute(update(ImageUploadBatchFile).where(ImageUploadBatchFile.upload_id==id).values(status='completed'))
@@ -244,7 +329,11 @@ async def process_one(sessions):
             if changed.rowcount:
                 await db.execute(update(ImageUploadBatchFile).where(ImageUploadBatchFile.upload_id==id).values(status='failed'))
             await db.commit()
-        if job.user_id is None:await asyncio.to_thread(remove_staging,id)
+        if job.user_id is None:
+            if iterator:
+                iterator.close()
+                iterator=None
+            await asyncio.to_thread(remove_staging,id)
         logger.warning('Upload import failed: %s',type(exc).__name__)
     finally:
         if iterator:iterator.close()

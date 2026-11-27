@@ -47,8 +47,12 @@ export default function DeviceCapturePage(){
   const loadTasks=async()=>{
     const path='/device-capture/schedules'+(vectorTest?`?vector_test=1&project_id=${encodeURIComponent(initialProject)}`:'');
     const [nextSchedules,nextTasks]=await Promise.all([managementApi<CaptureSchedule[]>(path),managementApi<ManagementTask[]>('/tasks')]);
+    const checks=new Map(nextTasks.filter(task=>task.kind==='platform-check').map(task=>[task.task_id,task]));
     const visible=nextTasks.filter(task=>task.kind in taskKinds&&(vectorTest?
-      task.kind==='device-capture'&&task.vector_test&&task.project_id===initialProject:!task.vector_test));
+      task.kind==='device-capture'&&task.vector_test&&task.project_id===initialProject:!task.vector_test)).map(task=>{
+      const check=task.stage==='platform-check'&&task.check_task_id?checks.get(task.check_task_id):undefined;
+      return check?{...task,progress:check.progress,message:check.message}:task;
+    });
     setSchedules(nextSchedules);setTasks(visible);
     return visible;
   };
@@ -123,12 +127,14 @@ export default function DeviceCapturePage(){
   const emptyPlatformScope=onlineOnly&&!onlinePlatforms.length;
   const activeSync=tasks.filter(task=>task.kind==='device-sync'&&['pending','running','processing'].includes(task.status));
   const activeClassification=tasks.filter(task=>task.kind==='device-scenes'&&['pending','running','processing'].includes(task.status));
+  const activeCaptureBatches=tasks.filter(task=>task.check_task_id&&['pending','running','processing'].includes(task.status));
   const progressPlatforms=visiblePlatforms.filter(platform=>!filters.platform_id||platform.plat_id===filters.platform_id);
   const classificationStatsReady=progressPlatforms.length>0&&progressPlatforms.every(platform=>(['device_count','classified_count','scene_unmatched_count','scene_failed_count','scene_pending_count'] as const).every(key=>typeof platform[key]==='number'));
   const classificationTotals=progressPlatforms.reduce((sum,platform)=>({total:sum.total+(platform.device_count||0),success:sum.success+(platform.classified_count||0),unmatched:sum.unmatched+(platform.scene_unmatched_count||0),failed:sum.failed+(platform.scene_failed_count||0),pending:sum.pending+(platform.scene_pending_count||0)}),{total:0,success:0,unmatched:0,failed:0,pending:0});
   const classified=classificationTotals.success+classificationTotals.unmatched+classificationTotals.failed;
   const classificationPercent=classificationTotals.total?Math.floor(classified*100/classificationTotals.total):0;
   const taskSummary=(task:ManagementTask)=>{
+    if(task.check_task_id&&task.message)return task.message;
     if(task.kind==='device-scenes')return task.processed_count===undefined?'等待分类结果':`已处理 ${task.processed_count} 台：${task.unmatched_count===undefined?'旧记录未区分是否匹配场景':`成功 ${task.processed_count-(task.failed_count||0)-task.unmatched_count} 台，未匹配 ${task.unmatched_count} 台`}，失败 ${task.failed_count||0} 台；跳过 ${task.skipped_count||0} 台`;
     const results=task.kind==='device-sync'?task.platform_results:task.device_results;
     if(!results?.length)return ['pending','running','processing'].includes(task.status)?'等待处理结果':'未记录处理数量';
@@ -151,6 +157,9 @@ export default function DeviceCapturePage(){
     </header>
     <div className="smarteye-page-body">
     {error&&<Alert type="error" showIcon title={error} closable onClose={()=>setError('')} style={{marginBottom:16}}/>}
+    {activeCaptureBatches.map(task=><Alert key={task.task_id} type="info" showIcon title={task.name||'在线平台抓图及场景分类'}
+      description={taskSummary(task)} action={<Button onClick={()=>document.getElementById('device-capture-records')?.scrollIntoView({behavior:'smooth'})}>查看执行记录</Button>}
+      style={{marginBottom:16}}/>)}
     <Space wrap style={{marginBottom:16}}>
       <Checkbox checked={onlineOnly} onChange={event=>{setOnlineOnly(event.target.checked);if(event.target.checked&&!onlinePlatforms.some(platform=>platform.plat_id===filters.platform_id))updateFilter('platform_id','');}}>仅在线平台</Checkbox>
       <Select aria-label="设备平台" placeholder={onlineOnly?'全部在线平台':'全部平台'} allowClear showSearch optionFilterProp="label" style={{width:200}} value={filters.platform_id||undefined} onChange={value=>updateFilter('platform_id',value||'')} options={visiblePlatforms.map(platform=>({value:platform.plat_id,label:`${platform.platform_name}（${platform.connection_status==='online'?'在线':'未连接'}）`}))}/>
@@ -237,9 +246,9 @@ export default function DeviceCapturePage(){
       {title:'未分类',render:(_,row)=>row.classified_count===undefined?'—':Math.max(0,(row.device_count||0)-row.classified_count-(row.scene_failed_count||0)-(row.scene_pending_count||0)-(row.scene_unmatched_count||0))},
       {title:'操作',render:(_,row)=><Button size="small" disabled={!row.scene_failed_count} onClick={()=>{setFilters(previous=>({...previous,platform_id:row.plat_id,q:'',scene:[],scene_status:'failed',has_image:'',page:1}));document.getElementById('device-list')?.scrollIntoView({behavior:'smooth'});}}>查看失败设备</Button>},
     ]}/></>}
-    <h2 style={{marginTop:24}}>执行记录（按平台查看明细）</h2>
+    <h2 id="device-capture-records" style={{marginTop:24}}>执行记录（按平台查看明细）</h2>
     <p>{vectorTest?'点击“查看明细”查看本次拉图的设备和失败原因。':'先看处理摘要；点击“查看明细”查看平台、设备及失败原因。设备同步和分类作用于共享设备，项目筛选仅作用于抓图记录。'}</p>
-    <Table<ManagementTask> rowKey="task_id" dataSource={tasks.filter(task=>task.kind!=='device-capture'||!projectFilter||task.project_id===projectFilter).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''))} scroll={{x:1100}}
+    <Table<ManagementTask> rowKey="task_id" dataSource={tasks.filter(task=>task.kind!=='device-capture'||task.check_task_id||!projectFilter||task.project_id===projectFilter).sort((a,b)=>Number(activeCaptureBatches.includes(b))-Number(activeCaptureBatches.includes(a))||(b.created_at||'').localeCompare(a.created_at||''))} scroll={{x:1100}}
       expandable={{expandRowByClick:true,expandIcon:({expanded,onExpand,record})=><Button type="link" size="small" onClick={event=>{event.stopPropagation();onExpand(record,event);}}>{expanded?'收起明细':'查看明细'}</Button>,columnWidth:100,expandedRowRender:row=><div>
         <p>任务编号：{row.task_id}；最近更新：{row.updated_at?new Date(row.updated_at).toLocaleString('zh-CN'):'旧记录未记录时间'}</p>
         <p>执行说明：{row.kind==='device-capture'&&row.device_results?.length?taskSummary(row):row.message||'暂无补充说明'}</p>
@@ -255,7 +264,7 @@ export default function DeviceCapturePage(){
       {title:'开始时间',width:180,render:(_,row)=>row.created_at?new Date(row.created_at).toLocaleString('zh-CN'):'旧记录未记录时间'},
       {title:'执行内容',render:(_,row)=><div>{taskKinds[row.kind]}{row.name&&<small style={{display:'block'}}>{row.name}</small>}</div>},
       {title:'状态',render:(_,row)=><Tag color={row.status==='failed'?'error':row.status==='completed'?'success':['running','processing'].includes(row.status)?'processing':'default'}>{taskStatuses[row.status]||row.status}</Tag>},
-      {title:'作用范围',render:(_,row)=>row.kind==='device-capture'?projectName(row.project_id):'共享设备（跨项目）'},
+      {title:'作用范围',render:(_,row)=>row.check_task_id?'跨项目':row.kind==='device-capture'?projectName(row.project_id):'共享设备（跨项目）'},
       {title:'处理摘要',width:360,render:(_,row)=><div style={{whiteSpace:'normal'}}>{taskSummary(row)}{row.progress!==undefined&&['device-sync','device-scenes'].includes(row.kind)&&<Progress aria-label="执行记录进度" percent={row.progress} size="small" status={row.status==='failed'?'exception':['pending','running','processing'].includes(row.status)?'active':'normal'}/>} {['pending','running','processing'].includes(row.status)&&<small style={{display:'block'}}>{row.kind==='device-scenes'?'分类进行中':`进度 ${row.progress||0}%`}</small>}</div>},
       {title:'操作',render:(_,row)=>['pending','running','processing'].includes(row.status)?<Button disabled={busy} size="small" onClick={event=>{event.stopPropagation();void execute(`/tasks/${encodeURIComponent(row.task_id)}/cancel`);}}>停止执行</Button>:'—'},
     ]}/>

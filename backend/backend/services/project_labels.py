@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 import hashlib,json
 from datetime import timezone
-from sqlalchemy import String, case, cast, func, select, true
+from sqlalchemy import String, case, cast, func, literal, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 from models import Asset, Annotation, Project, AnnotationEvent
 from services.annotations import IMAGE_FIELDS, save_annotation, validate_image_annotation
@@ -20,9 +20,10 @@ async def project_used_labels(db, project, *, crops_only: bool | None = None) ->
         base = base.join(Asset, Asset.id == Annotation.asset_id).where(Asset.source_type == 'model_crop')
     latest = base.cte('latest_ann')
     if db.get_bind().dialect.name == 'postgresql':
+        empty_array = literal([], type_=JSONB)
         boxes_arr = case(
             (func.jsonb_typeof(latest.c.data['boxes']) == 'array', latest.c.data['boxes']),
-            else_=cast('[]', JSONB),
+            else_=empty_array,
         )
         box_elems = func.jsonb_array_elements(boxes_arr).table_valued('value')
         box_json = cast(box_elems.c.value, JSONB)
@@ -34,7 +35,7 @@ async def project_used_labels(db, project, *, crops_only: bool | None = None) ->
         )
         labels_arr = case(
             (func.jsonb_typeof(latest.c.data['labels']) == 'array', latest.c.data['labels']),
-            else_=cast('[]', JSONB),
+            else_=empty_array,
         )
         lbl_elems = func.jsonb_array_elements_text(labels_arr).table_valued('value')
         q_labels = (

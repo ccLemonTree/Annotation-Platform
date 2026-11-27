@@ -24,7 +24,7 @@ def overall_review(statuses):
 
 def _lock_project_shared(query, db):
     if db.get_bind().dialect.name == 'postgresql':
-        return query.with_for_update(key_share=True)
+        return query.with_for_update(read=True, key_share=True)
     return query.with_for_update()
 
 async def register_detection_labels(db, project, boxes):
@@ -97,6 +97,9 @@ async def save_annotation(db, asset, data, base_version, user_id, source='manual
     previous = await db.scalar(select(Annotation).where(Annotation.asset_id == asset.id, Annotation.is_latest.is_(True)))
     if base_version != (previous.version if previous else 0):
         raise HTTPException(409, '标注已被修改，请重新加载最新版本')
+    prior_data = previous.annotation_data if previous else {}
+    provenance = prior_data.get('import_source')
+    json_import = isinstance(provenance, dict) and provenance.get('source') == 'json_labels'
     if kind is not None:
         expected='detection' if project.task_type=='detection' else 'image'
         if project.task_type=='segmentation' or kind!=expected:
@@ -109,6 +112,8 @@ async def save_annotation(db, asset, data, base_version, user_id, source='manual
             if any(data.get(key) for key in other_fields):
                 raise HTTPException(400,'本次提交包含其他标注类型的字段')
             data={key:value for key,value in data.items() if key not in other_fields}
+            if json_import and not data.get('skipped'):
+                data.update({key: deepcopy(prior_data[key]) for key in other_fields if key in prior_data})
     if source=='manual' and isinstance(data.get('attributes'),dict):
         prior=previous.annotation_data if previous else {}
         evidence=prior.get('attributes',{}) if data.get('attribute_schema')==prior.get('attribute_schema') else {}
@@ -140,7 +145,16 @@ async def save_annotation(db, asset, data, base_version, user_id, source='manual
         ):
             raise HTTPException(400, '只能保留当前标注中已有的待设置类别')
     if kind=='image' or kind is None and ('boxes' not in data or any(image_data.values())):
-        validate_image_annotation(project,image_data,enforce_classification='boxes' not in data)
+        crop_source = data.get('import_source') if source == 'import_json' else provenance
+        inherited_labels = ()
+        if asset.source_type == 'model_crop' and isinstance(crop_source, dict) and crop_source.get('source') == 'json_labels':
+            inherited_labels = crop_source.get('box_labels') or ()
+        validate_image_annotation(project,image_data,enforce_classification='boxes' not in data,
+            inherited_labels=inherited_labels)
+    if json_import and kind is not None:
+        hidden_fields = IMAGE_FIELDS if kind == 'detection' else KIND_FIELDS['detection']
+        data = {**data, **{key: prior_data[key] for key in hidden_fields if key in prior_data},
+                'import_source': prior_data['import_source']}
     prior_version = await db.scalar(select(func.max(Annotation.version)).where(Annotation.asset_id == asset.id)) or 0
     deleted_version = await db.scalar(select(func.max(AnnotationEvent.detail['version'].as_integer()))
         .where(AnnotationEvent.asset_id == asset.id)) or 0
@@ -217,13 +231,14 @@ async def remove(db, annotation, asset, user_id):
     await sync_state(db, asset)
 
 
-def validate_image_annotation(project, data, enforce_classification=True):
+def validate_image_annotation(project, data, enforce_classification=True, *, inherited_labels=()):
     if not isinstance(data, dict) or set(data) - IMAGE_FIELDS:
         raise HTTPException(400, '图片标注仅支持类别、描述、跳过状态和结构化属性')
     labels, description = data.get('labels', []), data.get('description', '')
     schema = project.label_schema or {}
+    allowed = schema.get('labels') or ()
     if (not isinstance(labels, list) or len(labels) > 100 or
-        any(not isinstance(label, str) or label not in schema.get('labels', []) for label in labels) or
+        any(not isinstance(label, str) or label not in allowed and label not in inherited_labels for label in labels) or
         len(set(labels)) != len(labels)):
         raise HTTPException(400, '分类必须为项目中不重复的类别')
     if not isinstance(description, str) or len(description) > 20000:
@@ -237,7 +252,8 @@ def validate_image_annotation(project, data, enforce_classification=True):
     if 'attributes' in data or 'attribute_schema' in data:
         from services.object_attributes import validate_attributes
         validate_attributes(data.get('attribute_schema'),data.get('attributes'))
-    if schema.get('classification_mode', 'single') == 'single' and len(labels) > 1:
+    if (project.task_type == 'classification' and schema.get('classification_mode', 'single') == 'single'
+            and len(labels) > 1 and not set(labels).issubset(inherited_labels)):
         raise HTTPException(400, '单选项目只能选择一个类别')
     if enforce_classification and project.task_type == 'classification' and not labels:
         raise HTTPException(400, '请选择分类或标记无法判断')

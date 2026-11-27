@@ -75,8 +75,8 @@ async def create(request:UploadCreate,db:AsyncSession=Depends(get_db_session),us
         raise HTTPException(422,'上传裁剪图需要指定项目')
     if request.trust_annotations and (not request.annotation_format or user.role!='admin'):
         raise HTTPException(403,'直接信任导入标注需要管理员明确确认YOLO导入')
-    if request.annotation_format:
-        if not request.filename.lower().endswith('.zip'):raise HTTPException(422,'YOLO标注导入请选择ZIP包')
+    if request.annotation_format and not request.filename.lower().endswith(uploads.ARCHIVES):
+        raise HTTPException(422,'YOLO标注导入请选择ZIP或TAR压缩包')
     maximum=settings.MAX_UPLOAD_SIZE if request.filename.lower().endswith(uploads.IMAGES) else settings.MAX_IMAGE_ARCHIVE_UPLOAD_SIZE
     if request.size>maximum:raise HTTPException(413,'文件超过上传大小限制')
     if len(request.chunk_hashes)!=math.ceil(request.size/uploads.CHUNK_SIZE):raise HTTPException(422,'分片数量与文件大小不一致')

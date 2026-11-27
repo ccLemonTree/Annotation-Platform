@@ -5,13 +5,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from typing import Optional
 from uuid import UUID
 import json
 import csv
 import io
+from tempfile import SpooledTemporaryFile
 from datetime import datetime, timedelta, timezone
 import hashlib
 import uuid
@@ -118,93 +119,91 @@ async def export_project_data(
         db.add(AnnotationEvent(project_id=project.id, user_id=current_user.id, action='export', detail=manifest))
         await db.commit()
         return package_response(stream, f'project_{project.id}_{format}.zip')
-    stmt = select(Asset).where(Asset.project_id == project_id,eligible_assets(project))
-    result = await db.execute(stmt)
-    assets = result.scalars().all()
-
-    # 查询标注
-    annotations_dict = {}
-    if include_annotations:
-        stmt = (
-            select(Annotation)
-            .join(Asset)
-            .where(Asset.project_id == project_id, Annotation.is_latest.is_(True),eligible_assets(project))
-        )
-        result = await db.execute(stmt)
-        annotations = result.scalars().all()
-
-        # 按资产ID分组
-        for ann in annotations:
-            if ann.asset_id not in annotations_dict:
-                annotations_dict[ann.asset_id] = []
-            annotations_dict[ann.asset_id].append(ann)
-
-    # 根据格式导出
-    if format == "json":
-        resp = export_as_json(project, assets, annotations_dict)
-        await db.rollback()
-        return resp
-    elif format == "csv":
-        resp = export_as_csv(project, assets, annotations_dict)
-        await db.rollback()
-        return resp
-    else:
+    if format not in ('json', 'csv'):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"不支持的导出格式: {format}"
         )
+    return await export_flat_project(db, project, format, include_annotations)
 
 
-def export_as_json(project, assets, annotations_dict):
-    """导出为JSON格式"""
-    data = {
-        "project": {
-            "id": str(project.id),
-            "name": project.project_name,
-            "task_type": project.task_type,
-            "description": project.description,
-            "created_at": project.created_at.isoformat(),
-        },
-        "assets": [
-            {
-                "id": str(asset.id),
-                "original_name": asset.original_name,
-                "blob_path": asset.blob_path,
-                "content_hash": asset.content_hash,
-                "file_size": asset.file_size,
-                "annotation_status": asset.annotation_status,
-                "annotations": [
-                    {
-                        "id": str(ann.id),
-                        "annotation_data": ann.annotation_data,
-                        "review_status": ann.review_status,
-                        "version": ann.version,
-                        "created_at": ann.created_at.isoformat(),
-                    }
-                    for ann in annotations_dict.get(asset.id, [])
-                ]
-            }
-            for asset in assets
-        ],
-        "export_time": datetime.utcnow().isoformat(),
+async def export_flat_project(db, project, format, include_annotations):
+    asset_columns = (Asset.id.label('asset_id'), Asset.original_name, Asset.file_size, Asset.annotation_status)
+    stmt = select(*asset_columns).where(Asset.project_id == project.id, eligible_assets(project))
+    if include_annotations:
+        stmt = stmt.outerjoin(Annotation, and_(Annotation.asset_id == Asset.id, Annotation.is_latest.is_(True)))
+    if format == 'json':
+        stmt = stmt.add_columns(Asset.blob_path, Asset.content_hash)
+        if include_annotations:
+            stmt = stmt.add_columns(Annotation.id.label('annotation_id'), Annotation.annotation_data,
+                Annotation.review_status, Annotation.version, Annotation.created_at.label('annotation_created_at'))
+    else:
+        stmt = stmt.add_columns(Asset.created_at)
+        if include_annotations:
+            stmt = stmt.group_by(*stmt.selected_columns).add_columns(
+                func.count(Annotation.id).label('annotation_count'),
+                func.count(Annotation.id).filter(Annotation.review_status == 'approved').label('approved_count'))
+
+    filename = f'project_{project.id}_export.{format}'
+    output = SpooledTemporaryFile(max_size=8 * 1024**2, mode='w+t', encoding='utf-8', newline='')
+    try:
+        rows = await db.stream(stmt.execution_options(yield_per=2000))
+        try:
+            if format == 'json':
+                await write_project_json(output, project, rows)
+            else:
+                await write_project_csv(output, rows)
+        finally:
+            await rows.close()
+        await db.rollback()
+        output.seek(0)
+    except BaseException:
+        output.close()
+        raise
+
+    return StreamingResponse(iter(lambda: output.read(65536).encode('utf-8'), b''),
+        media_type='application/json' if format == 'json' else 'text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'},
+        background=BackgroundTask(output.close))
+
+
+async def write_project_json(output, project, rows):
+    metadata = {
+        'id': str(project.id),
+        'name': project.project_name,
+        'task_type': project.task_type,
+        'description': project.description,
+        'created_at': project.created_at.isoformat(),
     }
-
-    json_str = json.dumps(data, ensure_ascii=False, indent=2)
-    return StreamingResponse(
-        io.BytesIO(json_str.encode('utf-8')),
-        media_type="application/json",
-        headers={
-            "Content-Disposition": f"attachment; filename=project_{project.id}_export.json"
+    output.write('{"project":' + json.dumps(metadata, ensure_ascii=False) + ',"assets":[')
+    separator = ''
+    async for row in rows.mappings():
+        annotations = []
+        if row.get('annotation_id') is not None:
+            annotations.append({
+                'id': str(row['annotation_id']),
+                'annotation_data': row['annotation_data'],
+                'review_status': row['review_status'],
+                'version': row['version'],
+                'created_at': row['annotation_created_at'].isoformat(),
+            })
+        asset = {
+            'id': str(row['asset_id']),
+            'original_name': row['original_name'],
+            'blob_path': row['blob_path'],
+            'content_hash': row['content_hash'],
+            'file_size': row['file_size'],
+            'annotation_status': row['annotation_status'],
+            'annotations': annotations,
         }
-    )
+        output.write(separator + json.dumps(asset, ensure_ascii=False))
+        separator = ','
+    output.write('],"export_time":' + json.dumps(datetime.utcnow().isoformat()) + '}')
 
 
-def export_as_csv(project, assets, annotations_dict):
-    """导出为CSV格式"""
-    output = io.StringIO()
+async def write_project_csv(output, rows):
+    output.write('\ufeff')
     writer = csv.writer(output)
-
-    # 写入表头
     writer.writerow([
         "Asset ID",
         "Original Name",
@@ -215,31 +214,16 @@ def export_as_csv(project, assets, annotations_dict):
         "Created At"
     ])
 
-    # 写入数据
-    for asset in assets:
-        annotations = annotations_dict.get(asset.id, [])
-        approved_count = sum(1 for ann in annotations if ann.review_status == "approved")
-
+    async for row in rows.mappings():
         writer.writerow([
-            str(asset.id),
-            asset.original_name,
-            asset.file_size,
-            asset.annotation_status,
-            len(annotations),
-            approved_count,
-            asset.created_at.isoformat()
+            str(row['asset_id']),
+            row['original_name'],
+            row['file_size'],
+            row['annotation_status'],
+            row.get('annotation_count', 0),
+            row.get('approved_count', 0),
+            row['created_at'].isoformat(),
         ])
-
-    csv_content = output.getvalue()
-    output.close()
-
-    return StreamingResponse(
-        io.BytesIO(csv_content.encode('utf-8-sig')),  # UTF-8 BOM for Excel
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=project_{project.id}_export.csv"
-        }
-    )
 
 
 @router.get("/annotations/{annotation_id}/export")

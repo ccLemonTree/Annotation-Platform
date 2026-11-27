@@ -43,6 +43,33 @@ def assignments(client,p,ids):
     return client.put(f"/api/projects/{p['project'].id}/assignments",headers=p['admin'],json={'user_ids':ids})
 
 
+@pytest.mark.asyncio
+async def test_project_search_filters_visible_names_before_pagination(client, permissions, test_db):
+    p = permissions
+    assert assignments(client, p, [2]).status_code == 200
+    p['project'].project_name = 'Road_车辆检测'
+    p['hidden'].project_name = 'Road_人员检测'
+    p['foreign'].project_name = 'Road_外部项目'
+    test_db.add_all([
+        Project(tenant_id=1, project_name='RoadX车辆识别', task_type='detection'),
+        Project(tenant_id=1, project_name='日常审核', task_type='detection'),
+    ])
+    await test_db.commit()
+
+    def search(headers, keyword, **filters):
+        response = client.get('/api/projects', headers=headers, params={'q': keyword, **filters})
+        assert response.status_code == 200
+        body = response.json()
+        return body['total'], [project['project_name'] for project in body['items']]
+
+    assert search(p['admin'], '  ROAD_  ', page_size=1)[0] == 2
+    assert len(search(p['admin'], 'road_', page=2, page_size=1)[1]) == 1
+    assert search(p['user'], '车辆') == (1, ['Road_车辆检测'])
+    assert search(p['user'], '人员') == (0, [])
+    assert search(p['admin'], 'ROAD_', task_type='caption') == (0, [])
+    assert search(p['admin'], '   ')[0] == 4
+
+
 def test_assignments_validate_atomically_and_empty_means_admin_only(client,permissions):
     p=permissions;url=f"/api/projects/{p['project'].id}/assignments"
     assert client.get(url,headers=p['admin']).json()=={'user_ids':[]}

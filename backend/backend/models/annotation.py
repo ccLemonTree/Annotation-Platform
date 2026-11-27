@@ -110,7 +110,8 @@ class Annotation(Base):
         data=cls.annotation_data
         skipped=data['skipped'].as_boolean().is_(True)
         if task_type=='classification':return or_(data['labels'].as_string().not_in(('','[]')),skipped)
-        return or_(func.trim(data['description'].as_string())!='',data['attributes'].as_string().is_not(None),skipped)
+        return cls.has_kind('image') if task_type in ('caption','vector') else or_(
+            func.trim(data['description'].as_string())!='',data['attributes'].as_string().is_not(None),skipped)
 
     @classmethod
     def ai_pending(cls):

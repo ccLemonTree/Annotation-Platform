@@ -3,6 +3,7 @@ import ImagePreview from './ImagePreview';
 import { apiFetch, AuthImage, download } from '../network';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { appMessage } from '../../src/ui/appFeedback';
+import CursorPager from '../../src/components/CursorPager';
 import { API_BASE_URL, getBackendBaseUrl } from '../constants';
 import type { AiImageAsset, AiImageHistoryRecord, AiImageTaskRuntime } from '../types';
 
@@ -765,23 +766,8 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
               ))}
             </div>
 
-            <div className="flex items-center justify-between mt-4">
-              <button
-                onClick={() => fetchHistory(Math.max(1, historyPage - 1))}
-                disabled={historyPage <= 1}
-                className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm disabled:opacity-40"
-              >
-                上一页
-              </button>
-              <span className="text-sm text-slate-500">第 {historyPage} 页</span>
-              <button
-                onClick={() => fetchHistory(historyPage + 1)}
-                disabled={historyPage * 10 >= historyTotal}
-                className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-sm disabled:opacity-40"
-              >
-                下一页
-              </button>
-            </div>
+            <CursorPager page={historyPage} hasMore={historyPage * 10 < historyTotal} loading={historyLoading}
+              onPrev={() => void fetchHistory(historyPage - 1)} onNext={() => void fetchHistory(historyPage + 1)} />
         </Drawer>
       )}
 

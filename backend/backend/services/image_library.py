@@ -74,13 +74,16 @@ def image_source_condition(db,platform_name=None,device_name=None,info=LibraryIm
 
 
 def annotation_label_condition(db,label):
+    data=Annotation.annotation_data
     if db.bind.dialect.name=='sqlite':
-        boxes=func.json_each(Annotation.annotation_data,'$.boxes').table_valued('value')
-        labels=func.json_each(Annotation.annotation_data,'$.labels').table_valued('value')
-        return or_(select(1).select_from(boxes).where(func.json_extract(boxes.c.value,'$.label')==label).exists(),
+        boxes=func.json_each(data,'$.boxes').table_valued('value')
+        labels=func.json_each(data,'$.labels').table_valued('value')
+        box_labels=func.json_each(boxes.c.value,'$.labels').table_valued('value')
+        return or_(select(1).select_from(boxes).where(or_(func.json_extract(boxes.c.value,'$.label')==label,
+                       select(1).select_from(box_labels).where(box_labels.c.value==label).correlate(boxes).exists())).exists(),
                    select(1).select_from(labels).where(labels.c.value==label).exists())
-    return or_(Annotation.annotation_data['boxes'].contains([{'label':label}]),
-               Annotation.annotation_data['labels'].contains([label]))
+    return or_(data.contains({'boxes':[{'label':label}]}), data.contains({'boxes':[{'labels':[label]}]}),
+               data.contains({'labels':[label]}))
 
 
 async def image_scene_condition(db,scene,tenant_id,collection_id=None):

@@ -24,7 +24,7 @@ async def test_builtin_defaults_are_validated_and_apply_only_to_new_runs(
     assert result.status_code == 200, result.text
     assert result.json()['defaults']['epochs'] == 20
     entries = client.get(catalog, headers=auth_headers).json()
-    assert len(entries) == 6
+    assert set(entries) == {'yolo26','yolo11','damo_yolo','rfdetr_medium','rfdetr_2xlarge','swift_sft','wemm','dinov3_vits16_ltdetr'}
     assert entries['yolo26']['defaults']['batch'] == 42
     new = client.post(runs, headers=auth_headers, json={
         **payload, 'gpu_uuids': [f'GPU-test-{i}' for i in range(7)], 'parameters': {'epochs': 12},
@@ -60,3 +60,23 @@ def test_k8s_wemm_keeps_profile_defaults_for_unspecified_parameters(client, auth
     info = client.get('/api/training/k8s/nodes', headers=auth_headers).json()['wemm_defaults']
     assert info['parameters']['save_steps'] == 250
     assert info['parameters']['learning_rate'] == 2e-5
+
+
+def test_yolo11_optimizer_is_selectable_and_saved_with_the_run(client, auth_headers, platform_payload):
+    catalog = client.get('/api/training/catalog', headers=auth_headers).json()['yolo11']
+    assert catalog['schema']['properties']['optimizer']['enum'] == ['SGD', 'AdamW']
+    assert catalog['defaults']['optimizer'] == 'SGD'
+
+    runs = '/api/training/runs'
+    payload = {**platform_payload, 'kind': 'yolo11', 'image': '', 'model_path': '', 'parameters': {}}
+    created = client.post(runs, headers=auth_headers, json=payload)
+    assert created.status_code == 201, created.text
+    assert created.json()['config']['parameters']['optimizer'] == 'SGD'
+
+    custom = client.post(runs, headers=auth_headers, json={**payload, 'parameters': {'optimizer': 'AdamW'}})
+    assert custom.status_code == 201, custom.text
+    saved = client.get(f"{runs}/{custom.json()['id']}", headers=auth_headers).json()
+    assert saved['config']['parameters']['optimizer'] == 'AdamW'
+
+    invalid = client.post(runs, headers=auth_headers, json={**payload, 'parameters': {'optimizer': 'auto'}})
+    assert invalid.status_code == 422

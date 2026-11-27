@@ -3,6 +3,7 @@ import { Link,useSearchParams } from 'react-router-dom';
 import { Alert,Button,Card,Checkbox,Col,DatePicker,Input,InputNumber,Modal,Radio,Row,Select,Space,Tag,Typography } from 'antd';
 import dayjs from 'dayjs';
 import { isAxiosError } from 'axios';
+import CursorPager from './CursorPager';
 import { getImages,uploadImages,type LibraryImage } from '../api/images';
 import { getModelServices,isModelOffline,type ModelService } from '../api/modelServices';
 import type { Project } from '../api/projects';
@@ -101,11 +102,8 @@ export default function VectorAnnotation({project,mode}:{project:Project;mode:'t
           <Select aria-label="历史匹配查询" placeholder="打开已保存的查询与判定" value={query?.id} style={{width:320,maxWidth:'100%'}} disabled={busy} onChange={id=>{setQuery(history.find(q=>q.id===id));openQuery(id);}} options={history.map(q=>({value:q.id,label:`${q.query.platform_name||'本地'} · ${q.query.text||'以图搜图'} · ${q.id.slice(0,8)}`}))}/>
           <Radio.Group aria-label="匹配标注视图" value={view} onChange={e=>setView(e.target.value)} options={[{value:'description',label:'描述视图'},{value:'classification',label:'分类视图'}]}/>
         </Space>
-        <Space size="small">
-          <Button size="small" disabled={historyPage===1||busy} onClick={()=>openQuery(undefined,historyPage-1)}>上一页查询</Button>
-          <Typography.Text type="secondary">第 {historyPage} 页</Typography.Text>
-          <Button size="small" disabled={history.length<20||busy} onClick={()=>openQuery(undefined,historyPage+1)}>下一页查询</Button>
-        </Space>
+        <CursorPager inline itemLabel="查询" page={historyPage} hasMore={history.length>=20} loading={busy}
+          onPrev={()=>openQuery(undefined,historyPage-1)} onNext={()=>openQuery(undefined,historyPage+1)}/>
       </Space>
       {query&&active&&<Space wrap style={{marginBottom:16}}>
         <Button aria-label="上一匹配图片" disabled={busy||activeIndex<=0} onClick={()=>move(-1)}>← 上一张</Button>

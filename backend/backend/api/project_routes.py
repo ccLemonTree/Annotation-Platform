@@ -180,6 +180,7 @@ async def list_projects(
     pagination: PaginationParams = Depends(),
     status_filter: Optional[ProjectStatus] = Query(None, alias="status", description="项目状态筛选"),
     task_type: Optional[TaskType] = Query(None),
+    q: str = Query("", max_length=200, description="项目名称关键词"),
     tenant_id: int = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -188,7 +189,7 @@ async def list_projects(
     获取项目列表（分页）
 
     - 仅返回当前租户下的项目
-    - 支持按状态筛选
+    - 支持按状态、任务类型和项目名称关键词筛选
     """
     # 构建查询条件
     conditions = [Project.tenant_id == tenant_id,project_condition(db)]
@@ -196,6 +197,9 @@ async def list_projects(
         conditions.append(Project.status == status_filter)
     if task_type:
         conditions.append(Project.task_type == task_type)
+    keyword = q.strip()
+    if keyword:
+        conditions.append(Project.project_name.icontains(keyword, autoescape=True))
 
     # 查询总数
     count_stmt = select(func.count(Project.id)).where(*conditions)

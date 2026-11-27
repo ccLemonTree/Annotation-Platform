@@ -12,6 +12,38 @@ from tests.test_training_runs import platform_payload, training_tables
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('kind','format','size','runtime'),[
+    ('yolo11','yolo','x','/output/prepared-dataset/data.yaml'),
+    ('damo_yolo','yolo','nm','/output/prepared-dataset'),
+    ('damo_yolo','coco','l','/output/prepared-dataset'),
+])
+async def test_bundled_detection_uses_typed_parameters_and_frozen_input(
+    client, auth_headers, test_db, platform_payload, kind, format, size, runtime,
+):
+    from models.annotation_event import ExportSnapshot
+    from services.training_config import build_script
+
+    snapshot=await test_db.get(ExportSnapshot,UUID(platform_payload['snapshot_id']))
+    snapshot.export_format=format
+    await test_db.commit()
+    template=client.get('/api/training/catalog',headers=auth_headers).json()[kind]
+    assert size in template['schema']['properties']['size']['enum']
+    assert format in template['dataset_formats']
+    payload={**platform_payload,'kind':kind,'model_path':'','image':'','parameters':{'size':size,'batch':2}}
+    response=client.post('/api/training/runs',headers=auth_headers,json=payload)
+    assert response.status_code==201,response.text
+    config=response.json()['config']
+    assert config['image']==template['image']
+    assert config['runtime_dataset']==runtime
+    assert config['parameters']['size']==size
+    script=build_script(config)
+    compile(script,'train.py','exec')
+    assert 'detection_trainers.'+kind in script
+    assert client.post('/api/training/runs',headers=auth_headers,
+        json={**payload,'parameters':{'size':'invalid'}}).status_code==422
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('format', ['yolo', 'coco', 'swift_sft', 'infonce'])
 async def test_registered_trainer_uses_frozen_data_and_saved_definition(
     client, auth_headers, test_db, test_engine, platform_payload, format, monkeypatch,

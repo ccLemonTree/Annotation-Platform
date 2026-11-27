@@ -18,9 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.asset_routes import read_upload, scoped_project
 from api.deps import get_current_superuser
 from database import get_db_session
-from models import ImageUpload, Project, ProjectUploadKey, User
+from models import Asset, ImageUpload, Project, ProjectUploadKey, User
 from config.settings import settings
 from services import image_uploads
+from services.annotation_json_import import annotation_image_kinds, apply_annotations, import_annotations, read_annotation_records
 from services.image_ingest import ResolutionFiltered, get_config
 from services.image_library import assign_collection, attach_images, get_collection, register_image
 from services.upload_follow import enqueue_uploads, find_streaming_follow_job, lock_follow_job
@@ -49,14 +50,6 @@ class IssuedUploadKey(UploadKeyInfo):
     token: str
 
 
-class IngestResult(BaseModel):
-    asset_ids: list[UUID]
-    added_count: int
-    duplicate_count: int
-    queued_count: int
-    queue_warning: str | None = None
-
-
 class ArchiveJobInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -77,6 +70,19 @@ class YoloLabelResult(BaseModel):
 
 class YoloLabelsResult(BaseModel):
     items: list[YoloLabelResult]
+
+
+class JsonLabelsResult(YoloLabelsResult):
+    crop_count: int | None = None
+
+
+class IngestResult(BaseModel):
+    asset_ids: list[UUID]
+    added_count: int
+    duplicate_count: int
+    queued_count: int
+    queue_warning: str | None = None
+    annotations: JsonLabelsResult | None = None
 
 
 YoloClasses = Annotated[UploadFile | None, File(description='data.yaml、data.yml 或 classes.txt 类别表')]
@@ -150,17 +156,74 @@ async def upload_description_labels(project_id: UUID, file: Annotated[UploadFile
     return await import_descriptions(db,project,file,user)
 
 
-@router.post('/{project_id}/ingest/images', status_code=201, response_model=IngestResult)
+@router.post('/{project_id}/annotation-labels')
+async def upload_annotation_labels(project_id: UUID, file: Annotated[UploadFile, File()],
+                                   crop_from_boxes: Annotated[bool, Form()] = False,
+                                   user: User = Depends(get_current_superuser), db: AsyncSession = Depends(get_db_session)):
+    project = await scoped_project(db, project_id, user.tenant_id)
+    return await import_annotations(db, project, file, user.id, crop_from_boxes=crop_from_boxes)
+
+
+@router.post('/{project_id}/ingest/annotation-labels')
+async def ingest_annotation_labels(file: Annotated[UploadFile, File()], crop_from_boxes: Annotated[bool, Form()] = False,
+                                   project: Project = Depends(ingest_project),
+                                   db: AsyncSession = Depends(get_db_session)):
+    """按文件名导入待审核的原图检测标注或裁剪图整图标注。"""
+    return await import_annotations(db, project, file, None, crop_from_boxes=crop_from_boxes)
+
+
+@router.post('/{project_id}/ingest/images', status_code=201, response_model=IngestResult, response_model_exclude_unset=True)
 async def ingest_images(project_id: UUID,
-                        files: Annotated[list[UploadFile], File(min_length=1, max_length=16, description='1–16 个图片文件')],
+                        files: Annotated[list[UploadFile] | None, File(min_length=1, max_length=16, description='1–16 个图片文件')] = None,
                         image_kind: Annotated[Literal['originals', 'crops'], Form(description='原图或已裁剪图片')] = 'originals',
+                        annotations: Annotated[UploadFile | None, File(description='按图片文件名匹配的 JSON 标注')] = None,
+                        crop_from_boxes: Annotated[bool, Form()] = False,
+                        labels: YoloLabels = None, classes: YoloClasses = None,
                         project: Project = Depends(ingest_project), db: AsyncSession = Depends(get_db_session)):
-    """上传图片到指定项目。同内容在项目内去重，返回的资产 ID 与文件顺序一致。"""
-    follow = await lock_follow_job(db, project_id)
+    """上传图片、标注或两者一起。同内容图片去重，标签按文件名匹配。"""
+    if not (files or annotations or labels) or (classes and not labels) or (annotations and labels):
+        raise HTTPException(422, '请上传图片或一种标注格式；类别表须和 YOLO TXT 一起提交')
+    if labels and project.task_type != 'detection':
+        raise HTTPException(400, 'YOLO导入只支持目标检测项目')
+    if crop_from_boxes and not annotations:
+        raise HTTPException(422, '按框裁剪需要 JSON 标注')
+    records = await read_annotation_records(annotations) if annotations else []
+    if files:
+        result, deferred_ids = await ingest_image_files(db, project, files, image_kind, annotation_image_kinds(records),
+            defer_queue=bool(annotations or labels))
+    else:
+        result = IngestResult(asset_ids=[], added_count=0, duplicate_count=0, queued_count=0, queue_warning=None)
+        deferred_ids = []
+    try:
+        if annotations:
+            result.annotations = JsonLabelsResult.model_validate(await apply_annotations(
+                db, project, records, None, crop_from_boxes=crop_from_boxes))
+        elif labels:
+            result.annotations = JsonLabelsResult.model_validate(
+                await import_label_files(db, project, classes, labels, None, None, uuid4()))
+    finally:
+        if deferred_ids:
+            await db.rollback()
+            follow = await lock_follow_job(db, project_id)
+            fresh = (await db.scalars(select(Asset).where(Asset.project_id==project_id, Asset.id.in_(deferred_ids)))).all()
+            result.queued_count, result.queue_warning = await enqueue_uploads(db, follow, fresh)
+            await db.commit()
+    return result
+
+
+async def ingest_image_files(db, project, files, image_kind, annotation_kinds, *, defer_queue):
+    project_id = project.id
+    follow = None if defer_queue else await lock_follow_job(db, project_id)
     group = await get_collection(db, project.tenant_id, project.project_name)
     config, _ = await get_config(db, project.tenant_id, group.id)
+    uploads, kinds = [], {}
     try:
-        uploads = [await read_upload(file, config.min_long_edge if image_kind == 'originals' else 0) for file in files]
+        for file in files:
+            name = PurePosixPath((file.filename or '').replace('\\','/')).name.lower()
+            kind = annotation_kinds.get(name, image_kind)
+            values = await read_upload(file, config.min_long_edge if kind == 'originals' else 0)
+            uploads.append(values)
+            kinds[values['content_hash']] = kind
     except ResolutionFiltered as exc:
         raise HTTPException(422, str(exc)) from exc
     images = {}
@@ -168,15 +231,21 @@ async def ingest_images(project_id: UUID,
         images[digest] = await register_image(db, project.tenant_id, values)
     image_ids = [image.id for image in images.values()]
     await assign_collection(db, project.tenant_id, image_ids, group.name)
-    assets, created = await attach_images(db, project_id, project.tenant_id, image_ids, image_kind=image_kind)
+    assets, created = [], []
+    for kind in ('originals','crops'):
+        ids = [image.id for digest, image in images.items() if kinds[digest] == kind]
+        attached, added = await attach_images(db, project_id, project.tenant_id, ids, image_kind=kind)
+        assets.extend(attached)
+        created.extend(added)
     crop_entry_locked=follow is not None
-    if follow is None and created:
+    if not defer_queue and follow is None and created:
         follow = await find_streaming_follow_job(db, project_id)
     queued, warning = await enqueue_uploads(db, follow, created,crop_entry_locked=crop_entry_locked)
     by_hash = {asset.content_hash: asset.id for asset in assets}
+    deferred_ids = [asset.id for asset in created] if defer_queue else []
     await db.commit()
     return IngestResult(asset_ids=[by_hash[row['content_hash']] for row in uploads], added_count=len(created),
-        duplicate_count=len(files) - len(created), queued_count=queued, queue_warning=warning)
+        duplicate_count=len(files) - len(created), queued_count=queued, queue_warning=warning), deferred_ids
 
 
 @router.post('/{project_id}/ingest/archives', status_code=202, response_model=ArchiveJobInfo,
@@ -185,10 +254,16 @@ async def ingest_images(project_id: UUID,
 async def upload_archive(project_id: UUID, request: Request, response: Response,
                          filename: Annotated[str, Query(min_length=1, max_length=255)],
                          image_kind: Literal['originals', 'crops'] = 'originals',
+                         annotation_format: Literal['json', 'yolo'] | None = None,
+                         crop_from_boxes: bool = False,
                          project: Project = Depends(ingest_project), db: AsyncSession = Depends(get_db_session)):
     """直接发送 ZIP、TAR、TAR.GZ 或 TGZ 文件内容，提交后台解包任务。"""
     if filename != PurePosixPath(filename.replace('\\', '/')).name or '\x00' in filename or not filename.lower().endswith(image_uploads.ARCHIVES):
         raise HTTPException(422, 'filename 必须是 ZIP 或 TAR 文件名')
+    if annotation_format == 'yolo' and project.task_type != 'detection':
+        raise HTTPException(400, 'YOLO导入只支持目标检测项目')
+    if crop_from_boxes and annotation_format != 'json':
+        raise HTTPException(422, '按框裁剪需要 JSON 标注')
     maximum = settings.MAX_IMAGE_ARCHIVE_UPLOAD_SIZE
     length = request.headers.get('content-length', '')
     if length.isdecimal() and int(length) > maximum:
@@ -197,10 +272,11 @@ async def upload_archive(project_id: UUID, request: Request, response: Response,
     config, _ = await get_config(db, project.tenant_id, group.id)
     job_id = uuid4()
     job = ImageUpload(id=job_id, tenant_id=project.tenant_id, collection_id=group.id, project_id=project_id,
-        image_kind=image_kind, filename=filename, size=0, chunk_hashes=[], resume_key=job_id.hex,
-        min_long_edge=config.min_long_edge if image_kind == 'originals' else 0,
+        image_kind=image_kind, annotation_format=annotation_format, filename=filename, size=0, chunk_hashes=[], resume_key=job_id.hex,
+        min_long_edge=config.min_long_edge if image_kind == 'originals' or annotation_format == 'json' else 0,
         result=dict(imported=0, duplicates=0, filtered=0, invalid=0, ignored=0, errors=[], added_count=0,
-                    project_duplicates=0, project_conflicts=0, queued_count=0))
+                    project_duplicates=0, project_conflicts=0, queued_count=0,
+                    **({'crop_from_boxes': True} if crop_from_boxes else {})))
     db.add(job)
     await db.commit()
     try:

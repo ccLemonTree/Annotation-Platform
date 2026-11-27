@@ -1,13 +1,19 @@
 """Business evidence and immutable export references; originals remain shared."""
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, func, ForeignKey
+from sqlalchemy import String, Integer, DateTime, func, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 class AnnotationEvent(Base):
     __tablename__ = 'annotation_events'
+    __table_args__ = (
+        Index('ix_ann_events_project_created', 'project_id', text('created_at DESC'), text('id DESC')),
+        Index('ix_ann_events_ai_pending', 'project_id', 'asset_id', text("((detail->>'version')::int)"),
+              postgresql_where=text("action = 'ai_review' AND detail->>'decision' = 'needs_review'"))
+        .ddl_if(dialect='postgresql'),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='CASCADE'), index=True)
     asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)

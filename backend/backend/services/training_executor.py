@@ -14,18 +14,41 @@ import tempfile
 import zipfile
 
 SNAPSHOT_CACHE_ROOT=Path('/ai/chen/training/dataset-cache')
+MAX_SNAPSHOT_GIB = 100
+MAX_SNAPSHOT_BYTES = MAX_SNAPSHOT_GIB * 1024**3
+MAX_SNAPSHOT_MEMBERS = 200000
 
 
-def cached_snapshot(payload,path,publish=False):
-    sha=payload['snapshot_hash']
+def snapshot_entry(sha):
     if not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha):
         raise ValueError('冻结包SHA256非法')
     root=SNAPSHOT_CACHE_ROOT;entry=root/sha
     if root.is_symlink() or entry.is_symlink():raise ValueError('冻结包缓存目录不能是链接')
+    return entry
+
+
+def verified_snapshot_config(path, sha, snapshot_id):
+    receipts=(path/'run_config.json',path/'.dataset-ready',path/'dataset/manifest.json')
+    if (path.resolve()!=path or (path/'dataset').is_symlink()
+            or any(p.is_symlink() or not p.is_file() for p in receipts)):
+        raise ValueError('历史冻结数据目录不完整或包含链接')
+    if (path/'.dataset-ready').read_text()!=sha:
+        raise ValueError('历史冻结数据摘要不匹配')
+    config=json.loads((path/'run_config.json').read_text(encoding='utf-8'))
+    if not snapshot_id or not isinstance(config,dict) or config.get('snapshot_id')!=snapshot_id:
+        raise ValueError('历史冻结版本不匹配')
+    return config
+
+
+def cached_snapshot(payload,path,publish=False):
+    sha=payload['snapshot_hash']
+    entry=snapshot_entry(sha)
     entry.mkdir(parents=True,exist_ok=True,mode=0o700)
     archive=entry/'input.zip'
     with run_lock(entry):
         if archive.is_symlink():raise ValueError('冻结包缓存不能是链接')
+        if archive.is_file() and archive.stat().st_size>MAX_SNAPSHOT_BYTES:
+            raise ValueError(f'冻结包超过{MAX_SNAPSHOT_GIB}GiB缓存上限')
         if archive.is_file() and file_hash(archive)==sha:
             staged=path/'input.zip'
             if publish and staged.is_file() and not staged.is_symlink() and file_hash(staged)==sha:staged.unlink()
@@ -40,7 +63,7 @@ def cached_snapshot(payload,path,publish=False):
                 with source.open('rb') as inp,temporary.open('xb') as out:
                     for chunk in iter(lambda:inp.read(1024*1024),b''):
                         size+=len(chunk)
-                        if size>40*1024**3:raise ValueError('冻结包超过40GiB缓存上限')
+                        if size>MAX_SNAPSHOT_BYTES:raise ValueError(f'冻结包超过{MAX_SNAPSHOT_GIB}GiB缓存上限')
                         out.write(chunk);digest.update(chunk)
                 if digest.hexdigest()!=sha:
                     if publish:raise ValueError('传输冻结包SHA256不匹配，禁止缓存或解包')
@@ -50,6 +73,49 @@ def cached_snapshot(payload,path,publish=False):
             return dict(hit=True,imported=not publish,path=str(archive))
     if publish:raise ValueError('冻结包未上传且缓存未命中')
     return dict(hit=False,imported=False)
+
+
+def docker_snapshot_directory(payload, path, publish=False):
+    tenant=payload['snapshot_tenant']
+    if type(tenant) is not int or tenant<1:raise ValueError('冻结数据所属租户非法')
+    sha=payload['snapshot_hash']
+    entry=snapshot_entry(sha)/('docker-'+str(tenant))
+    pointer=entry/'.verified-run'
+    dataset=entry/'dataset'
+    if any(p.is_symlink() for p in (entry,pointer,dataset,entry/'.lock')):
+        raise ValueError('共享数据目录不能包含链接')
+    entry.mkdir(parents=True,exist_ok=True,mode=0o700)
+    # Readers see only atomically published directories or verified-run records.
+    with run_lock(entry) if publish else contextlib.nullcontext():
+        if dataset.is_dir():return dataset
+        registered=pointer.read_text(encoding='utf-8') if pointer.is_file() else None
+        history=[registered] if registered else []
+        history.extend(payload.get('legacy_runs',[]))
+        for name in history:
+            old=Path(name)
+            try:
+                config=verified_snapshot_config(old,sha,payload['config']['snapshot_id'])
+                if (Path(config['output_root'])!=old.parent or config.get('execution_backend','docker')!='docker'
+                        or (old/'owner.json').is_symlink()):
+                    continue
+                owner=json.loads((old/'owner.json').read_text())
+                digest=hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()
+                if owner!=dict(run_id=old.name,config_hash=digest):continue
+            except (OSError,RuntimeError,ValueError,KeyError):
+                continue
+            if name!=registered:
+                with tempfile.TemporaryDirectory(prefix='.register-',dir=entry) as temp:
+                    record=Path(temp)/pointer.name
+                    record.write_text(name,encoding='utf-8')
+                    os.replace(record,pointer)
+            return old/'dataset'
+        if not publish:return None
+        archive=Path(cached_snapshot(payload,path,publish=True)['path'])
+        with tempfile.TemporaryDirectory(prefix='.extract-',dir=entry) as temp:
+            extracted=Path(temp)/'dataset'
+            unpack_snapshot(archive,extracted,None)
+            os.rename(extracted,dataset)
+        return dataset
 
 
 def docker(args,check=True,timeout=25):
@@ -94,7 +160,8 @@ def unpack_snapshot(archive,destination,kind):
     if destination.exists():raise ValueError('数据目录已经存在，禁止覆盖')
     with zipfile.ZipFile(archive) as source:
         members=source.infolist()
-        if len(members)>100000 or sum(row.file_size for row in members)>40*1024**3:raise ValueError('冻结包超出100000项/40GiB限制')
+        if len(members)>MAX_SNAPSHOT_MEMBERS or sum(row.file_size for row in members)>MAX_SNAPSHOT_BYTES:
+            raise ValueError(f'冻结包超出{MAX_SNAPSHOT_MEMBERS}项/{MAX_SNAPSHOT_GIB}GiB限制')
         seen=set()
         for row in members:
             safe_child(destination,row.filename)
@@ -108,6 +175,8 @@ def unpack_snapshot(archive,destination,kind):
                 path.parent.mkdir(parents=True,exist_ok=True)
                 with source.open(row) as inp,path.open('xb') as out:shutil.copyfileobj(inp,out,1024*1024)
     manifest=json.loads((destination/'manifest.json').read_text())
+    if kind is None:
+        kind = 'swift_sft' if 'training' in manifest else ('yolo26' if manifest['format'] == 'yolo' else 'rfdetr_medium')
     if kind in ('swift_sft','wemm'):
         training=manifest.get('training',{})
         if training.get('samples',0)<1 or training.get('format') not in ('swift_sft','infonce','contrastive','online_contrastive','cosine_similarity'):
@@ -131,7 +200,7 @@ def unpack_snapshot(archive,destination,kind):
         if file_hash(safe_child(destination,asset['image_path']))!=asset['content_hash']:raise ValueError('冻结包图片哈希不匹配')
     splits={a['split'] for a in manifest['assets']}
     if not {'train','val'}<=splits or splits-{'train','val','test'}:raise ValueError('冻结包缺少明确train/val划分')
-    if kind=='yolo26':
+    if kind in ('yolo26','yolo11'):
         (destination/'data.yaml').write_text(json.dumps(dict(path='/output/dataset',names=manifest['labels'],
             train='images/train',val='images/val',test='images/test' if 'test' in splits else []),ensure_ascii=False))
         return
@@ -273,8 +342,8 @@ def precheck(payload):
     if config['model_path'] and not (pending or pending_checkpoint or pending_merge or
             payload.get('pending_base') and config['kind'] in ('swift_sft','wemm')):
         weights=Path(config['model_path'])
-        if config['kind']=='custom':
-            add('基础权重',(weights.is_file() or weights.is_dir()) and weights.resolve()==weights,
+        if config['kind'] in ('custom','yolo11','damo_yolo'):
+            add('基础权重',(weights.is_file() or config['kind']=='custom' and weights.is_dir()) and weights.resolve()==weights,
                 '基础权重文件或模型目录须存在，且不能经过符号链接：'+config['model_path'])
         else:
             add('基础权重',weights.is_dir() if config['kind'] in ('swift_sft','wemm','model_merge') else weights.is_file(),
@@ -286,15 +355,16 @@ def precheck(payload):
             add('Lightly依赖与检测权重',True,json.dumps(info,ensure_ascii=False))
         except (ValueError,RuntimeError,subprocess.TimeoutExpired) as error:
             add('Lightly依赖与检测权重',False,str(error))
-    if config['kind']=='custom' and image.returncode==0:
-        module=config['trainer']['module']
+    if (config['kind']=='custom' or payload.get('bundled_module')) and image.returncode==0:
+        module=payload.get('bundled_module') or config['trainer']['module']
+        format=config.get('trainer',{}).get('dataset_format','yolo')
         code=('from importlib.util import find_spec; import sys; '
               'assert sys.version_info >= (3, 9), "需要 Python 3.9 或更新版本"; '
               'assert find_spec(sys.argv[1]), "训练模块未安装"; '
               'assert sys.argv[2] not in ("yolo", "coco") or find_spec("yaml"), "缺少 PyYAML"')
         try:
             docker(['run','--rm','--pull=never','--network','none','--entrypoint','python3',
-                    digest,'-I','-c',code,module,config['trainer']['dataset_format']],timeout=90)
+                    digest,'-I','-c',code,module,format],timeout=90)
             add('训练模块',True,module)
         except (RuntimeError,subprocess.TimeoutExpired) as error:
             add('训练模块',False,str(error))
@@ -332,6 +402,81 @@ def run_lock(path):
     with (path/'.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         yield
+
+
+@contextlib.contextmanager
+def unpack_lock(path):
+    import fcntl
+    fd=os.open(path/'.unpack.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield None
+        else:
+            yield fd
+    finally:
+        # The child inherits the locked file description until it exits.
+        os.close(fd)
+
+
+def write_unpack_result(path,record,state,error=None):
+    with tempfile.TemporaryDirectory(prefix='.unpack-',dir=path) as temporary:
+        file=Path(temporary)/'result'
+        file.write_text(json.dumps({**record,'state':state,'error':error},ensure_ascii=False),encoding='utf-8')
+        os.replace(file,path/'.unpack-result.json')
+
+
+def unpack_request(path,config_hash,payload):
+    if (path/'.canceled').exists():return dict(state='canceled')
+    sha=payload['snapshot_hash']
+    if not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha):
+        raise ValueError('冻结包SHA256非法')
+    if not payload['config'].get('snapshot_id'):raise ValueError('任务未指定冻结版本')
+    record=dict(config_hash=config_hash,snapshot_hash=sha)
+    with unpack_lock(path) as fd:
+        if fd is None:return dict(state='running')
+        if (path/'.canceled').exists():return dict(state='canceled')
+        for name in ('.shared-dataset-ready','.dataset-ready'):
+            marker=path/name
+            if marker.is_symlink():raise ValueError('冻结包标记不能是链接')
+            if marker.is_file():
+                if marker.read_text()!=sha:raise ValueError('冻结包版本不一致')
+                if name=='.dataset-ready' and (not (path/'dataset').is_dir() or (path/'dataset').is_symlink()):
+                    raise ValueError('已校验的冻结数据目录缺失或无效')
+                return dict(state='ready')
+        result=path/'.unpack-result.json'
+        if result.is_symlink():raise ValueError('解包结果不能是链接')
+        if result.is_file():
+            value=json.loads(result.read_text(encoding='utf-8'))
+            if not isinstance(value,dict) or any(value.get(key)!=expected for key,expected in record.items()):
+                raise ValueError('解包结果与任务冻结版本不匹配')
+            return dict(state='failed',error=value.get('error') or '远端解包进程已结束，缺少数据校验回执')
+        if (path/'dataset').exists() or (path/'dataset').is_symlink():
+            return dict(state='failed',error='已有未校验的解包目录，需要核对后重试')
+        if payload['action']=='unpack_status':return dict(state='pending')
+
+        source=globals().get('PLATFORM_SOURCE') or Path(__file__).read_bytes()
+        code=base64.b64encode(source).decode('ascii')
+        data=base64.b64encode(json.dumps(dict(payload,action='unpack')).encode()).decode('ascii')
+        command='import base64;PLATFORM_SOURCE=base64.b64decode(%r);exec(PLATFORM_SOURCE)' % code
+        write_unpack_result(path,record,'running')
+        try:
+            subprocess.Popen([sys.executable,'-c',command,data,'background-unpack'],stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,pass_fds=(fd,))
+        except OSError as error:
+            write_unpack_result(path,record,'failed',str(error)[-2000:])
+            return dict(state='failed',error=str(error)[-2000:])
+        return dict(state='running')
+
+
+def run_unpack_worker(payload):
+    path,config_hash=run_directory(payload)
+    record=dict(config_hash=config_hash,snapshot_hash=payload['snapshot_hash'])
+    try:execute(payload,background_unpack=True)
+    except Exception as error:
+        write_unpack_result(path,record,'failed',str(error)[-2000:])
+    else:
+        write_unpack_result(path,record,'ready')
 
 
 def artifacts(path):
@@ -536,7 +681,7 @@ def unpack_onnx(archive,destination):
         else:marker.write_text(content)
 
 
-def execute(payload):
+def execute(payload,*,background_unpack=False):
     action=payload['action'];config=payload['config'];run_id=payload['run_id']
     if action=='dataset':return dataset_metadata(config,payload['dataset_code'])
     if action=='precheck':return precheck(payload)
@@ -580,7 +725,9 @@ def execute(payload):
         file=artifact_file(Path(config['model_path']),payload['path'])
         return dict(path=str(file),bytes=file.stat().st_size,sha256=file_hash(file))
     path,config_hash=run_directory(payload)
-    with run_lock(path):
+    if action in ('unpack_begin','unpack_status'):
+        return unpack_request(path,config_hash,payload)
+    with contextlib.nullcontext() if background_unpack else run_lock(path):
         if action in ('merge_cache_probe','merge_cache_publish'):
             return merge_cache(dict(payload,model_cache_root='/ai/chen/training/model-input-cache'),path)
         if action=='receive_checkpoint':
@@ -611,11 +758,25 @@ def execute(payload):
                     if target.is_symlink() or target.read_text()!=content:raise ValueError('已存在任务文件不匹配，禁止覆盖')
                 else:target.write_text(content)
             return dict(directory=str(path))
-        if action=='snapshot_cache':
+        if action in ('snapshot_directory','snapshot_cache'):
             if (path/'.canceled').exists():raise ValueError('任务已取消，停止准备冻结包')
+            if 'snapshot_tenant' in payload and docker_snapshot_directory(payload,path) is not None:
+                return dict(hit=True,shared_ready=True)
+            if action=='snapshot_directory':return dict(hit=False)
             return cached_snapshot(payload,path)
         if action=='unpack':
             if (path/'.canceled').exists():raise ValueError('任务已取消，停止解包')
+            if 'snapshot_tenant' in payload:
+                marker=path/'.shared-dataset-ready'
+                if marker.is_symlink() or marker.exists() and marker.read_text()!=payload['snapshot_hash']:
+                    raise ValueError('共享冻结包版本不一致')
+                docker_snapshot_directory(payload,path,publish=True)
+                if not marker.exists():
+                    with tempfile.TemporaryDirectory(prefix='.ready-',dir=path) as temp:
+                        record=Path(temp)/marker.name
+                        record.write_text(payload['snapshot_hash'])
+                        os.replace(record,marker)
+                return dict(ok=True)
             archive=Path(cached_snapshot(payload,path,publish=True)['path'])
             dataset=path/'dataset'
             if not (path/'.dataset-ready').exists():
@@ -642,17 +803,27 @@ def execute(payload):
             return dict(status='running' if info['State']['Status'] in ('created','running','restarting') else 'unknown')
         checked=precheck(payload)
         if not checked['ok']:return dict(status='blocked',inspection=checked)
-        if config.get('snapshot_id') and not (path/'.dataset-ready').exists():raise ValueError('冻结数据尚未验证')
+        shared=None
+        if config.get('snapshot_id'):
+            marker=path/'.shared-dataset-ready'
+            if marker.exists() or marker.is_symlink():
+                if marker.is_symlink() or marker.read_text()!=payload.get('snapshot_hash'):
+                    raise ValueError('共享冻结包版本不一致')
+                shared=docker_snapshot_directory(payload,path)
+                if shared is None:raise ValueError('共享冻结数据目录不存在')
+            elif not (path/'.dataset-ready').exists():raise ValueError('冻结数据尚未验证')
         mounts={'/output':dict(source=str(path),target='/output',read_only=False)}
         for name in ('dataset_path','model_path','adapter_path'):
             value=config.get(name)
             if value and (not config.get('snapshot_id') or name in ('model_path','adapter_path')):
                 source=Path(value)
-                if config['kind']!='custom' and not source.is_dir():source=source.parent
+                if config['kind'] not in ('custom','yolo11','damo_yolo') and not source.is_dir():source=source.parent
                 mounts[str(source)]=dict(source=str(source),target=str(source),read_only=True)
         val=config['parameters'].get('val_dataset')
         if val:mounts[str(Path(val).parent)]=dict(source=str(Path(val).parent),target=str(Path(val).parent),read_only=True)
         for mount in config['mounts']:mounts[mount['target']]=mount
+        if shared is not None:
+            mounts['/output/dataset']=dict(source=str(shared),target='/output/dataset',read_only=True)
         args=['create','--pull=never','--name',container_name(run_id),'--label','platform.training.id='+run_id,
             '--label','platform.training.config='+config_hash,
             '--shm-size',str(config['shm_size_gb'])+'g','--network','none','--workdir','/output','--entrypoint','python3']
@@ -670,7 +841,10 @@ def execute(payload):
 if __name__=='__main__':
     try:
         request=json.loads(base64.b64decode(sys.argv[1]))
-        print(json.dumps(dict(success=True,result=execute(request)),ensure_ascii=False))
+        if sys.argv[2:]==['background-unpack'] and request['action']=='unpack':
+            run_unpack_worker(request)
+        else:
+            print(json.dumps(dict(success=True,result=execute(request)),ensure_ascii=False))
     except Exception as error:
         print(json.dumps(dict(success=False,error=str(error)[-2000:]),ensure_ascii=False))
         sys.exit(1)

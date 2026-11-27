@@ -44,23 +44,26 @@ async function retryUpload<T>(request:()=>Promise<T>,signal:AbortSignal):Promise
 }
 
 export async function uploadResumable(file:File,collection:string,minimum:number|undefined,config:UploadConfig,
-  signal:AbortSignal,onProgress:(bytes:number)=>void,annotation?:{annotation_format:'yolo';trust_annotations:boolean},projectId?:string,imageKind?:UploadImageKind,batch?:{batch_id:string;file_key:string}):Promise<UploadJob>{
+  signal:AbortSignal,onProgress:(bytes:number,phase:'preparing'|'transferring')=>void,annotation?:{annotation_format:'yolo';trust_annotations:boolean},projectId?:string,imageKind?:UploadImageKind,batch?:{batch_id:string;file_key:string}):Promise<UploadJob>{
   const archive=/\.(zip|tar|tar\.gz|tgz)$/i.test(file.name);
   const maximum=archive?config.max_file_size:config.max_image_size;
   if(!file.size||file.size>maximum)throw Error(`文件为空或超过单${archive?'包':'图'}上限 ${(maximum/1024**2).toFixed(0)} MiB`);
   const hashes:string[]=[];
+  onProgress(0,'preparing');
   for(let offset=0;offset<file.size;offset+=config.chunk_size){
     signal.throwIfAborted();
     const bytes=await file.slice(offset,offset+config.chunk_size).arrayBuffer().catch(()=>{
       throw Error(`无法读取“${file.name}”：文件可能已被删除或重新生成。请重新选择该文件后继续上传。`);
     });
     hashes.push(await sha256(bytes));
+    onProgress(offset+bytes.byteLength,'preparing');
   }
+  const transferProgress=(bytes:number)=>onProgress(bytes,'transferring');
   const requestConfig={signal,skipErrorToast:true};
   let job:UploadJob=(await retryUpload(()=>api.post('/api/image-uploads',{filename:file.name,size:file.size,chunk_hashes:hashes,
     collection_name:collection,project_id:projectId,min_long_edge:minimum,image_kind:imageKind,...annotation,...batch},requestConfig),signal)).data;
-  if(job.status==='completed'){onProgress(file.size);return job;}
-  onProgress(job.uploaded_bytes);
+  if(job.status==='completed'){transferProgress(file.size);return job;}
+  transferProgress(job.uploaded_bytes);
   if(['uploading','failed'].includes(job.status)){
     const uploaded=new Set(job.uploaded_parts);
     let received=job.uploaded_bytes;
@@ -69,16 +72,16 @@ export async function uploadResumable(file:File,collection:string,minimum:number
       signal.throwIfAborted();
       const part=file.slice(index*config.chunk_size,(index+1)*config.chunk_size);
       await retryUpload(()=>api.put(`/api/image-uploads/${job.id}/parts/${index}`,part,{...requestConfig,timeout:120000,
-        headers:{'Content-Type':'application/octet-stream'},onUploadProgress:event=>onProgress(Math.min(file.size,received+(event.loaded||0)))}),signal);
-      received+=part.size;onProgress(received);
+        headers:{'Content-Type':'application/octet-stream'},onUploadProgress:event=>transferProgress(Math.min(file.size,received+(event.loaded||0)))}),signal);
+      received+=part.size;transferProgress(received);
     }
     job=(await retryUpload(()=>api.post(`/api/image-uploads/${job.id}/complete`,null,requestConfig),signal)).data;
   }
   while(job.status==='pending'||job.status==='processing'){
-    signal.throwIfAborted();onProgress(file.size);
+    signal.throwIfAborted();transferProgress(file.size);
     await waitForUpload(1000,signal);
     job=(await retryUpload(()=>api.get('/api/image-uploads/'+job.id,requestConfig),signal)).data;
   }
   if(job.status!=='completed')throw Error(job.error||'入库失败，可继续或清除任务后重新上传');
-  onProgress(file.size);return job;
+  transferProgress(file.size);return job;
 }

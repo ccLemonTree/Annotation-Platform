@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import uuid
 
 NAMESPACE = 'aisfprod'
@@ -135,7 +136,47 @@ def validate_config(config, run_id):
         raise ValueError('不支持此训练类型')
 
 
-def build_manifest(config, run_id, script, assets=None, tolerations=None):
+def shared_snapshot_paths(config, sha):
+    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+        raise ValueError('冻结数据摘要无效')
+    entry = 'chen/training/dataset-cache/' + sha
+    paths = {'dataset': entry + '/dataset'}
+    kind = config['kind']
+    if kind not in ('wemm', 'swift_sft'):
+        kind = 'rfdetr' if kind in ('rfdetr_medium', 'rfdetr_2xlarge') else kind
+        labels = config.get('selected_labels')
+        selection = config_hash({'kind': kind, 'labels': sorted(set(labels)) if labels is not None else None})
+        paths['prepared-dataset'] = entry + '/prepared-' + selection
+    return paths
+
+
+def snapshot_mount_paths(root, config, sha):
+    paths = shared_snapshot_paths(config, sha)
+    entry = paths['dataset'].rsplit('/', 1)[0]
+    pointer = safe_path(root, entry + '/.verified-run')
+    if os.path.isdir(safe_path(root, paths['dataset'])) or not os.path.isfile(pointer):
+        return paths
+    with open(pointer) as stream:
+        old = stream.read().strip()
+    if not old.startswith('chen/training/'):
+        old = 'chen/training/runs/' + str(uuid.UUID(old))
+    uuid.UUID(old.rsplit('/', 1)[-1])
+    if not os.path.isdir(safe_path(root, old + '/dataset')):
+        return paths
+    with open(safe_path(root, old + '/.dataset-ready', True)) as stream:
+        if stream.read() != sha: raise ValueError('历史冻结数据摘要不匹配')
+    with open(safe_path(root, old + '/run_config.json', True)) as stream: source_config = json.load(stream)
+    source_paths = shared_snapshot_paths(source_config, sha)
+    if source_config.get('snapshot_id') != config.get('snapshot_id'):
+        raise ValueError('历史冻结版本不匹配')
+    paths['dataset'] = old + '/dataset'
+    if paths.get('prepared-dataset') and paths['prepared-dataset'] == source_paths.get('prepared-dataset'):
+        paths['prepared-dataset'] = old + '/prepared-dataset'
+    for folder in paths.values(): safe_path(root, folder)
+    return paths
+
+
+def build_manifest(config, run_id, script, assets=None, tolerations=None, snapshot_inputs=None):
     validate_config(config, run_id)
     name = name_for(run_id)
     digest = config_hash(config)
@@ -163,9 +204,10 @@ def build_manifest(config, run_id, script, assets=None, tolerations=None):
         if config['kind'] == 'wemm': container['resources']['limits'].update(cpu='32', memory='128Gi')
         if config.get('snapshot_id'):
             subpath = training_relative(config['output_root']) + '/' + run_id
-            container['volumeMounts'].append({'name': 'training', 'mountPath': '/output/dataset', 'subPath': subpath + '/dataset', 'readOnly': True})
-            if config['kind'] not in ('wemm', 'swift_sft'):
-                container['volumeMounts'].append({'name': 'training', 'mountPath': '/output/prepared-dataset', 'subPath': subpath + '/prepared-dataset', 'readOnly': True})
+            folders = ['dataset'] + ([] if config['kind'] in ('wemm', 'swift_sft') else ['prepared-dataset'])
+            inputs = snapshot_inputs or {name: subpath + '/' + name for name in folders}
+            for folder, source in inputs.items():
+                container['volumeMounts'].append({'name': 'training', 'mountPath': '/output/' + folder, 'subPath': source, 'readOnly': True})
         spec = {'restartPolicy': 'Never', 'nodeSelector': {'kubernetes.io/hostname': node}, 'tolerations': (tolerations or {}).get(node, []), 'containers': [container], 'volumes': [{'name': 'training', 'persistentVolumeClaim': {'claimName': PVC}}, {'name': 'config', 'configMap': {'name': name}}, {'name': 'shm', 'emptyDir': {'medium': 'Memory', 'sizeLimit': str(config['shm_size_gb']) + 'Gi'}}]}
         resources.append({'apiVersion': 'batch/v1', 'kind': 'Job', 'metadata': meta(name + '-r' + str(rank)), 'spec': {'backoffLimit': 0, 'template': {'metadata': {'labels': podlabels}, 'spec': spec}}})
     return resources
@@ -388,12 +430,17 @@ def staged_config_matches(path, config):
 
 
 def snapshot_ready(path, payload):
-    marker = os.path.join(path, '.dataset-ready')
+    shared = os.path.lexists(os.path.join(path, '.shared-dataset-ready'))
+    marker = os.path.join(path, '.shared-dataset-ready' if shared else '.dataset-ready')
     if os.path.islink(marker) or not os.path.isfile(marker): return False
     try:
         with open(marker) as stream:
             if stream.read() != payload['snapshot_hash']: return False
     except (IOError, OSError): return False
+    if shared:
+        root = mount_root()
+        return all(os.path.isdir(safe_path(root, folder)) for folder in
+                   snapshot_mount_paths(root, payload['config'], payload['snapshot_hash']).values())
     folders = ['dataset'] + ([] if payload['config']['kind'] in ('wemm', 'swift_sft') else ['prepared-dataset'])
     return all(os.path.isdir(os.path.join(path, name)) and not os.path.islink(os.path.join(path, name)) for name in folders)
 
@@ -467,7 +514,7 @@ def unpack_worker(path, payload):
             cache = safe_path(root, 'chen/training/dataset-cache')
             namespace = {}
             exec(payload['snapshot_code'], namespace)
-            data = dict(payload, action='unpack', legacy_archives=[])
+            data = dict(payload, action='unpack', legacy_archives=[], mounted_root=root)
             namespace['remote_snapshot_ops'](data, path, cache)
             return {'state': 'ready'}
         except Exception as error:
@@ -503,10 +550,11 @@ def save_logs(path, pods):
             pass
 
 
-def delete_owned(state, kinds):
+def delete_owned(state, kinds, wait=True):
+    wait_options = ['--wait=true', '--timeout=30s'] if wait else ['--wait=false']
     for kind in kinds:
         for item in state[kind]:
-            kubectl(['-n', NAMESPACE, 'delete', kind, item['metadata']['name'], '--wait=true', '--timeout=30s', '--ignore-not-found=true'])
+            kubectl(['-n', NAMESPACE, 'delete', kind, item['metadata']['name'], '--ignore-not-found=true'] + wait_options)
 
 
 def pod_waiting(pod):
@@ -584,12 +632,14 @@ def execute(payload):
         if not config.get('snapshot_id') or not re.match(r'^[0-9a-f]{64}$', payload.get('snapshot_hash', '')):
             raise ValueError('冻结数据摘要无效')
         if not staged_config_matches(path, config): return {'state': 'unknown'}
-        if action != 'unpack_worker' and not os.path.lexists(os.path.join(path, '.canceled')) and os.path.lexists(os.path.join(path, '.dataset-ready')):
+        ready_marker = any(os.path.lexists(os.path.join(path, marker))
+                           for marker in ('.dataset-ready', '.shared-dataset-ready'))
+        if action != 'unpack_worker' and not os.path.lexists(os.path.join(path, '.canceled')) and ready_marker:
             return {'state': 'ready' if snapshot_ready(path, payload) else 'unknown'}
         if action == 'unpack_begin': return unpack_begin(path, payload)
         if action == 'unpack_worker': return unpack_worker(path, payload)
         return unpack_status(path, payload)
-    if action in ('snapshot_cache', 'unpack'):
+    if action in ('snapshot_directory', 'snapshot_cache', 'unpack'):
         with locked(path):
             if os.path.exists(os.path.join(path, '.canceled')): raise ValueError('任务已取消')
             root = mount_root()
@@ -597,7 +647,8 @@ def execute(payload):
             legacy = []
             for item in payload.get('legacy_archives', [])[:5]:
                 legacy.append(safe_path(root, training_relative(item)))
-            data = dict(payload, legacy_archives=legacy)
+            history = [training_relative(item) for item in payload.get('legacy_runs', [])]
+            data = dict(payload, legacy_archives=legacy, legacy_runs=history, mounted_root=root)
             namespace = {}
             exec(payload['snapshot_code'], namespace)
             return namespace['remote_snapshot_ops'](data, path, cache)
@@ -624,8 +675,10 @@ def execute(payload):
     if action == 'status':
         jobs = state['jobs']
         runtime = {'job_count': len(jobs), 'instances': runtime_instances(config, state['pods'])}
+        if os.path.exists(os.path.join(path, '.canceled')):
+            return dict(runtime, status='stopping' if any(state.values()) else 'canceled')
         if not jobs and state['pods']: return dict(runtime, status='unknown', error='任务 Pod 仍存在，需停止并确认释放')
-        if not jobs: return dict(runtime, status='failed' if os.path.exists(os.path.join(path, '.failed')) else ('canceled' if os.path.exists(os.path.join(path, '.canceled')) else 'missing'))
+        if not jobs: return dict(runtime, status='failed' if os.path.exists(os.path.join(path, '.failed')) else 'missing')
         failed = any(j.get('status', {}).get('failed', 0) for j in jobs)
         ranks = set()
         for pod in state['pods']:
@@ -654,17 +707,21 @@ def execute(payload):
             canceled = os.path.join(path, '.canceled')
             if action == 'stop':
                 save_logs(path, state['pods'])
-                delete_owned(state, ('jobs', 'pods', 'services', 'configmaps'))
-                if any(objects(run_id, config).values()): raise RuntimeError('资源仍存在，状态待核对')
+                delete_owned(state, ('jobs', 'pods', 'services', 'configmaps'), wait=False)
+                deadline = time.monotonic() + 120
+                while any(objects(run_id, config).values()):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('已提交停止，集群资源仍在退出，请核对运行状态')
+                    time.sleep(2)
                 return {'status': 'canceled'}
             if os.path.exists(canceled): return {'status': 'canceled'}
             if os.path.exists(os.path.join(path, '.failed')): return {'status': 'failed'}
+            shared = None
             if config.get('snapshot_id'):
-                marker = safe_path(path, '.dataset-ready', True)
-                with open(marker, 'r') as stream:
-                    if stream.read() != payload.get('snapshot_hash'): raise ValueError('冻结数据未准备完成或摘要不匹配')
-                safe_path(path, 'dataset', True)
-                if config['kind'] not in ('wemm', 'swift_sft'): safe_path(path, 'prepared-dataset', True)
+                if not payload.get('snapshot_hash') or not snapshot_ready(path, payload):
+                    raise ValueError('冻结数据未准备完成或摘要不匹配')
+                if os.path.isfile(os.path.join(path, '.shared-dataset-ready')):
+                    shared = snapshot_mount_paths(mount_root(), config, payload['snapshot_hash'])
             if state['jobs']:
                 if len(state['jobs']) == len(config['k8s']['nodes']): return {'status': 'running'}
                 raise RuntimeError('部分任务已创建，请核对集群状态后停止')
@@ -675,7 +732,7 @@ def execute(payload):
             with open(os.path.join(path, 'train.py'), 'rb') as stream: script = stream.read().decode('utf-8')
             node_info = dict((row['name'], row) for row in nodes())
             tolerations = dict((node, node_tolerations(node_info[node]['taints'])) for node in config['k8s']['nodes'])
-            manifests = build_manifest(config, run_id, script, payload.get('assets'), tolerations)
+            manifests = build_manifest(config, run_id, script, payload.get('assets'), tolerations, snapshot_inputs=shared)
             existing = set((item['kind'], item['metadata']['name']) for rows in state.values() for item in rows)
             for item in manifests:
                 if (item['kind'], item['metadata']['name']) not in existing:

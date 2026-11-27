@@ -610,10 +610,11 @@ async def test_snapshot_file_copy_does_not_block_api_event_loop(monkeypatch,tmp_
     monkeypatch.setattr(training_runs,'get_storage',lambda:Storage())
     monkeypatch.setattr(training_runs,'ROOT',tmp_path)
     monkeypatch.setattr(training_runs,'bridge',lambda *a,**k:dict(success=True))
-    async def remote(*args,**kwargs):return dict(ok=True,hit=False)
+    async def remote(db,run,action,**kwargs):
+        return dict(state='ready') if action=='unpack_begin' else dict(ok=True,hit=False)
     monkeypatch.setattr(training_runs,'remote',remote)
     run=SimpleNamespace(id=uuid4(),tenant_id=1,source=dict(kind='snapshot',blob_path='fixture.zip',sha256=hashlib.sha256(raw).hexdigest()),
-        server=dict(id='default',name=settings.GPU_SERVER_NAME),output_dir='/tmp/fixture')
+        config={},inspection={},server=dict(id='default',name=settings.GPU_SERVER_NAME),output_dir='/tmp/fixture')
     async def progress(*args,**kwargs):pass
     monkeypatch.setattr(training_runs,'startup_progress',progress)
     monkeypatch.setattr(training_runs,'ensure_starting',progress)

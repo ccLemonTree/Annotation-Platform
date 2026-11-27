@@ -8,6 +8,7 @@ import type { Asset } from '../api/assets';
 import { getImages, associateImages, deleteImage, getImageCollections, assignImageCollection, classifyImages, createImageCollection } from '../api/images';
 import type { LibraryImage, ImageFilters, ImageCollection } from '../api/images';
 import ImageUploadDialog from '../components/ImageUploadDialog';
+import AnnotationLabelFilter from '../components/AnnotationLabelFilter';
 import ImageIngestSettings from '../components/ImageIngestSettings';
 import ProjectImagePicker from '../components/ProjectImagePicker';
 import ImageFiltersBar from '../components/ImageFilters';
@@ -51,6 +52,7 @@ export default function AssetsPage() {
   const [projects,setProjects] = useState<Project[]>([]);
   const [rows,setRows] = useState<Row[]>([]);
   const [filters,setFilters] = useState<ImageFilters>({});
+  if(filters.label)annotationSearch.set('label',filters.label);
   const [nameQuery,setNameQuery]=useState('');
   const [page,setPage] = useState(1), [pageSize,setPageSize] = useState(20), [total,setTotal] = useState(0);
   const [selected,setSelected] = useState<React.Key[]>([]);
@@ -63,6 +65,8 @@ export default function AssetsPage() {
   const [reload,setReload] = useState(0);
   const [sceneRevision,setSceneRevision] = useState(0);
   const [imageKind,setImageKind]=useState<'all'|'originals'|'crops'>('all');
+  if(imageKind!=='all')annotationSearch.set('image_kind',imageKind);
+  if(filters.collection_id)annotationSearch.set('collection_id',filters.collection_id);
   const previewScope=JSON.stringify([projectId,workJobId,filters,page,pageSize,imageKind]);
   const [preview,setPreview] = useState<{index:number;scope:string}>();
   if(preview&&preview.scope!==previewScope)setPreview(undefined);
@@ -89,8 +93,6 @@ export default function AssetsPage() {
     setSelected([]);setFilters({});setPage(1);setNameQuery('');
     if(projectId){
       setProject(undefined);setPickerOpen(false);
-      getProject(projectId).then(value=>{if(active)setProject(value);})
-        .catch(()=>{if(active)setError('项目读取失败，请返回项目管理重试');});
       return ()=>{active=false;};
     }
     (async()=>{
@@ -103,6 +105,13 @@ export default function AssetsPage() {
     })().catch(()=>{if(active)setError('项目列表读取失败，请刷新重试');});
     return ()=>{active=false;};
   },[projectId]);
+  useEffect(()=>{
+    if(!projectId)return;
+    let active=true;
+    getProject(projectId).then(value=>{if(active)setProject(value);})
+      .catch(()=>{if(active)setError('项目读取失败，请返回项目管理重试');});
+    return ()=>{active=false;};
+  },[projectId,reload]);
   useEffect(()=>{
     let active=true;setLoading(true);setError('');
     const request=projectId ? getAssets({project_id:projectId,work_job_id:workJobId,page,page_size:pageSize,image_kind:imageKind,q:filters.q,collection_id:filters.collection_id,label:filters.label,scene:filters.scene,platform_name:filters.platform_name,device_name:filters.device_name}) : getImages({...filters,page,page_size:pageSize});
@@ -195,7 +204,7 @@ export default function AssetsPage() {
     {title:'大小',dataIndex:'file_size',width:110,render:(size:number)=>`${(size/1024).toFixed(1)} KB`},
     {title:projectId?'加入项目时间':'入库时间',dataIndex:'created_at',width:180,render:(value:string)=>new Date(value).toLocaleString()},
     {title:'操作',width:projectId?240:160,fixed:'right',render:(_,row)=><Space size="small" wrap>
-      {projectId&&(project?.task_type==='segmentation'?<span>分割标注暂不支持</span>:project?.label_schema?.annotation_scope!=='crops'||row.source_type==='model_crop'?<Link to={`/annotate/${row.id}${workJobId?`?${annotationSearch}`:''}`}>标注 / 审核</Link>:<span>切图来源</span>)}
+      {projectId&&(project?.task_type==='segmentation'?<span>分割标注暂不支持</span>:project?.label_schema?.annotation_scope!=='crops'||row.source_type==='model_crop'?<Link to={`/annotate/${row.id}${annotationSearch.size?`?${annotationSearch}`:''}`}>标注 / 审核</Link>:<span>切图来源</span>)}
       {projectId&&row.source_type==='model_crop'?<DeleteCropButton assetId={row.id} name={row.original_name} disabled={busy} onDeleted={()=>{setSelected(keys=>keys.filter(key=>key!==row.id));if(rows.length===1&&page>1)setPage(page-1);setReload(n=>n+1);}}/>:<Button type="link" size="small" danger icon={<DeleteOutlined/>} onClick={()=>remove(row)}>{projectId?'移除':'删除'}</Button>}
     </Space>},
   ];
@@ -233,7 +242,7 @@ export default function AssetsPage() {
       </div>
     </div>
     {projectId&&project&&<Collapse style={{marginBottom:20}} items={[{key:'filters',label:'筛选与批量管理',children:<Space wrap><Select aria-label="项目图片来源" style={{width:180,maxWidth:'100%'}} value={imageKind} onChange={value=>{setImageKind(value);setPage(1);setSelected([]);}} options={[{value:'all',label:'全部项目图片'},{value:'originals',label:'仅原图'},{value:'crops',label:'仅裁剪图'}]}/>
-      <Select aria-label="项目标注标签" placeholder="全部标注标签" allowClear showSearch optionFilterProp="label" style={{width:180,maxWidth:'100%'}} value={filters.label} onChange={label=>filter({...filters,label})} options={(Array.isArray(project.label_schema?.labels)?project.label_schema.labels as string[]:[]).map(label=>({value:label,label}))}/>
+      <AnnotationLabelFilter schema={project.label_schema} value={filters.label} onChange={label=>filter({...filters,label})}/>
       <SceneFilter label="项目图片场景" value={filters.scene} onChange={scene=>filter({...filters,scene})} groups={sceneGroups} scenes={rows.flatMap(row=>row.scene_labels||[])}/>
       <ImageSourceFilters value={filters} projectId={projectId} disabled={busy} onChange={filter}/>
       <Select aria-label="项目图片集" style={{width:180,maxWidth:'100%'}} placeholder="全部图片集" allowClear showSearch optionFilterProp="label" value={filters.collection_id} onChange={collection_id=>filter({...filters,collection_id})} options={projectCollections.map(group=>({value:group.id,label:group.name}))}/>

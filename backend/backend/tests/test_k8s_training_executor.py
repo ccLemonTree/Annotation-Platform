@@ -40,6 +40,23 @@ def test_snapshot_manifest_mounts_inputs_readonly():
     assert {m['mountPath'] for m in mounts if m.get('readOnly')} >= {'/output/dataset', '/output/prepared-dataset'}
 
 
+def test_shared_snapshot_mounts_same_readonly_inputs_and_separate_outputs():
+    cfg = config(); cfg.update(snapshot_id='snapshot', dataset_path='', selected_labels=['smoke'])
+    sha = 'a' * 64
+    ids = ['12345678-1234-1234-1234-123456789abc', '22345678-1234-1234-1234-123456789abc']
+    mounts = [
+        {m['mountPath']: m for m in executor.build_manifest(
+            cfg, run, 'pass', snapshot_inputs=executor.shared_snapshot_paths(cfg, sha))[2]
+         ['spec']['template']['spec']['containers'][0]['volumeMounts']}
+        for run in ids
+    ]
+    for path in ('/output/dataset', '/output/prepared-dataset'):
+        assert mounts[0][path] == mounts[1][path]
+        assert mounts[0][path]['readOnly']
+        assert mounts[0][path]['subPath'].startswith('chen/training/dataset-cache/' + sha + '/')
+    assert [m['/output']['subPath'].split('/')[-1] for m in mounts] == ids
+
+
 def test_rejects_path_escape():
     with pytest.raises(ValueError):
         executor.training_relative('/adb-ssd-mount/ai/chen/training/../other')
@@ -304,6 +321,34 @@ def test_stop_marks_canceled_before_waiting_for_lock(monkeypatch, tmp_path):
         return contextlib.nullcontext()
     monkeypatch.setattr(executor, 'locked', lock)
     monkeypatch.setattr(executor, 'objects', lambda *a: dict(jobs=[], pods=[], services=[], configmaps=[]))
+    assert executor.execute(payload)['status'] == 'canceled'
+
+
+def test_stop_requests_all_deletions_before_waiting_for_slow_pod(monkeypatch, tmp_path):
+    payload = dict(action='stop', config=config(), run_id='12345678-1234-1234-1234-123456789abc')
+    owned = {kind: [{'metadata': {'name': kind}}] for kind in ('jobs', 'pods', 'services', 'configmaps')}
+    empty = dict(jobs=[], pods=[], services=[], configmaps=[])
+    states = iter([owned, {**empty, 'pods': owned['pods']}, empty])
+    deletes = []
+    monkeypatch.setattr(executor, 'run_path', lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(executor, 'locked', lambda path: contextlib.nullcontext())
+    monkeypatch.setattr(executor, 'objects', lambda *a: next(states))
+    monkeypatch.setattr(executor, 'save_logs', lambda *a: None)
+    monkeypatch.setattr(executor, 'kubectl', lambda args: deletes.append(args))
+    monkeypatch.setattr(executor.time, 'sleep', lambda delay: None)
+    assert executor.execute(payload)['status'] == 'canceled'
+    assert [args[3] for args in deletes] == list(owned)
+    assert all('--wait=false' in args for args in deletes)
+
+
+def test_status_reconciles_canceled_only_after_owned_objects_are_gone(monkeypatch, tmp_path):
+    payload = dict(action='status', config=config(), run_id='12345678-1234-1234-1234-123456789abc')
+    (tmp_path / '.canceled').touch()
+    state = dict(jobs=[], pods=[], services=[{'metadata': {'name': 'service'}}], configmaps=[])
+    monkeypatch.setattr(executor, 'run_path', lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(executor, 'objects', lambda *a: state)
+    assert executor.execute(payload)['status'] == 'stopping'
+    state['services'].clear()
     assert executor.execute(payload)['status'] == 'canceled'
 
 

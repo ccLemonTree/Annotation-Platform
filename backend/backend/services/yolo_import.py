@@ -1,16 +1,17 @@
 """YOLO detection archives; explicit negatives, no replacement of project annotations."""
-import math,zipfile
+import gzip,math,zipfile
 from collections import Counter, defaultdict
 from contextlib import ExitStack
 from datetime import datetime,timezone
 from pathlib import PurePosixPath
+from tempfile import TemporaryFile
 from fastapi import HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 import yaml
 from models import Project,Annotation,User,LibraryImage,Asset
 from services.annotation_scope import crops_only
-from services.image_uploads import check_archive,open_archive,member_info,IMAGES
+from services.image_uploads import ARCHIVES,check_archive,open_archive,member_info,members,IMAGES
 
 
 async def project_scope(db,id,tenant_id):
@@ -18,11 +19,6 @@ async def project_scope(db,id,tenant_id):
     if project is None:raise HTTPException(404,'标注目标项目不存在')
     if project.task_type!='detection':raise HTTPException(400,'YOLO导入只支持目标检测项目')
     return project
-
-
-def text(file,row):
-    if row.file_size>1024**2:raise ValueError('YOLO类别或标注文件超过1MiB')
-    return file.read(row).decode('utf-8-sig')
 
 
 def names_from(value):
@@ -63,28 +59,46 @@ def parse_boxes(content,names):
 
 
 def import_items(path,filename,cursor,*,on_total=None):
-    if not filename.lower().endswith('.zip'):raise ValueError('YOLO导入只支持ZIP包')
-    check_archive(path,'zip')
-    with open_archive(path,'zip') as file:
-        rows={}
-        for row in file.infolist():
-            name,_,directory=member_info(row,'zip');name=str(PurePosixPath(name))
+    if not filename.lower().endswith(ARCHIVES):raise ValueError('YOLO导入只支持ZIP或TAR压缩包')
+    kind='zip' if filename.lower().endswith('.zip') else 'tar'
+    check_archive(path,kind)
+    with ExitStack() as stack:
+        file=stack.enter_context(open_archive(path,kind))
+        # Cache only label files so image reads advance through gzip without repeated rewinds.
+        label_cache=stack.enter_context(TemporaryFile(dir=path.parent)) if kind=='tar' and isinstance(file.fileobj,gzip.GzipFile) else None
+        rows={};label_offsets={}
+        for row in members(file,kind):
+            name,size,directory=member_info(row,kind);name=str(PurePosixPath(name))
             if name in rows:raise ValueError('YOLO包包含重复路径')
-            if not directory:rows[name]=row
+            if directory:continue
+            rows[name]=row,size
+            if label_cache is not None and size<=1024**2 and name.lower().endswith(('.txt','.yaml','.yml')):
+                label_offsets[name]=label_cache.tell()
+                with open_member(file,row,kind) as source:label_cache.write(source.read(size))
+
+        def read_text(name):
+            row,size=rows[name]
+            if size>1024**2:raise ValueError('YOLO类别或标注文件超过1MiB')
+            if label_cache is not None:
+                label_cache.seek(label_offsets[name])
+                return label_cache.read(size).decode('utf-8-sig')
+            with open_member(file,row,kind) as source:return source.read(size).decode('utf-8-sig')
+
         tables=[]
-        for name,row in rows.items():
+        for name in rows:
             base=PurePosixPath(name).name.lower()
             if base in ('data.yaml','data.yml'):
-                config=yaml.safe_load(text(file,row))
+                config=yaml.safe_load(read_text(name))
                 if isinstance(config,dict) and 'names' in config:tables.append(names_from(config['names']))
-            elif base=='classes.txt':tables.append(read_names(base,text(file,row)))
-        if not tables or any(table!=tables[0] for table in tables):raise ValueError('请提供一致的data.yaml names或classes.txt类别顺序')
-        names=tables[0];images=[name for name in rows if name.lower().endswith(IMAGES)]
+            elif base=='classes.txt':tables.append(read_names(base,read_text(name)))
+        if tables and any(table!=tables[0] for table in tables):raise ValueError('请提供一致的data.yaml names或classes.txt类别顺序')
+        names=tables[0] if tables else None
+        images=[name for name in rows if name.lower().endswith(IMAGES)]
         if not images:raise ValueError('YOLO包中没有图片')
         annotations={};used={};errors={}
         for name in images:
-            path=PurePosixPath(name);parts=list(path.with_suffix('.txt').parts)
-            candidates=[str(path.with_suffix('.txt'))]
+            label_path=PurePosixPath(name).with_suffix('.txt');parts=list(label_path.parts)
+            candidates=[str(label_path)]
             if 'images' in parts:
                 parts[parts.index('images')]='labels';candidates.insert(0,str(PurePosixPath(*parts)))
             matches=[key for key in dict.fromkeys(candidates) if key in rows]
@@ -97,17 +111,19 @@ def import_items(path,filename,cursor,*,on_total=None):
             annotations[name]=label
         orphans=[name for name in rows if 'labels' in PurePosixPath(name).parts and name.lower().endswith('.txt') and PurePosixPath(name).name!='classes.txt' and name not in used]
         if on_total:on_total(len(images)+len(orphans))
+        image_file=stack.enter_context(open_archive(path,kind)) if label_cache is not None else file
         for index,name in enumerate(images):
             if index<cursor:continue
             if name in errors:yield index,name,None,'invalid',None,errors[name];continue
             label=annotations[name]
-            try:data=dict(names=names,boxes=parse_boxes(text(file,rows[label]),names))
+            try:data=dict(names=names,boxes=parse_boxes(read_text(label),names))
             except (ValueError,UnicodeError,zipfile.BadZipFile,EOFError,OSError) as error:
                 yield index,name,None,'invalid',None,label+'：'+str(error);continue
-            row=rows[name]
+            row,size=rows[name]
             from config.settings import settings
-            if row.file_size>settings.MAX_UPLOAD_SIZE:yield index,name,None,'invalid',None;continue
-            try:content=file.read(row)
+            if size>settings.MAX_UPLOAD_SIZE:yield index,name,None,'invalid',None;continue
+            try:
+                with open_member(image_file,row,kind) as source:content=source.read(size)
             except (zipfile.BadZipFile,EOFError,OSError):yield index,name,None,'invalid',None,name+'：图片解压读取失败';continue
             yield index,name,content,None,data
         for index,name in enumerate(orphans,len(images)):
@@ -127,7 +143,17 @@ async def read_label(file):
 
 CLASS_FILES=('data.yaml','data.yml','classes.txt')
 
-async def import_label_files(db,project,classes,files,archive,actor_id,batch_id=None):
+def open_member(package, entry, kind):
+    return package.open(entry) if kind=='zip' else package.extractfile(entry)
+
+
+def archive_class_names(package, entry, kind, name, size):
+    if size>1024**2:raise ValueError('YOLO类别或标注文件超过1MiB')
+    with open_member(package,entry,kind) as file:
+        return read_names(name,file.read(1024**2+1).decode('utf-8-sig'))
+
+
+async def import_label_files(db,project,classes,files,archive,actor_id,batch_id=None,*,allow_tar=False):
     from config.settings import settings
 
     if project.task_type!='detection':raise HTTPException(400,'YOLO导入只支持目标检测项目')
@@ -136,35 +162,41 @@ async def import_label_files(db,project,classes,files,archive,actor_id,batch_id=
         if not archive:
             if not files:raise ValueError('请选择 TXT 标签文件')
             return {'items':await apply_label_files(db,project,names,files,actor_id,batch_id)}
-        if files or not (archive.filename or '').lower().endswith('.zip'):
+        suffix=(archive.filename or '').lower()
+        kind='zip' if suffix.endswith('.zip') else 'tar' if allow_tar and suffix.endswith(ARCHIVES[1:]) else None
+        if files or not kind:
             raise ValueError('请选择单独的标签 ZIP 或一组 TXT 标签文件')
         if archive.size is not None and archive.size>settings.MAX_IMAGE_ARCHIVE_UPLOAD_SIZE:
             raise HTTPException(413,'压缩包超过上传大小限制')
-        await run_in_threadpool(check_archive,archive.file,'zip')
-        with open_archive(archive.file,'zip') as package:
-            members=[(PurePosixPath(member_info(entry,'zip')[0]).name,entry) for entry in package.infolist() if not entry.is_dir()]
+        await run_in_threadpool(check_archive,archive.file,kind)
+        with open_archive(archive.file,kind) as package:
+            entries=[]
+            for entry in members(package,kind):
+                path,size,directory=member_info(entry,kind)
+                if not directory:
+                    entries.append((PurePosixPath(path).name,size,entry))
             if names is None:
-                tables=[read_names(name.lower(),await run_in_threadpool(text,package,entry))
-                    for name,entry in members if name.lower() in CLASS_FILES]
+                tables=[await run_in_threadpool(archive_class_names,package,entry,kind,name.lower(),size)
+                    for name,size,entry in entries if name.lower() in CLASS_FILES]
                 if tables:
                     if any(table!=tables[0] for table in tables):
                         raise ValueError('标签 ZIP 内的类别表不一致')
                     names=tables[0]
-            labels=[(name,entry) for name,entry in members if name.lower().endswith('.txt') and name.lower() not in CLASS_FILES]
+            labels=[(name,size,entry) for name,size,entry in entries if name.lower().endswith('.txt') and name.lower() not in CLASS_FILES]
             if not labels:raise ValueError('标签 ZIP 中没有 TXT 标签文件')
-            stems=Counter(PurePosixPath(name.lower()).stem for name,_ in labels)
+            stems=Counter(PurePosixPath(name.lower()).stem for name,_,_ in labels)
             items=[]
             for start in range(0,len(labels),64):
                 batch=[]
-                for name,entry in labels[start:start+64]:
+                for name,size,entry in labels[start:start+64]:
                     if stems[PurePosixPath(name.lower()).stem]>1:
                         items.append(dict(filename=name,status='conflict',message='ZIP 中有同名标签文件'));continue
-                    if entry.file_size>1024**2:
+                    if size>1024**2:
                         items.append(dict(filename=name,status='invalid',message='YOLO标注文件超过1MiB'));continue
                     batch.append((name,entry))
                 if batch:
                     with ExitStack() as opened:
-                        uploads=[UploadFile(opened.enter_context(package.open(entry)),filename=name) for name,entry in batch]
+                        uploads=[UploadFile(opened.enter_context(open_member(package,entry,kind)),filename=name) for name,entry in batch]
                         items.extend(await apply_label_files(db,project,names,uploads,actor_id,batch_id))
             return {'items':items}
     except (ValueError,yaml.YAMLError,zipfile.BadZipFile,NotImplementedError,EOFError) as exc:
@@ -232,15 +264,19 @@ async def save(db,job,image,data,result):
     if actor is None or not actor.is_active or actor.tenant_id!=job.tenant_id:raise ValueError('上传用户已停用或租户变化')
     if job.trust_annotations and actor.role!='admin':raise ValueError('信任导入标注的管理员权限已变化')
     boxes=pixel_boxes(image,data['boxes'])
+    names=data['names']
+    trusted=job.trust_annotations and names is not None
     existing=image.imported_annotation
-    same=existing is not None and existing['boxes']==boxes and existing['names']==data['names']
-    if existing and (not same or not (job.trust_annotations and not existing.get('trusted'))):
+    same=existing is not None and existing['boxes']==boxes and existing['names']==names
+    if existing and (not same or not (trusted and not existing.get('trusted'))):
         key='annotation_skipped' if same else 'conflicts'
         result[key]=result.get(key,0)+1
         if key=='conflicts' and len(result['errors'])<20:result['errors'].append(image.original_name+'：图库已有导入标注不同，保留原来源')
     else:
-        image.imported_annotation=dict(format='yolo',boxes=boxes,names=data['names'],trusted=job.trust_annotations,
-            trusted_by=job.user_id if job.trust_annotations else None,imported_by=job.user_id,imported_at=datetime.now(timezone.utc).isoformat())
+        source=dict(format='yolo',boxes=boxes,names=names,trusted=trusted,
+            trusted_by=job.user_id if trusted else None,imported_by=job.user_id,imported_at=datetime.now(timezone.utc).isoformat())
+        if names is None:source['batch_id']=str(job.id)
+        image.imported_annotation=source
         result['annotated']=result.get('annotated',0)+1
 
 
@@ -252,10 +288,11 @@ async def copy_to_project(db,assets,user):
     sources=[(asset,image) for asset,image in rows if image.imported_annotation is not None]
     result=dict(annotated=0,annotation_skipped=0,conflicts=0,without_annotations=len(rows)-len(sources))
     labels=(project.label_schema or {}).get('labels',[])
-    required=list(dict.fromkeys(name for _,image in sources for name in image.imported_annotation['names']))
+    required=list(dict.fromkeys(name for _,image in sources for name in (image.imported_annotation['names'] or [])))
     if required and not labels:
         if project.annotated_count:raise HTTPException(400,'目标项目已有标注，请先配置匹配的类别表')
         project.label_schema={**(project.label_schema or {}),'labels':required}
+        await db.flush()  # save_annotation reloads the project with populate_existing.
         labels=required
     for asset,image in sources:
         source=image.imported_annotation
@@ -263,20 +300,26 @@ async def copy_to_project(db,assets,user):
         if existing:
             result['annotation_skipped' if existing.is_latest and existing.annotation_data.get('boxes')==source['boxes'] else 'conflicts']+=1
             continue
-        data,filtered=annotation_for_project(project,{'boxes':source['boxes']})
+        source_names=source['names']
+        data={'boxes':source['boxes']}
+        filtered=False
+        if source_names is not None:data,filtered=annotation_for_project(project,data)
         if data is None:
             result['annotation_skipped']+=1;continue
-        approval_reused=bool(source.get('trusted')) and not filtered and set(labels).issubset(source['names'])
+        approval_reused=source_names is not None and bool(source.get('trusted')) and not filtered and set(labels).issubset(source_names)
         provenance=dict(image_id=str(image.id),imported_by=source['imported_by'],imported_at=source['imported_at'],
             trusted_by=source.get('trusted_by'),filtered=filtered,approval_reused=approval_reused,
-            source_labels=source['names'],target_labels=labels)
+            source_labels=source_names,target_labels=labels)
+        if source_names is None:provenance['batch_id']=source['batch_id']
         annotation=await save_annotation(db,asset,{**data,'import_source':provenance},0,user.id,source='import_yolo')
         if approval_reused:
             annotation.review_status='approved';annotation.reviewer_id=source['trusted_by'];annotation.reviewed_at=datetime.utcnow()
             annotation.review_comment='沿用管理员在YOLO导入时的信任确认，无需逐图复核'
             record_event(db,asset,user.id,'approve',dict(source='import_yolo',annotation_id=str(annotation.id),version=annotation.version,import_source=provenance))
             await sync_state(db,asset)
-        elif filtered or set(labels)-set(source['names']):
+        elif source_names is None:
+            annotation.review_comment='来源包未提供类别表，保留原始YOLO编号，需设置类别后审核'
+        elif filtered or set(labels)-set(source_names):
             annotation.review_comment='按目标项目标签带入，标签范围或内容变化，需重新审核完整性'
         result['annotated']+=1
     return result

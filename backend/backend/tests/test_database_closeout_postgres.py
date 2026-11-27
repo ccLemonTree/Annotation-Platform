@@ -377,6 +377,58 @@ def test_bootstrap_empty_database_cli_and_exact_stamp(isolated_pg, tmp_path):
         assert conn.scalar(text('SELECT count(*) FROM models')) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_timezone', [False, True])
+async def test_asset_neighbors_with_existing_postgres_timestamp_types(isolated_pg, with_timezone):
+    from datetime import datetime
+    from fastapi import Response
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    from api.asset_routes import asset_neighbors
+    from models import Asset
+    from schemas.object_attributes import AttributeFilters
+
+    engine, _ = isolated_pg
+    project = uuid4()
+    assets = sorted(uuid4() for _ in range(3))
+    with engine.begin() as conn:
+        bootstrap_module().bootstrap_database(conn)
+        conn.execute(insert(Tenant).values(id=1, tenant_name='fixture'))
+        conn.execute(insert(Project).values(id=project, tenant_id=1, project_name='fixture', task_type='detection'))
+        conn.execute(insert(Asset), [
+            dict(id=aid, project_id=project, original_name='fixture.jpg', blob_path='fixture.jpg',
+                 content_hash=str(aid), file_size=1, source_type='upload', created_at=datetime(2026, 11, 11, 7))
+            for aid in assets
+        ])
+        if with_timezone:
+            conn.exec_driver_sql("ALTER TABLE assets ALTER COLUMN created_at TYPE timestamptz USING created_at AT TIME ZONE 'UTC'")
+
+    async_engine = create_async_engine(engine.url.set(drivername='postgresql+asyncpg'))
+    try:
+        async with AsyncSession(async_engine) as db:
+            result = await asset_neighbors(
+                assets[1], Response(), label=None, crop_label=None, attributes=AttributeFilters(), scene=None,
+                annotation_kind='detection', tenant_id=1, db=db, current_user=None,
+            )
+        assert result == dict(position=2, total=3, previous_id=assets[2], next_id=assets[0])
+    finally:
+        await async_engine.dispose()
+
+
+def test_bootstrap_creates_annotation_event_indexes(isolated_pg):
+    engine, _ = isolated_pg
+    with engine.begin() as conn:
+        bootstrap_module().bootstrap_database(conn)
+        indexes = dict(conn.execute(text("""
+            SELECT indexname, indexdef FROM pg_indexes
+            WHERE schemaname = 'public' AND tablename = 'annotation_events'
+        """)).all())
+        assert '(project_id, created_at DESC, id DESC)' in indexes['ix_ann_events_project_created']
+        pending = indexes['ix_ann_events_ai_pending']
+        assert 'project_id, asset_id' in pending and 'version' in pending
+        assert 'WHERE' in pending and 'ai_review' in pending and 'needs_review' in pending
+
+
 @pytest.mark.parametrize('object_sql', [
     'CREATE TABLE public.business_data (id integer)',
     'CREATE SCHEMA private; CREATE TABLE private.business_data (id integer)',

@@ -39,7 +39,7 @@ export interface PaginatedResponse<T> {
   page: number;
   page_size: number;
 }
-export const getProjects = async (params?: {page?: number; page_size?: number; task_type?: TaskType; status?: ProjectStatus}): Promise<PaginatedResponse<Project>> => {
+export const getProjects = async (params?: {page?: number; page_size?: number; task_type?: TaskType; status?: ProjectStatus; q?: string}): Promise<PaginatedResponse<Project>> => {
   return (await apiClient.get('/api/projects', {params})).data;
 };
 export const createProject = async (data: ProjectCreate): Promise<Project> => (await apiClient.post('/api/projects', data)).data;

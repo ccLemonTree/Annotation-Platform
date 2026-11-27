@@ -29,6 +29,25 @@ def send(client,headers,format='pt',files=None,**values):
     return client.post('/api/model-repository/upload',headers=headers,data=data,files=files or [('files',(name,b'weights'))])
 
 
+def test_curl_download_ticket_only_authorizes_selected_model(client,auth_headers):
+    first=send(client,auth_headers)
+    second=send(client,auth_headers,version='v2')
+    assert first.status_code==201 and second.status_code==201
+    root='/api/model-repository/'
+    model=root+first.json()['id']
+    other=root+second.json()['id']
+    assert client.post(model+'/curl-download').status_code==401
+    issued=client.post(model+'/curl-download',headers=auth_headers)
+    assert issued.status_code==200
+    assert issued.headers['Cache-Control']=='no-store'
+    ticket=issued.json()['ticket']
+    cookie={'Cookie':f'repository_download={ticket}'}
+    response=client.get(model+'/browser-download',headers=cookie)
+    assert response.status_code==200 and response.content==b'weights'
+    assert client.get(other+'/browser-download',headers=cookie).status_code==401
+    assert client.get(root.rstrip('/'),headers={'Authorization':f'Bearer {ticket}'}).status_code==401
+
+
 async def run_record(db,kind='yolo26',tenant=1):
     from models.training_run import TrainingRun
     run=TrainingRun(id=uuid4(),tenant_id=tenant,user_id=1,name='training',kind=kind,status='completed',
