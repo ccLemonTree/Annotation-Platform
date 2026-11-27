@@ -22,8 +22,8 @@ export default function ProjectWorkflow({project,active}:{project:Project;active
         <Link to={admin?'/projects':'/annotations'}>{admin?'全部项目':'标注项目'}</Link></div>
     </div>
     <nav aria-label="项目导航">
-      {stages.map((item,index)=><Link key={item.key} to={item.to} aria-current={(active==='annotate'?'review':active)===item.key?'page':undefined}>
-        <span className="project-workflow-step" aria-hidden="true">{index+1}</span>{item.label}
+      {stages.map(item=><Link key={item.key} to={item.to} aria-current={(active==='annotate'?'review':active)===item.key?'page':undefined}>
+        {item.label}
       </Link>)}
     </nav>
   </section>;

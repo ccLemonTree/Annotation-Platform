@@ -16,7 +16,7 @@ export default function ReviewQueuePage(){
   return <Space orientation="vertical" size="middle" style={{width:'100%',minWidth:0}}>
     {project&&<ProjectWorkflow project={project} active="review"/>}
     {error&&<Alert type="error" title={error}/>}
-    <Space wrap><label>项目</label><Select aria-label="待审队列项目" placeholder="全部项目" allowClear showSearch optionFilterProp="label" style={{width:260,maxWidth:'100%'}} value={projectId} options={projects.map(project=>({value:project.id,label:project.project_name}))} onChange={id=>{const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');setParams(next);}}/>
+    <Space wrap><Select aria-label="待审队列项目" prefix="项目" placeholder="全部项目" allowClear showSearch optionFilterProp="label" style={{width:240,maxWidth:'100%'}} value={projectId} options={projects.map(project=>({value:project.id,label:project.project_name}))} onChange={id=>{const next=new URLSearchParams(params);if(id)next.set('project_id',id);else next.delete('project_id');setParams(next);}}/>
       {projectId&&<Link to={`/annotations?project_id=${projectId}`}>查看项目普通审核</Link>}
       <Link to={`/automation${projectId?`?project_id=${projectId}`:''}`}>预标注与AI审核任务</Link>
     </Space>

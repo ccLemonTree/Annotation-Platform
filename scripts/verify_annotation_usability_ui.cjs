@@ -15,6 +15,7 @@ async page=>{
     if(p==='/api/auth/me')return route.fulfill({json:{id:2,tenant_id:1,username:'标注员',role:'user'}});
     if(p==='/api/analytics/activity')return route.fulfill({json:{}});
     if(p==='/api/projects/'+projectId)return route.fulfill({json:project});
+    if(p.endsWith('/crop-labels'))return route.fulfill({json:[]});
     if(p.endsWith('/attribute-options')){optionsReads++;return route.fulfill({json:{body_color:['黑色','白色'],plate:[]}});}
     if(p==='/api/assets/collections')return route.fulfill({json:[]});
     if(p.startsWith('/api/assets/')){
@@ -53,7 +54,7 @@ async page=>{
   await page.getByRole('button',{name:'适应图片',exact:true}).click();check(await canvas.getAttribute('viewBox')===initial,'Fit did not reset zoom');
   await canvas.hover();await page.mouse.wheel(0,-100);await page.waitForTimeout(100);check(await canvas.getAttribute('viewBox')!==initial,'Wheel did not zoom');
   await canvas.click();check(await canvas.isVisible(),'Image click unexpectedly changed view');
-  await page.getByText('原图',{exact:true}).click();await page.getByRole('img',{name:'原图裁剪位置'}).waitFor();
+  await page.getByText('来源原图',{exact:true}).click();await page.getByRole('img',{name:'原图裁剪位置'}).waitFor();
   const rect=page.getByRole('img',{name:'原图裁剪位置'}).locator('g rect').first();check(await rect.getAttribute('x')==='100'&&await rect.getAttribute('y')==='80'&&await rect.getAttribute('width')==='300','Original rectangle uses local crop coordinates');
   await page.screenshot({path:'output/playwright/annotation-original-position.png',fullPage:true,animations:'disabled'});
   await page.getByText('标注切图',{exact:true}).click();await canvas.waitFor();

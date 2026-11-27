@@ -8,6 +8,8 @@ async page=>{
     const req=route.request(),url=new URL(req.url()),path=url.pathname,method=req.method();requests.push([method,path]);
     if(url.origin!==base){unexpected.push(req.url());return route.abort();}
     if(method==='POST'&&path==='/api/projects')return route.fulfill({status:503,json:{detail:'模拟创建失败'}});
+    if(method==='PUT'&&path===`/api/projects/${id}`&&req.postDataJSON().task_type==='caption')
+      return route.fulfill({status:409,json:{detail:'项目已有标注、处理结果或关联任务，无法修改任务类型'}});
     if(method!=='GET'){unexpected.push(method+' '+path);return route.fulfill({status:500,json:{detail:'unexpected'}});}
     if(path==='/api/auth/me')return route.fulfill({json:{id:1,tenant_id:1,username:'fixture',role:'admin'}});
     if(path==='/api/projects')return route.fulfill({json:{items:[project],total:1}});
@@ -27,21 +29,30 @@ async page=>{
   const check=(condition,message)=>{if(!condition)throw Error(message);};
   await page.setViewportSize({width:1440,height:1000});await page.goto(base+'/projects');
   await page.getByRole('button',{name:/新建项目/}).click();const modal=page.getByRole('dialog',{name:'新建项目'});
-  await modal.getByText('创建后不能更改任务类型',{exact:false}).waitFor();
-  for(const [name,help] of [['图像分类','例如区分图片场景'],['大模型描述 / 目标属性分析','例如描述画面'],['向量匹配标注','例如按文字或图片检索']]){
-    await modal.getByRole('combobox',{name:'任务类型'}).click();await page.locator('.ant-select-dropdown:visible').getByText(name,{exact:true}).click();await modal.getByText(help,{exact:false}).waitFor();
-    await modal.getByText(name==='图像分类'?'暂不支持模型测试评估':'支持标注、导出训练和模型测试评估',{exact:false}).waitFor();
+  const typeField=modal.getByRole('combobox',{name:'任务类型'});
+  await modal.locator('.ant-form-item-tooltip').hover();
+  await page.getByRole('tooltip').getByText('已有标注、处理结果或关联任务后，无法更改任务类型。').waitFor();
+  await typeField.click();
+  const typeMenu=page.locator('.ant-select-dropdown:visible');
+  const supported=typeMenu.locator('.ant-select-item-option:not(.ant-select-item-option-disabled)');
+  for(const name of ['目标检测','图片分类','图片描述与属性','向量匹配']){
+    await supported.getByText(name,{exact:true}).waitFor();
   }
-  await modal.getByRole('combobox',{name:'任务类型'}).click();const unavailable=page.locator('.ant-select-dropdown:visible').getByText('图像分割（暂不支持）',{exact:true}).locator('..');
-  check((await unavailable.getAttribute('class')).includes('disabled'),'不支持的分割新项目仍可选择');await page.keyboard.press('Escape');
+  await typeMenu.locator('.ant-select-item-option-disabled').getByText('图像分割（暂不支持）',{exact:true}).waitFor();
+  await supported.getByText('图片分类',{exact:true}).click();
   await modal.getByRole('button',{name:'创建项目'}).click();await modal.getByText('请输入项目名称').waitFor();
-  check(!await page.getByText('创建失败',{exact:true}).count(),'本地校验出现创建失败');check(!requests.some(([m,p])=>m==='POST'&&p==='/api/projects'),'本地校验发出请求');
-  await modal.getByLabel('项目名称').fill('测试项目');await modal.getByRole('button',{name:'创建项目'}).click();
-  await page.getByText('创建失败',{exact:true}).waitFor();check(requests.some(([m,p])=>m==='POST'&&p==='/api/projects'),'实际失败未发送请求');
+  check(!await modal.getByText('模拟创建失败').count(),'本地校验出现服务端错误');check(!requests.some(([m,p])=>m==='POST'&&p==='/api/projects'),'本地校验发出请求');
+  await modal.getByLabel('项目名称').fill('测试项目');await modal.getByLabel('项目名称').press('Enter');
+  await modal.getByText('模拟创建失败',{exact:true}).waitFor();check(requests.some(([m,p])=>m==='POST'&&p==='/api/projects'),'实际失败未发送请求');
   await page.screenshot({path:'output/playwright/novice-project-task-types.png',fullPage:false,animations:'disabled'});
   await page.goto(base+`/projects/${id}/settings`);await page.getByRole('button',{name:/编辑名称与类别/}).click();
-  const edit=page.getByRole('dialog',{name:'编辑项目'});await edit.getByText('当前仅保留项目与图片管理',{exact:false}).waitFor();
-  check(await edit.getByRole('combobox',{name:'任务类型'}).isDisabled(),'旧分割项目允许修改类型');await edit.getByRole('button',{name:/^取\s*消$/}).click();
+  const edit=page.getByRole('dialog',{name:'编辑项目'});
+  await edit.getByRole('combobox',{name:'任务类型'}).click();
+  await page.locator('.ant-select-dropdown:visible .ant-select-item-option-disabled').getByText('图像分割',{exact:true}).waitFor();
+  await page.locator('.ant-select-dropdown:visible').getByText('图片描述与属性',{exact:true}).click();
+  await edit.getByRole('button',{name:'保存设置'}).click();
+  await edit.getByText('项目已有标注、处理结果或关联任务，无法修改任务类型',{exact:true}).waitFor();
+  await edit.getByRole('button',{name:/^取\s*消$/}).click();
   await page.goto(base+`/projects/${id}/deliver`);await page.getByText('图像分割项目暂不支持',{exact:false}).waitFor();
   check(!await page.getByRole('button',{name:/导出|创建训练/}).count(),'分割仍显示不可用的导出训练');
   check(!requests.some(([m,p])=>p.startsWith('/api/export')||p.startsWith('/api/training')),'分割访问导出或训练接口');

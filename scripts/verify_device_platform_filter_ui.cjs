@@ -9,6 +9,7 @@ async page=>{
   if(req.method()!=='GET')writes.push({path,body:req.postDataJSON(),url:req.url()});
   if(path==='/api/projects')return route.fulfill({json:{items:[],total:0}});
   if(path==='/api/images/collections')return route.fulfill({json:[]});
+  if(path==='/api/model-services/prompt-defaults')return route.fulfill({json:{scene:'fixture'}});
   if(path==='/api/images/ingest-settings'){if(req.method()==='PUT')config=req.postDataJSON();return route.fulfill({json:config});}
   let data=[];
   if(path.endsWith('/managed-platforms'))data=platforms;

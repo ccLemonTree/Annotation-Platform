@@ -1,4 +1,3 @@
-// 项目管理页面
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
@@ -13,13 +12,14 @@ import {
   Form,
   Input,
   Select,
-  Space,
-  Tag,
   Popconfirm,
   Alert,
-  Collapse,
 } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import {
+  AimOutlined, AppstoreOutlined, ArrowRightOutlined, BlockOutlined, DeleteOutlined,
+  EditOutlined, FileTextOutlined, FolderOutlined, NodeIndexOutlined, PlusOutlined,
+  SearchOutlined, TeamOutlined,
+} from '@ant-design/icons';
 import { isAxiosError } from 'axios';
 import {
   getProjects,
@@ -28,6 +28,7 @@ import {
   updateProject,
   deleteProject,
   type Project,
+  type ProjectStatus,
 } from '../api/projects';
 
 import CreateProjectModal from '../components/CreateProjectModal';
@@ -36,6 +37,46 @@ import ProjectWorkflow from '../components/ProjectWorkflow';
 import './ProjectsPage.css';
 
 const { TextArea } = Input;
+
+const projectTasks = {
+  detection: { label: '目标检测', icon: AimOutlined },
+  classification: { label: '图片分类', icon: AppstoreOutlined },
+  caption: { label: '图片描述与属性', icon: FileTextOutlined },
+  vector: { label: '向量匹配', icon: NodeIndexOutlined },
+  segmentation: { label: '图像分割', icon: BlockOutlined },
+};
+const projectStatuses = { draft: '草稿', active: '进行中', completed: '已完成', archived: '已归档' };
+const projectNumber = new Intl.NumberFormat('zh-CN');
+
+function ProjectCard({ project }: { project: Project }) {
+  const task = projectTasks[project.task_type];
+  const TaskIcon = task?.icon ?? FolderOutlined;
+  const percent = project.total_assets ? Math.floor(project.reviewed_count * 100 / project.total_assets) : 0;
+  return (
+    <article className="project-card" aria-label={project.project_name}>
+      <Link className="project-card-link" to={`/projects/${project.id}/images`} aria-label={`进入项目 ${project.project_name}`}>
+        <div className="project-card-meta">
+          <span className="project-card-task"><TaskIcon aria-hidden />{task?.label ?? project.task_type}</span>
+          <span className="project-card-status" data-status={project.status}>{projectStatuses[project.status] ?? project.status}</span>
+        </div>
+        <h2>{project.project_name}</h2>
+        {project.description && <p className="project-card-description">{project.description}</p>}
+        <dl className="project-card-counts">
+          <div><dt>图片</dt><dd>{projectNumber.format(project.total_assets)}</dd></div>
+          <div><dt>已标注</dt><dd>{projectNumber.format(project.annotated_count)}</dd></div>
+          <div><dt>已审核</dt><dd>{projectNumber.format(project.reviewed_count)}</dd></div>
+        </dl>
+        <div className="project-card-footer">
+          <div className="project-card-progress">
+            <div><span>审核进度</span><strong>{percent}%</strong></div>
+            <Progress aria-label="项目审核进度" percent={percent} size="small" showInfo={false} />
+          </div>
+          <span className="project-card-enter">{project.total_assets ? '进入项目' : '添加第一批图片'}<ArrowRightOutlined aria-hidden /></span>
+        </div>
+      </Link>
+    </article>
+  );
+}
 
 export default function ProjectsPage() {
   const { message } = App.useApp();
@@ -46,7 +87,7 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const projectRequest = useRef(0);
   const [assignmentProject,setAssignmentProject] = useState<Project>();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
@@ -54,6 +95,7 @@ export default function ProjectsPage() {
   const [searchText, setSearchText] = useState('');
   const [composingSearch, setComposingSearch] = useState(false);
   const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ProjectStatus | ''>('');
   const [revision, setRevision] = useState(0);
   const [form] = Form.useForm();
   const configuredLabels: string[] = Form.useWatch('labels', form) || [];
@@ -105,7 +147,7 @@ export default function ProjectsPage() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [pagination.page, pagination.page_size, revision, projectId, keyword]);
+  }, [pagination.page, pagination.page_size, revision, projectId, keyword, statusFilter]);
 
   const fetchProjects = async (quiet = false) => {
     const request = ++projectRequest.current;
@@ -115,6 +157,7 @@ export default function ProjectsPage() {
         page: pagination.page,
         page_size: pagination.page_size,
         q: keyword || undefined,
+        status: statusFilter || undefined,
       });
       if (request !== projectRequest.current) return;
       setLoadError(false);
@@ -183,6 +226,11 @@ export default function ProjectsPage() {
   };
 
   const project = projectId ? projects.find(item => item.id === projectId) : undefined;
+  const labels = project?.label_schema?.labels;
+  const hasFilters = Boolean(keyword || statusFilter);
+  const emptyProjectList = !loading && !loadError && !projects.length && !hasFilters && !searchText && pagination.page === 1;
+  const originalLabels = editingProject?.label_schema?.labels;
+  const mappingSources = [...new Set<string>([...(Array.isArray(originalLabels) ? originalLabels : []), ...usedLabels])];
   useEffect(() => {
     if (project && searchParams.get('edit') === '1') {
       handleEdit(project);
@@ -197,44 +245,73 @@ export default function ProjectsPage() {
       {loadError&&<Alert type="error" showIcon title="读取项目失败" action={<Button onClick={()=>setRevision(n=>n+1)}>重试</Button>} style={{marginBottom:16}}/>}
       {projectId ? project ? <>
         <ProjectWorkflow project={project} active="settings"/>
-        <Card title="项目设置">
-          <p className="workspace-help">管理项目名称、标注类别和成员。</p>
-          <Space wrap><Button type="primary" icon={<EditOutlined/>} onClick={()=>handleEdit(project)}>编辑名称与类别</Button>
-            <Button onClick={()=>setAssignmentProject(project)}>分配项目成员</Button></Space>
-          <p>标注类别：{(project.label_schema?.labels as string[]||[]).join('、')||'尚未设置，可在开始标注前添加'}</p>
-          <Collapse items={[{key:'danger',label:'删除项目',children:<><p>删除此项目及其标注、审核记录。此操作不可撤销。</p><Popconfirm title="确定删除此项目及其标注吗？" onConfirm={()=>handleDelete(project.id)} okText="删除项目" cancelText="取消"><Button danger icon={<DeleteOutlined/>}>删除项目</Button></Popconfirm></>}]} />
+        <Card className="project-settings">
+          <header className="project-settings-heading">
+            <h2>基本信息</h2>
+            <Button type="primary" icon={<EditOutlined aria-hidden />} onClick={() => handleEdit(project)}>编辑名称与类别</Button>
+          </header>
+          <dl className="project-settings-fields">
+            <div><dt>任务类型</dt><dd>{projectTasks[project.task_type]?.label ?? project.task_type}</dd></div>
+            <div><dt>项目状态</dt><dd><span className="project-card-status" data-status={project.status}>{projectStatuses[project.status] ?? project.status}</span></dd></div>
+            {(project.task_type === 'classification' || project.task_type === 'detection' || (Array.isArray(labels) && labels.length > 0)) && (
+              <div className="project-settings-wide"><dt>标注类别</dt><dd>
+                {Array.isArray(labels) && labels.length ? <ul className="project-settings-labels">
+                  {labels.map(label => <li key={label}>{label}</li>)}
+                </ul> : '尚未设置'}
+              </dd></div>
+            )}
+            {project.description && <div className="project-settings-wide"><dt>项目描述</dt><dd>{project.description}</dd></div>}
+          </dl>
+          <footer className="project-settings-actions">
+            <Button icon={<TeamOutlined aria-hidden />} onClick={() => setAssignmentProject(project)}>分配项目成员</Button>
+            <Popconfirm title="确定删除项目？" description="项目及其标注、审核记录将永久删除。"
+              onConfirm={() => handleDelete(project.id)} okText="删除项目" okButtonProps={{ danger: true }} cancelText="取消">
+              <Button type="text" danger icon={<DeleteOutlined aria-hidden />}>删除项目</Button>
+            </Popconfirm>
+          </footer>
         </Card>
       </> : loading ? <Spin/> : null : <>
-        <div className="page-toolbar"><p className="workspace-help">选择项目继续工作，或创建项目后添加第一批图片。</p>
-          <div className="page-toolbar-actions">
-            <Input type="search" aria-label="搜索项目名称" placeholder="按项目名称搜索" allowClear maxLength={200}
-              style={{width:260,maxWidth:'100%'}} value={searchText} onChange={event=>setSearchText(event.target.value)}
-              onCompositionStart={()=>setComposingSearch(true)} onCompositionEnd={event=>{
-                setSearchText(event.currentTarget.value);
-                setComposingSearch(false);
-              }} />
-            <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>新建项目</Button>
-          </div>
-        </div>
+        {!emptyProjectList && <div className="project-list-toolbar">
+          <Input className="project-list-search" type="search" prefix={<SearchOutlined aria-hidden />}
+            aria-label="搜索项目名称" placeholder="按项目名称搜索" allowClear maxLength={200}
+            value={searchText} onChange={event=>setSearchText(event.target.value)}
+            onCompositionStart={()=>setComposingSearch(true)} onCompositionEnd={event=>{
+              setSearchText(event.currentTarget.value);
+              setComposingSearch(false);
+            }} />
+          <Select<ProjectStatus | ''> className="project-list-status" aria-label="按项目状态筛选"
+            value={statusFilter} onChange={value => {
+              setStatusFilter(value);
+              setPagination(previous => ({ ...previous, page: 1 }));
+            }}
+            options={[{ value: '', label: '全部状态' }, ...Object.entries(projectStatuses).map(([value, label]) => ({ value, label }))]} />
+          <span className="project-list-total" role="status">
+            {!loading && !loadError && `${hasFilters ? '匹配' : '共'} ${projectNumber.format(pagination.total)} 个项目`}
+          </span>
+          <Button type="primary" icon={<PlusOutlined aria-hidden />} onClick={handleCreate}>新建项目</Button>
+        </div>}
         <Spin spinning={loading}>
-          {!projects.length&&!loading&&!loadError ? (keyword ? <Empty description="未找到匹配的项目" /> :
-            <Empty description="还没有项目，从项目名称开始"><Button type="primary" onClick={handleCreate}>创建第一个项目</Button></Empty>) : <div className="project-card-grid">
-            {projects.map(project=><Link key={project.id} className="project-card-link" to={`/projects/${project.id}/images`} aria-label={`进入项目 ${project.project_name}`}>
-              <Card className="project-card" hoverable role="article" aria-label={project.project_name}
-                title={project.project_name}
-                extra={<Tag color={project.status==='active'?'success':'default'}>{({draft:'草稿',active:'进行中',completed:'已完成',archived:'已归档'} as Record<string,string>)[project.status]||project.status}</Tag>}>
-                <p className="project-card-description">{project.description||'添加数据、完成标注与审核，再导出或训练。'}</p>
-                <p className="project-card-counts">图片 {project.total_assets} · 已标注 {project.annotated_count} · 已审核 {project.reviewed_count}</p>
-                <div className="project-card-progress"><span>审核进度</span><Progress aria-label="项目审核进度" percent={project.total_assets?Math.floor(project.reviewed_count*100/project.total_assets):0} size="small" /></div>
-                <span className="project-card-enter">{project.total_assets?'进入项目':'添加第一批图片'} →</span>
-              </Card>
-            </Link>)}
-          </div>}
+          <div className="project-list-results" aria-busy={loading}>
+            {!projects.length && !loading && !loadError ? (
+              <Empty className="project-list-empty" image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={hasFilters ? '未找到匹配的项目' : '还没有项目'}>
+                {hasFilters ? <Button onClick={() => {
+                  setSearchText('');
+                  setKeyword('');
+                  setStatusFilter('');
+                  setPagination(previous => ({ ...previous, page: 1 }));
+                }}>清除筛选</Button> :
+                  <Button type="primary" onClick={handleCreate}>创建第一个项目</Button>}
+              </Empty>
+            ) : <div className="project-card-grid">
+              {projects.map(item => <ProjectCard key={item.id} project={item} />)}
+            </div>}
+          </div>
         </Spin>
-        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+        {(pagination.total > 10 || pagination.page > 1) && <div className="project-list-pagination">
           <Pagination current={pagination.page} pageSize={pagination.page_size} total={pagination.total} showSizeChanger
-            showTotal={total=>`共 ${total} 个项目`} onChange={(page,pageSize)=>setPagination(previous=>({...previous,page,page_size:pageSize}))} />
-        </div>
+            responsive onChange={(page,pageSize)=>setPagination(previous=>({...previous,page,page_size:pageSize}))} />
+        </div>}
       </>}
 
       <CreateProjectModal
@@ -273,29 +350,30 @@ export default function ProjectsPage() {
               { max: 200, message: '项目名称不能超过200个字符' },
             ]}
           >
-            <Input placeholder="请输入项目名称" />
+            <Input maxLength={200} />
           </Form.Item>
 
-          <Form.Item name="task_type" label="标注格式" rules={[{required:true}]}>
+          <Form.Item name="task_type" label="任务类型" rules={[{required:true}]}>
             <Select options={[{value:'detection',label:'目标检测'},{value:'caption',label:'图片描述与属性'},
               {value:'classification',label:'图片分类'},{value:'vector',label:'向量匹配'},{value:'segmentation',label:'图像分割',disabled:true}]}/>
           </Form.Item>
 
           {taskType==='classification'&&<Form.Item name="classification_mode" label="分类方式"><Select options={[{value:'single',label:'单选分类'},{value:'multi',label:'多标签分类'}]}/></Form.Item>}
-          {(taskType==='classification'||editingProject&&taskType==='detection')&&<Form.Item name="labels" label="标注类别" extra="输入类别后按回车。"
+          {(taskType==='classification'||editingProject&&taskType==='detection')&&<Form.Item name="labels" label="标注类别" extra="按回车添加类别"
             rules={[{ type: 'array', required: true, min: 1, message: '请至少设置一个类别' },
               { validator: (_, labels: string[]=[]) => labels.every(label => label.trim()) && new Set(labels.map(label => label.trim())).size === labels.length
                 ? Promise.resolve() : Promise.reject(new Error('类别不能空白或重复')) }]}>
-            <Select aria-label="项目标注类别" mode="tags" tokenSeparators={[',', '，']} placeholder="例如：人、车；输入后按回车" />
+            <Select aria-label="项目标注类别" mode="tags" tokenSeparators={[',', '，']} />
           </Form.Item>}
 
           {editingProject&&<>
           {labelsError && <Alert type="error" showIcon title={labelsError} />}
           {saveError && <Alert type="error" showIcon title={saveError} style={{ marginBottom: 16 }} />}
-          {!changingTaskType && ['detection','classification'].includes(taskType) && <div style={{ marginBottom: 20 }}>
+          {labelsLoading && <p role="status">正在读取已有类别…</p>}
+          {!changingTaskType && ['detection','classification'].includes(taskType) && mappingSources.length > 0 && <div style={{ marginBottom: 20 }}>
             <h3>同步已有标注类别</h3>
-            <p style={{ color: 'var(--ui-muted)' }}>选择旧类别对应的新类别。同步后最新标注生成新版本并待审核；历史和冻结包不变。{labelsLoading && ' 正在读取已有类别…'}</p>
-            {[...new Set([...(Array.isArray(editingProject.label_schema?.labels) ? editingProject.label_schema.labels as string[] : []), ...usedLabels])].map(source =>
+            <p style={{ color: 'var(--ui-muted)' }}>更名会生成待审核的新版本，保留历史标注和冻结包。</p>
+            {mappingSources.map(source =>
               <div key={source} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
                 <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{source}{usedLabels.includes(source) ? '（已有框）' : ''}</span>
                 <span>→</span>
@@ -307,11 +385,10 @@ export default function ProjectsPage() {
           </div>}
           <Form.Item
             name="description"
-            label="项目描述"
+            label="项目描述（选填）"
           >
             <TextArea
-              rows={4}
-              placeholder="请输入项目描述（可选）"
+              rows={3}
               maxLength={500}
               showCount
             />

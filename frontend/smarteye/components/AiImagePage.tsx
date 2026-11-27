@@ -301,9 +301,6 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">AI 生图</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-              文生图与图生图统一工作台，支持批量任务、历史复用和结果回看。
-            </p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -451,9 +448,6 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-base font-semibold text-slate-800 dark:text-white">素材池</h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                      支持本地上传、文件夹导入、URL 导入和当前查询结果导入。
-                    </p>
                   </div>
                   <button
                     onClick={() => setAssets([])}
@@ -586,9 +580,6 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-base font-semibold text-slate-800 dark:text-white">任务状态</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                    当前任务进度、批次结果与失败摘要。
-                  </p>
                 </div>
                 {task && (
                   <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${statusMap[task.status] || statusMap.pending}`}>
@@ -707,7 +698,6 @@ const AiImagePage: React.FC<AiImagePageProps> = ({
 
       {historyOpen && (
         <Drawer open title="AI 生图历史" onClose={() => setHistoryOpen(false)} size={640} className="smarteye-legacy-form">
-          <p className="smarteye-destination-note">按提示词、日期和状态筛选，可复用结果图。</p>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <input aria-label="历史提示词" value={historyPrompt} onChange={(e) => setHistoryPrompt(e.target.value)} placeholder="提示词" className={inputClass} />
               <select aria-label="历史任务状态" value={historyStatus} onChange={(e) => setHistoryStatus(e.target.value)} className={inputClass}>

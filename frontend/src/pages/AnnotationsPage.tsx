@@ -167,6 +167,13 @@ export default function AnnotationsPage() {
   };
   const hasProjectImages = (project?.total_assets ?? 0) > 0;
   const missingCrops = project?.label_schema?.annotation_scope==='crops' && hasProjectImages && stats?.total_assets===0;
+  let emptyRecords = '暂无已保存的标注';
+  if (error) emptyRecords = '读取失败，请重试';
+  else if (missingCrops) emptyRecords = '还没有可标注的裁剪图';
+  else if (status || q || label || annotationSource || workJobId || imageKind) emptyRecords = '没有符合条件的标注';
+  else if (project?.task_type === 'segmentation') emptyRecords = '暂无已保存的分割标注记录';
+  else if (project?.task_type === 'vector') emptyRecords = '暂无图片描述或分类标注；检索匹配标注见上方审核区';
+  else if (project && !(stats?.total_assets ?? project.total_assets)) emptyRecords = '当前标注范围暂无图片';
   const counts = (item: Project, scoped=false) => <Row gutter={[12, 12]}>
     {[[scoped?'可标注图片':'图片', item.total_assets], [item.task_type==='vector'?'待描述 / 分类':'待标注', Math.max(0, item.total_assets - item.annotated_count)],
       [item.task_type==='vector'?'已描述 / 分类':'已标注', item.annotated_count], [item.task_type==='vector'?'描述 / 分类已通过':'已通过', item.reviewed_count]].map(([title, value]) =>
@@ -178,10 +185,6 @@ export default function AnnotationsPage() {
     <Card title="批量处理" loading={loading&&!project}>
       {error&&<Alert type="error" showIcon title={error} action={<Button onClick={()=>setReload(n=>n+1)}>重试读取</Button>}/>}
       {project&&<>
-        <p className="workspace-help">处理步骤独立于项目标注类型。可从原图或之前的任务结果启动工作流，再进入结果图片进行标注。</p>
-        <Space wrap style={{marginBottom:16}}>
-          <Link to={`/annotations?project_id=${project.id}`}>进入标注与审核 →</Link>
-        </Space>
         <ProjectAnnotationScope project={project} onSaved={updated=>{
           setProject(current=>current?.id===updated.id?updated:current);
           setReload(value=>value+1);
@@ -210,13 +213,13 @@ export default function AnnotationsPage() {
 
   return <>
     {project&&<ProjectWorkflow project={project} active="review"/>}
-    <Card title={projectId ? undefined : '标注项目'}>
+    <Card title={projectId ? undefined : '标注项目'}
+      extra={!projectId&&admin&&<Link to="/image-semantics/history">旧图片库生成批次</Link>}>
     {error && <Alert type="error" showIcon title={error} action={<Button size="small" onClick={() => setReload(n => n + 1)}>重试读取</Button>} style={{ marginBottom: 16 }} />}
     {projectId ? <>
       {project && <div style={{ marginBottom: 20 }}>{counts({...project,...stats},true)}</div>}
       {unconfiguredLabels && <Alert type="warning" showIcon style={{ marginBottom: 16 }}
-        title="此项目尚未配置标注类别"
-        description={admin ? '请先在项目设置中添加标注类别，即可开始画框或分类标注。' : '请联系管理员在项目设置中添加标注类别。'}
+        title={admin?(hasProjectImages?'请先设置标注类别':'先添加图片，再设置标注类别'):'请联系管理员设置标注类别'}
         action={admin && <Link to={`/projects/${project.id}/settings?edit=1`}><Button size="small" type="primary">设置标注类别</Button></Link>} />}
       {missingCrops&&<Alert type="info" showIcon style={{marginBottom:16}}
         title={`项目已有 ${project.total_assets.toLocaleString('zh-CN')} 张图片，当前仅标注裁剪图`}
@@ -251,13 +254,11 @@ export default function AnnotationsPage() {
         </div>
       </div>
       <Table columns={columns} dataSource={rows} rowKey="id" loading={loading} scroll={{ x: 1080 }}
-        locale={{ emptyText: error ? '读取失败，请重试' : missingCrops ? '还没有可标注的裁剪图' : (status || q || label || annotationSource) ? '此项目没有符合筛选条件的标注' :
-          project?.task_type==='segmentation'?'暂无已保存的分割标注记录':unconfiguredLabels?(admin?<Space wrap><span>此项目尚未设置标注类别</span><Link to={`/projects/${project.id}/settings?edit=1`}><Button size="small" type="primary">设置标注类别</Button></Link></Space>:'此项目尚未设置标注类别，请联系管理员配置'):project?.task_type==='vector'?'暂无图片描述或分类标注；检索匹配标注见上方审核区':project&&!(stats?.total_assets??project.total_assets)?'当前标注范围暂无图片，请先添加图片。':<span>此项目还没有已保存的标注，请从上方开始标注。</span> }}
+        locale={{ emptyText: emptyRecords }}
         pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100],
           showTotal: count => `共 ${count} 张已标注图片`, onChange: (page, page_size) => update({ page, page_size }) }} />
       </>}
     </> : <>
-      <p className="workspace-help">选择项目进行检测、分类、描述或向量匹配标注，项目间标注独立。{admin&&<Link to="/image-semantics/history">查看旧图片库生成批次</Link>}</p>
       <Card loading={loading} styles={{ body: { padding: 0 } }} variant="borderless">
         {!loading && !projects.length && <Empty description={error ? '项目读取失败，请重试' : admin ? '暂无标注项目' : '暂无分配给你的项目，请联系管理员分配项目'}
           image={Empty.PRESENTED_IMAGE_SIMPLE}>{!error && admin&&<Link to="/projects">前往项目管理创建项目</Link>}</Empty>}
@@ -265,7 +266,7 @@ export default function AnnotationsPage() {
           {projects.map(item => <Col xs={24} md={12} xl={8} key={item.id}>
             <section aria-label={`标注项目 ${item.project_name}`}>
               <Card title={item.project_name}>
-                <p className="review-project-description" title={item.description || ''}>{item.description || '未填写项目描述'}</p>
+                {item.description&&<p className="review-project-description" title={item.description}>{item.description}</p>}
                 {counts(item)}
                 <Space wrap style={{ marginTop: 20 }}>
                   {item.task_type==='segmentation'?<Tag>图像分割标注暂不支持</Tag>:<ContinueAnnotation projectId={item.id} taskType={item.task_type} reviewSearch={`project_id=${item.id}`}/>}

@@ -55,7 +55,15 @@ table, .ant-statistic, .ant-tag { font-variant-numeric: tabular-nums; }
   to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* Ant Design needs end events to remove closed overlays. */
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  /* 浮层同步测量位置，坐标须立即生效；进出场仍需结束事件。 */
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-property: opacity, transform, height !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
   .ant-btn:not(:disabled):not(.ant-btn-loading):active { transform: none; }
 }

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { Alert, Button, Form, Input, Modal, Select, Space } from 'antd';
 import { isAxiosError } from 'axios';
 import { createProject, type Project, type TaskType } from '../api/projects';
@@ -24,6 +24,7 @@ const TASK_TYPE_OPTIONS: { value: TaskType; label: string; disabled?: boolean }[
 ];
 
 export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectModalProps) {
+  const formId = useId();
   const [form] = Form.useForm<CreateProjectFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -36,13 +37,7 @@ export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectM
     onCancel();
   };
 
-  const handleSubmit = async () => {
-    let values: CreateProjectFormValues;
-    try {
-      values = await form.validateFields();
-    } catch {
-      return;
-    }
+  const handleSubmit = async (values: CreateProjectFormValues) => {
     if (saving.current) return;
     saving.current = true;
     setSubmitting(true);
@@ -63,7 +58,7 @@ export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectM
       onSuccess(created);
     } catch (cause) {
       const detail = isAxiosError(cause) ? cause.response?.data?.detail : undefined;
-      setError(typeof detail === 'string' ? detail : '创建项目失败，请检查项目名称后重试');
+      setError(typeof detail === 'string' ? detail : '创建项目失败，请重试');
     } finally {
       saving.current = false;
       setSubmitting(false);
@@ -74,6 +69,7 @@ export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectM
     <Modal
       title="新建项目"
       open={open}
+      afterOpenChange={visible => { if (visible) form.focusField('project_name'); }}
       destroyOnHidden
       onCancel={handleClose}
       closable={!submitting}
@@ -84,13 +80,14 @@ export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectM
           <Button disabled={submitting} onClick={handleClose}>
             取消
           </Button>
-          <Button type="primary" loading={submitting} onClick={() => void handleSubmit()}>
+          <Button type="primary" htmlType="submit" form={formId} loading={submitting}>
             创建项目
           </Button>
         </Space>
       }
     >
-      <Form form={form} layout="vertical" disabled={submitting} preserve={false} initialValues={{ task_type: 'detection' }}>
+      <Form id={formId} form={form} layout="vertical" onFinish={handleSubmit}
+        disabled={submitting} preserve={false} initialValues={{ task_type: 'detection' }}>
         <Form.Item
           name="project_name"
           label="项目名称"
@@ -99,13 +96,13 @@ export function CreateProjectModal({ open, onCancel, onSuccess }: CreateProjectM
             { max: 200, message: '项目名称不能超过200个字符' },
           ]}
         >
-          <Input aria-label="项目名称" placeholder="请输入项目名称" maxLength={200} />
+          <Input aria-label="项目名称" maxLength={200} />
         </Form.Item>
 
         <Form.Item
           name="task_type"
           label="任务类型"
-          extra="创建后任务类型不能更换；标签类别、描述与人员可在进入项目后按需配置。"
+          tooltip="已有标注、处理结果或关联任务后，无法更改任务类型。"
           rules={[{ required: true, message: '请选择任务类型' }]}
         >
           <Select aria-label="任务类型" options={TASK_TYPE_OPTIONS} />

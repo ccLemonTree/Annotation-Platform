@@ -18,6 +18,8 @@ async page=>{
       throw Error('Unexpected mocked write '+path);
     }
     if(path==='/api/images/collections')return json(deleted?[groups[1]]:groups);
+    if(path==='/api/auth/me')return json({id:1,tenant_id:1,role:'admin',username:'验收'});
+    if(path==='/api/images/source-platforms'||path==='/api/assets/collections')return json([]);
     if(path.endsWith('/delete-preview'))return json(plan);
     if(path==='/api/images'){imageFilters.push(url.searchParams.get('collection_id'));const items=[{...image,collection_names:deleted?['保留图片集']:image.collection_names},...deleted?[]:[{...image,id:'66666666-6666-4666-8666-666666666666',original_name:'exclusive.png',collection_names:['待删图片集']}]];return json({items,total:items.length});}
     if(path==='/api/projects')return json({items:[],total:0});
@@ -51,7 +53,7 @@ async page=>{
   await page.getByRole('row').filter({hasText:'shared-image.png'}).waitFor();
   if(await page.getByRole('row').filter({hasText:'exclusive.png'}).count())throw Error('独占图片仍显示在图库');
   await page.waitForFunction(()=>localStorage.getItem('image-upload-collection')===null);
-  await page.getByText('请先选择图片集，再修改入库规则或发起分类。 同集按内容去重，场景随原图共享；重新分类会更新该图在所有图片集中的场景。',{exact:true}).waitFor();
+  await page.getByText('全部图片集',{exact:true}).waitFor();
   if(imageFilters.at(-1)!==null)throw Error('成功后未清除图片集筛选');
   if(!await page.getByRole('button',{name:'删除图片集',exact:true}).isDisabled())throw Error('已删除的图片集仍可操作');
   await page.goto('http://localhost:3000/projects/'+pid+'/images');

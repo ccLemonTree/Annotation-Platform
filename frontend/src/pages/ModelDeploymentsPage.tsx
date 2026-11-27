@@ -149,7 +149,6 @@ export default function ModelDeploymentsPage(){
   const canActivate=!!batchPreview.length&&staged>0&&staged+active===batchPreview.length;
   if(!admin)return <Result status="403" title="无权限" subTitle="模型下发及镜像更新仅管理员可用。" />;
   return <Space orientation="vertical" size="middle" style={{width:'100%',minWidth:0,overflowWrap:'anywhere'}} styles={{item:{minWidth:0,maxWidth:'100%'}}}>
-    <Alert type="info" showIcon title="选版本和平台 → 一键准备 → 确认生效" description="一次可准备20个平台。准备过程自动检查、传输并校验，完成后统一确认生效；各平台分别记录结果。TensorRT需匹配目标GPU型号和运行库版本。"/>
     <Space wrap className="platform-related">
       <Link to={params.get('run_id')?`/model-repository?run_id=${encodeURIComponent(params.get('run_id')!)}`:'/model-repository'}>打开模型仓库</Link>
       <Link to="/gpu-terminal?source=deployment" target="_blank" rel="noopener noreferrer">SSH调试服务器</Link>
@@ -158,7 +157,6 @@ export default function ModelDeploymentsPage(){
     <Tabs activeKey={tab} onChange={setTab} items={[
       {key:'platforms',label:'平台与模型更新',children:<DeploymentPlatforms servers={servers} initialVersion={requestedVersion} onPrepared={(result,cause)=>{setBatch(result.batch_id);setRecordPage(1);setRecords(result.items);setBatchPreview(result.items);setTab('records');setNotice(`已提交 ${result.items.length} 项模型更新准备，完成后统一确认生效。`);if(cause)setError(cause);refresh();}}/>},
       {key:'targets',label:'镜像更新 / 旧版模型下发',children:<Space orientation="vertical" size="middle" style={{width:'100%'}}>
-        <Alert type="info" showIcon title="此页同时支持镜像更新和旧版单模型下发" description="在下方切换操作类型。多平台、多模型更新请使用“平台与模型更新”，已有目标和历史记录继续保留。"/>
         <Collapse activeKey={targetOpen} onChange={keys=>setTargetOpen(Array.isArray(keys)?keys:[keys])} items={[{key:'target',label:editing?'编辑服务器目标':'添加服务器目标',children:<Form name="deployment-target" form={targetForm} layout="vertical" initialValues={{kind:'model',environment:'docker',runtime:'triton_plan',repository:'/ai/chen/code/huggingface/aiseefor_model',namespace:'ai',workload_kind:'StatefulSet',container:'triton-server',containers:[]}} disabled={!!busy} onFinish={values=>void saveTarget(values)}>
           <Form.Item name="name" label="目标名称" rules={[{required:true,max:100}]}><Input placeholder="例如 杭州检测模型 / 丽水Kafka worker"/></Form.Item>
           <Form.Item name="kind" label="目标用途"><Select options={[{value:'model',label:'模型下发'},{value:'image',label:'镜像更新'}]} onChange={value=>targetForm.setFieldValue('container',value==='image'?'nexusai':'triton-server')}/></Form.Item>
@@ -174,7 +172,6 @@ export default function ModelDeploymentsPage(){
             <Select aria-label="待下发仓库模型" style={{width:'100%'}} value={repositoryModel?.id} placeholder="选择模型仓库中的TensorRT模型" options={repositoryChoices.map(row=>({value:row.id,label:`${row.name} · ${row.version} · ${row.gpu_model||'未标注GPU'} · TRT ${row.tensorrt_version||'未标注'} · ${repositoryBatchLabel(row.batch_profile)}${repositoryReason(row)?`（${repositoryReason(row)}）`:''}`,disabled:!!repositoryReason(row)}))} onChange={id=>{setRepositoryModel(repositoryChoices.find(row=>row.id===id));setTargetIds([]);}}/>
             {pager(repositoryPage,repositoryPage*20<repositoryTotal,setRepositoryPage)}
             {repositoryModel&&repositoryReason(repositoryModel)&&<Alert type="warning" showIcon title={repositoryReason(repositoryModel)} description="请在模型仓库选择已就绪且构建信息完整的TensorRT模型。"/>}
-            <Typography.Text type="secondary">直接使用仓库中的原始模型文件，不再重复归档。缺少TensorRT版本的模型须补全构建信息后重新入库。</Typography.Text>
           </>:<><Select aria-label="待下发完整模型版本" style={{width:'100%'}} value={release?.id} placeholder="选择已归档的大模型 / 向量完整目录" options={readyReleases.map(row=>({value:row.id,label:`${row.name} · ${row.version}`}))} onChange={id=>{setRelease(readyReleases.find(row=>row.id===id));setTargetIds([]);}}/><Button onClick={()=>setTab('releases')}>打开完整目录归档</Button></>}
         </>:<><Input aria-label="目标镜像版本" value={image} onChange={event=>setImage(event.target.value)} placeholder="仓库/镜像:明确版本 或 仓库/镜像@sha256:摘要"/><Alert type="info" showIcon title="K8s先用本环境Ansible剧本预分发到全部节点，逐节点核验后手动生效；Docker更新所选Triton/vLLM、NexusAI HTTP或Kafka worker。"/></>}
         <Table rowKey="id" size="small" dataSource={targets.filter(row=>row.kind===kind)} pagination={{pageSize:20}} scroll={{x:950}} rowSelection={{selectedRowKeys:targetIds,preserveSelectedRowKeys:true,onChange:keys=>setTargetIds(keys.map(String)),getCheckboxProps:row=>({disabled:kind==='model'&&(!modelReady||row.target.runtime!==targetRuntime)})}} columns={[

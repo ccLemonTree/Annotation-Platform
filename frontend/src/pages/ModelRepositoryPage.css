@@ -1,7 +1,6 @@
-.repository-list-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+.repository-list-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .repository-list-heading h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .repository-list-heading h2 span { display: inline-block; margin-left: 8px; color: var(--ui-muted); font-size: 13px; font-weight: 400; }
-.repository-list-heading p { margin: 7px 0 0; color: var(--ui-muted); line-height: 1.6; }
 .repository-api-help { max-width: 340px; margin: 0; line-height: 1.8; }
 .repository-model { min-width: 0; }
 .repository-model-title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; }
@@ -24,20 +23,38 @@
 .repository-detail-note { white-space: pre-wrap; overflow-wrap: anywhere; }
 .repository-detail-section { font-size: 14px; margin: 28px 0 16px; }
 .repository-drawer .ant-descriptions-item-content { overflow-wrap: anywhere; }
-.repository-group-name { overflow-wrap: anywhere; font-weight: 600; }
 .repository-versions { min-width: 0; padding: 8px 0; }
 .repository-versions .ant-table-cell { vertical-align: top; }
 .repository-config { max-height: 60vh; overflow: auto; margin: 0; padding: 16px; background: var(--ui-code-bg, var(--ui-background)); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); font: 13px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
 @media (max-width: 600px) {
-  .repository-list-heading { flex-direction: column; gap: 8px; margin-bottom: 16px; }
   .model-repository .page-toolbar > .ant-space { width: 100%; }
   .repository-drawer .ant-drawer-body { padding: 20px 16px; }
   .repository-drawer .ant-drawer-footer { padding: 12px 16px; }
 }
 
 .repository-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; }
-.repository-group-card, .repository-version-card { min-width: 0; }
-.repository-group-card .ant-card-head-title { white-space: normal; overflow-wrap: anywhere; }
+.repository-group, .repository-version-card { min-width: 0; }
+.repository-group-open {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  text-align: left;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  cursor: pointer;
+}
+.repository-group-open:hover, .repository-group-open:focus-visible { border-color: var(--ui-primary); }
+.repository-group-heading, .repository-group-footer { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.repository-group-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.repository-version-count { flex-shrink: 0; color: var(--ui-muted); font-size: 13px; }
+.repository-group-formats { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; color: var(--ui-muted); font-size: 13px; overflow-wrap: anywhere; }
+.repository-group-formats .ant-tag { margin: 0; }
+.repository-group-footer { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--ui-border); color: var(--ui-muted); font-size: 12px; }
+.repository-group-footer .anticon { color: var(--ui-primary); }
 .repository-version-card .ant-card-body { display: flex; flex-direction: column; gap: 16px; }
 .repository-version-card .ant-space { flex-wrap: wrap; }
-.repository-card-time { color: var(--ui-muted); font-size: 12px; }

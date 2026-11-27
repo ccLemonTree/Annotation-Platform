@@ -57,11 +57,11 @@ function ImageLibraryRoute() {
 function ProjectManagementRoute() {
   const admin=useCurrentUser()?.role==='admin';
   return <>
-    <div className="project-workflow"><nav aria-label="项目管理">
+    <nav className="project-management-tabs" aria-label="项目管理">
       <NavLink to="/projects" end>项目列表</NavLink>
       <NavLink to="/projects/data-sources">共享数据源</NavLink>
       {admin&&<NavLink to="/projects/workflow-templates">工作流模板</NavLink>}
-    </nav></div>
+    </nav>
     <Outlet />
   </>;
 }

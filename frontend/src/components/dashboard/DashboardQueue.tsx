@@ -43,6 +43,5 @@ export default function DashboardQueue({ admin }: { admin: boolean }) {
         {task.progress !== undefined && active.includes(task.status) && <Progress percent={task.progress} showInfo={false} size="small" strokeColor="var(--ui-primary)" />}</div>
       <Tag color={active.includes(task.status) ? 'processing' : task.status === 'completed' ? 'success' : task.status === 'failed' || task.status === 'unknown' ? 'error' : 'default'}>{labels[task.status] || task.status}</Tag>
     </Link>)}</div> : <Empty description={failed ? '任务读取失败，请刷新重试' : '暂无处理任务'} />}
-    <p className="dashboard-panel-note">最近任务，进行中的任务优先 · 只读展示</p>
   </Card>;
 }

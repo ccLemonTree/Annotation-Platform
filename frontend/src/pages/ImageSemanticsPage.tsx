@@ -125,10 +125,9 @@ export default function ImageSemanticsPage() {
   const done = detail ? detail.total - (detail.counts.pending || 0) - (detail.counts.running || 0) : 0;
   return <Space orientation="vertical" size="large" style={{ width: '100%' }}>
     <Card title="图片描述与向量检索" extra={<Button onClick={() => setRefresh(value => value + 1)}>刷新</Button>}>
-      <Alert type="info" showIcon title="完整2048维向量按模型、配置版本和预处理隔离，首版精确检索每个当前范围最多5000条索引。超限会明确报错，请缩小图片集。相似度仅用于检索，不代表标注正确性。" />
       {error && <Alert style={{ marginTop: 12 }} type="error" showIcon title={error} />}
       {info && <Typography.Paragraph role="status">{info}</Typography.Paragraph>}
-      <Space wrap style={{ marginTop: 16, width: '100%' }} styles={{ item: { maxWidth: '100%' } }}>
+      <Space wrap style={{ width: '100%' }} styles={{ item: { maxWidth: '100%' } }}>
         <Select aria-label="图片集筛选" allowClear placeholder="全部图片" value={collection} style={{ width: 220, maxWidth: '100%' }} disabled={working}
           options={collections.map(group => ({ value: group.id, label: `${group.name} (${group.image_count})` }))}
           onChange={value => { invalidateSearch(); setCollection(value); setImagePage(1); setSelected([]); setQueryImage(undefined); setJobs([]); setJobsPage(1); setJobId(undefined); }} />
@@ -136,7 +135,9 @@ export default function ImageSemanticsPage() {
         <Select aria-label="向量模型" allowClear placeholder="选择Embedding模型" value={embeddingModel} style={{ width: 240, maxWidth: '100%' }} options={modelOptions('embedding')}
           onChange={value => { invalidateSearch(); setEmbeddingModel(value); }} disabled={working} />
       </Space>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>模型来自模型管理；至少选择一种模型后生成。更改模型配置后需新建批次，旧版本索引不会混入检索。取消不会删除原图或已完成结果。</Typography.Paragraph>
+      <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+        {captionModel || embeddingModel ? '模型配置变更后需新建批次。' : '至少选择一种模型。'}
+      </Typography.Paragraph>
       {captionService?.protocol==='model_service'?<Typography.Text type="secondary">所选服务内部提供固定提示词。</Typography.Text>:
         <PromptEditor key={captionModel??'none'} title="本批描述提示词" buttonLabel="编辑提示词" ariaLabel="本批描述提示词" help="本批描述提示词（可选）：留空使用模型管理中的描述核心提示词，填写后覆盖本批描述指令。" defaultValue={captionService?.chat_prompts?.caption} value={captionPrompt} onChange={setCaptionPrompt} maxLength={2000} disabled={working || !captionModel} />}
       <Space wrap style={{ marginBottom: 12 }}>
@@ -151,6 +152,7 @@ export default function ImageSemanticsPage() {
         ]} />
     </Card>
     <Card title="文本与以图搜图">
+      <Typography.Paragraph type="secondary">每次最多检索 5,000 条同版本索引。相似度仅用于检索。</Typography.Paragraph>
       <Space wrap style={{ width: '100%' }} styles={{ item: { maxWidth: '100%' } }}>
         <Radio.Group aria-label="检索方式" value={mode} options={[{ value: 'text', label: '文本检索' }, { value: 'image', label: '以图搜图' }]} onChange={event => { invalidateSearch(); setMode(event.target.value); }} />
         {mode === 'text' ? <Input aria-label="检索文本" value={text} maxLength={2000} placeholder="描述希望查找的内容" style={{ width: 300, maxWidth: '100%' }} onChange={event => { invalidateSearch(); setText(event.target.value); }} onPressEnter={search} /> :

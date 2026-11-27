@@ -3,7 +3,8 @@
 .image-annotation-workspace > .ant-card-head .ant-card-head-wrapper { flex-wrap: wrap; gap: 8px; }
 .image-annotation-workspace > .ant-card-head .ant-card-extra { margin-inline-start: auto; }
 .image-annotation-workspace > .ant-card-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.image-annotation-toolbar { flex-shrink: 0; margin-bottom: 16px; }
+.image-annotation-navigation { display: flex; flex: none; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 12px; }
+.image-annotation-toolbar { flex-shrink: 0; margin-bottom: 12px; }
 .image-annotation-panels { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 20px; }
 .image-annotation-picture, .image-annotation-fields { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .image-annotation-picture .ant-image-img { max-height: 50dvh; object-fit: contain; }

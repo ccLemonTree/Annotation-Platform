@@ -772,9 +772,6 @@ const LedgerSchedulePage: React.FC = () => {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">台账图片下载</h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-                按执行间隔查询预警数据库，再按设备和预警时间 ±15 秒查询台账下载
-              </p>
             </div>
             {activeTab === 'schedule' ? (
               <div className="flex items-center gap-2">
@@ -843,7 +840,6 @@ const LedgerSchedulePage: React.FC = () => {
                 <div className="bg-white dark:bg-surface-dark border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm p-16 text-center text-slate-400">
                   <span className="material-icons text-5xl mb-3 block">download</span>
                   <p className="text-lg font-medium mb-1">暂无下载任务</p>
-                  <p className="text-sm">点击"新建下载任务"开始下载台账图片</p>
                 </div>
               ) : (
                 sortedTasks.map(task => (
@@ -859,7 +855,6 @@ const LedgerSchedulePage: React.FC = () => {
                 <div className="bg-white dark:bg-surface-dark border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm p-16 text-center text-slate-400">
                   <span className="material-icons text-5xl mb-3 block">sensors</span>
                   <p className="text-lg font-medium mb-1">暂无监听任务</p>
-                  <p className="text-sm">点击"新建监听任务"，查询到预警时自动下载对应台账图片</p>
                 </div>
               ) : (
                 watchJobs.map(job => (

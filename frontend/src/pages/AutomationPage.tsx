@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Popconfirm, Progress, Select, Space, Table, Tag } from 'antd';
 import { getCurrentUser } from '../api/auth';
 import { getProjects } from '../api/projects';
 import type { PaginatedResponse, Project } from '../api/projects';
@@ -81,9 +81,7 @@ export default function AutomationPage({embeddedProject}:{embeddedProject?:Proje
   };
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
     {!embeddedProject&&currentProject&&<ProjectWorkflow project={currentProject} active="prepare"/>}
-    <Alert type="info" showIcon title="预标注只处理未标注图片，已有标注不覆盖；AI审核只处理已有标注，不改人工框。"
-      description="所有框置信度均高于阈值，且整图完整性与外扩框检查均通过，才可自动通过。低分、不确定及全部负样本交管理员最终审核，零框不能自动判负。" />
-    {ready && !admin && <Alert type="info" showIcon title="当前为只读模式，任务创建、取消、重试及最终审核仅管理员可操作。" />}
+    {ready && !admin && <Alert type="info" showIcon title="当前为只读模式" />}
     {setupError && <Alert type="error" showIcon title={setupError} action={<Button size="small" onClick={() => { setSetupError(''); setSetupRevision(n => n + 1); }}>重试初始化</Button>} />}
     <div className="page-toolbar">
       <Space wrap>
@@ -101,7 +99,6 @@ export default function AutomationPage({embeddedProject}:{embeddedProject?:Proje
     {error && <Alert type="error" showIcon title="任务读取失败，请重试；当前显示可能已过期。" />}
     {actionError && <Alert type="error" showIcon title={actionError} />}
     <Card title="批量任务" styles={{ body: { minWidth: 0 } }}>
-      <Typography.Paragraph type="secondary">等待中 / 进行中任务每 3 秒刷新，请求结束后计时；失败时可手动重试读取。</Typography.Paragraph>
       <Table rowKey="id" loading={loading} dataSource={data?.items || []} scroll={{ x: 1150 }} columns={[
         { title: '任务 ID', dataIndex: 'id', width: 240 },
         { title: '项目', dataIndex: 'project_id', width: 180, render: id => projects.find(project => project.id === id)?.project_name || id },

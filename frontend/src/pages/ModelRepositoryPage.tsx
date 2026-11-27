@@ -227,7 +227,7 @@ export default function ModelRepositoryPage() {
     {error && openGroup===undefined && <Alert type="error" showIcon closable onClose={() => setError('')} title={error} />}
     {notice && <Alert type="success" showIcon closable onClose={() => setNotice('')} title={notice} />}
     <Card className="repository-list">
-      <div className="repository-list-heading"><div><h2>模型分组 <span>{total} 组 · {versionTotal} 个版本</span></h2><p>按模型组集中管理组件，展开查看 PT、ONNX、TensorRT 和 Python backend 版本。</p></div>
+      <div className="repository-list-heading"><h2>模型分组 <span>{total} 组 · {versionTotal} 个版本</span></h2>
         <Popover trigger="click" title="下载接口说明" content={<p className="repository-api-help">在模型版本的更多操作中复制 curl 下载命令，可直接在终端执行。命令里的授权仅适用于所选模型版本，2 小时内有效。</p>}><Button type="text">下载接口说明</Button></Popover>
       </div>
       <div className="page-toolbar">
@@ -240,13 +240,26 @@ export default function ModelRepositoryPage() {
       </div>
       {!!selectedIds.length&&<Space wrap style={{marginBottom:12}}><Typography.Text>已勾选 {selectedIds.length} 个版本（跨分组和分页保留）</Typography.Text><Button type="link" size="small" onClick={()=>setSelectedIds([])}>清空勾选</Button></Space>}
       <Spin spinning={loading}>
-        <div className="repository-card-grid">{groups.map(group=><Card key={group.name} className="repository-group-card" role="article" aria-label={group.name}
-          title={group.name} extra={<Tag>{group.version_count} 个版本</Tag>}>
-          <Space wrap>{group.formats.map(value=><Tag key={value}>{formats.find(item=>item.value===value)?.label}</Tag>)}</Space>
-          <p>{group.gpu_models.join(' / ')||'不限定 GPU 型号'}</p>
-          <p className="repository-card-time">最近入库 {new Date(group.latest_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}</p>
-          <Button icon={<RightOutlined />} onClick={()=>setOpenGroup(group.name)}>查看模型版本</Button>
-        </Card>)}</div>
+        <div className="repository-card-grid">
+          {groups.map(group => (
+            <article key={group.name} className="repository-group" aria-label={group.name}>
+              <button type="button" className="repository-group-open" aria-label={`查看模型版本 ${group.name}`} onClick={() => setOpenGroup(group.name)}>
+                <span className="repository-group-heading">
+                  <strong className="repository-group-name">{group.name}</strong>
+                  <span className="repository-version-count">{group.version_count} 个版本</span>
+                </span>
+                <span className="repository-group-formats">
+                  {group.formats.map(value => <Tag key={value}>{formats.find(item => item.value === value)?.label}</Tag>)}
+                  <span>{group.gpu_models.join(' / ') || '不限定 GPU 型号'}</span>
+                </span>
+                <span className="repository-group-footer">
+                  <span>最近入库 <time dateTime={group.latest_at}>{new Date(group.latest_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</time></span>
+                  <RightOutlined aria-hidden="true" />
+                </span>
+              </button>
+            </article>
+          ))}
+        </div>
         {!loading&&!groups.length&&<Empty description={q||format||gpu?'没有符合条件的模型':'模型仓库暂无文件'} />}
       </Spin>
       <div style={{marginTop:20,display:'flex',justifyContent:'flex-end'}}>
@@ -269,7 +282,7 @@ export default function ModelRepositoryPage() {
           <Form.Item name="format" label="模型格式"><Select allowClear placeholder="全部格式" options={formats}/></Form.Item>
           <Form.Item name="gpu_model" label="GPU 型号"><Select allowClear showSearch placeholder="全部GPU型号" options={gpuModels.map(value=>({value,label:value}))}/></Form.Item>
         </>}
-        <Typography.Paragraph type="secondary">每批最多100个版本。筛选下载包含所有分页中的可下载版本，不含入库中或失败的记录。ZIP按版本分目录保存，模型文件和Python backend目录结构均保留；大文件建议通过接口在服务器下载。</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">每批最多 100 个就绪版本，按版本分目录打包。{downloadMode === 'filtered' && '筛选范围包含所有分页。'}</Typography.Paragraph>
         {downloadError&&<Alert type="error" showIcon title={downloadError} style={{marginBottom:16}}/>}
         {batchDownloading&&<Typography.Paragraph>正在校验、打包并下载，请保持页面打开。</Typography.Paragraph>}
         <div style={{display:'flex',justifyContent:'flex-end'}}>

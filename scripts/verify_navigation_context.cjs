@@ -8,7 +8,11 @@ async page => {
     if(route.request().method()!=='GET')throw Error('Unexpected write');
     if(path==='/api/auth/me')return json({id:1,tenant_id:1,role:'admin',username:'验收'});
     if(path==='/api/projects/'+pid)return json(project);
-    if(path.endsWith('/neighbors'))return json({previous_id:null,next_id:next});
+    if(path.endsWith('/neighbors')){
+      const first=path.includes(aid);
+      return route.fulfill({headers:{'X-Annotation-Review-Filter':'1'},json:{previous_id:first?null:aid,next_id:first?next:null,position:first?1:2,total:2}});
+    }
+    if(path==='/api/assets/collections'||path.endsWith('/crop-labels'))return json([]);
     if(path==='/api/assets/'+aid||path==='/api/assets/'+next)return json({id:path.split('/').at(-1),project_id:pid,original_name:'test.png',source_type:'model_crop',width:50,height:100});
     if(path==='/api/annotations')return json({items:[],total:0});
     if(path.endsWith('/content'))return route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC+sAAAAASUVORK5CYII=','base64')});
@@ -17,6 +21,7 @@ async page => {
   await page.goto('http://localhost:3000/login');await page.evaluate(()=>{localStorage.setItem('token','test');localStorage.setItem('user',JSON.stringify({role:'admin',username:'验收'}));});
   await page.goto(`http://localhost:3000/annotate/${aid}?from=review&project_id=${pid}&review_status=pending&page=2`);
   await page.getByRole('link',{name:'下一张',exact:true}).click();
+  await page.waitForURL(url=>url.pathname===`/annotate/${next}`);
   if(!page.url().includes('from=review')||!page.url().includes('page=2'))throw Error('下一张丢失审核来源及页码');
   await page.getByRole('link',{name:'返回审核列表',exact:true}).click();
   if(!page.url().includes('review_status=pending')||!page.url().includes('page=2')||page.url().includes('from=review'))throw Error('返回未恢复审核筛选');

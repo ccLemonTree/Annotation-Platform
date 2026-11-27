@@ -88,7 +88,6 @@ export default function GpuServersPage() {
   };
   if (!admin) return <Result status="403" title="无权限" subTitle="仅管理员可管理服务器连接。" />;
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
-    <Alert type="info" showIcon title="管理算力服务器连接" description="新增或编辑 Linux NVIDIA 服务器连接，再到 GPU资源查看显卡和进程。默认 ssh-manager 连接使用现有配置，在此只读。" />
     {notice && <Alert type="success" showIcon closable onClose={() => setNotice('')} title={notice} />}
     {listError && <Alert type="error" showIcon title={listError} action={<Button onClick={() => { setLoading(true); setListError(''); setReload(value => value + 1); }}>重试列表</Button>} />}
     {actionError && !deleting && <Alert type="error" showIcon title={actionError} />}

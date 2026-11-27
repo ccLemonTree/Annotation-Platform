@@ -113,8 +113,7 @@ function DetectionValidationPage({embeddedProject}:{embeddedProject?:Project}) {
   return <Space orientation="vertical" size="middle" style={{ width: '100%', minWidth: 0 }}>
     {!embeddedProject&&projects.some(p=>p.id===contextId)&&<Alert type="info" showIcon title={`验证项目：${projects.find(p=>p.id===contextId)?.project_name}`} description="创建验证集时自动预选本项目；已有验证集与任务仍完整展示。" action={<Link to={`/projects/${contextId}/deliver`}>返回项目</Link>}/>}
     {trainingRunId && admin && <Alert type="info" showIcon title="已携带训练任务权重" description={sets.data?.items.some(d => d.total > 0) ? '点击下方验证集的「评估模型」将自动切换为训练权重并预填该训练任务。' : '请先创建一个包含真值图片的验证集，随后点击「评估模型」即可直接评估该训练权重。'} action={!sets.data?.items.some(d => d.total > 0) && !!projects.length ? <Button size="small" type="primary" onClick={() => setCreatingSet(true)}>创建验证集</Button> : undefined} />}
-    <Alert type="info" showIcon title="固定标注真值，评估检测模型" description="人工审核或管理员信任导入的YOLO标注均可作为真值。可选已部署模型服务或训练权重；结果不修改标注，仍需核对验证数据独立于训练数据。" />
-    {ready && !admin && <Alert type="info" showIcon title="只读模式：创建、取消、重试和删除仅管理员可操作。" />}
+    {ready && !admin && <Alert type="info" showIcon title="当前为只读模式" />}
     {setupError && <Alert type="error" showIcon title={setupError} action={<Button size="small" onClick={() => setSetupRevision(n => n + 1)}>重试初始化</Button>} />}
     <Card title="验证集列表" styles={{ body: { minWidth: 0 } }}>
       <Space wrap style={{ marginBottom: 16 }}>
